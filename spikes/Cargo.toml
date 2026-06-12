@@ -1,0 +1,17 @@
+[package]
+name = "fbui-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Phase 0 kernel-facing spike for fbui: DRM/KMS dumb-buffer page-flip, shadow-buffer discipline, VT guard, and fbdev fallback. Throwaway — not part of the framework."
+
+[[bin]]
+name = "fbui-spike"
+path = "src/main.rs"
+
+[dependencies]
+drm = "0.15"
+libc = "0.2"
+
+[profile.release]
+debug = true
