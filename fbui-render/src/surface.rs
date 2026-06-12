@@ -26,6 +26,8 @@ pub struct Surface {
     scale: Scale,
     damage: DamageTracker,
     base: Color,
+    /// Apply ordered dithering when copying out to a 16-bit (RGB565) target.
+    dither_565: bool,
 }
 
 impl Surface {
@@ -47,7 +49,21 @@ impl Surface {
             scale,
             damage: DamageTracker::new(),
             base,
+            dither_565: false,
         }
+    }
+
+    /// Enable (or disable) ordered dithering on the RGB565 copy-out path. Off by
+    /// default; turn it on for 16-bit panels to suppress gradient banding. A
+    /// no-op for 32-bit targets. The runner enables it automatically when the
+    /// display reports an [`Rgb565`](crate::copyout::TargetFormat::Rgb565) format.
+    pub fn set_dither(&mut self, on: bool) {
+        self.dither_565 = on;
+    }
+
+    /// Whether RGB565 dithering is enabled.
+    pub fn dither(&self) -> bool {
+        self.dither_565
     }
 
     pub fn width(&self) -> u32 {
@@ -113,7 +129,11 @@ impl Surface {
     ) -> Vec<IRect> {
         let (w, h) = (self.shadow.width(), self.shadow.height());
         let damage = self.damage.flush(age, w, h);
-        copyout::copy_out(&self.shadow, dst, stride, format, &damage);
+        if self.dither_565 && format == TargetFormat::Rgb565 {
+            copyout::copy_out_dithered(&self.shadow, dst, stride, format, &damage);
+        } else {
+            copyout::copy_out(&self.shadow, dst, stride, format, &damage);
+        }
         damage
     }
 }

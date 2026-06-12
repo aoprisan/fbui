@@ -129,6 +129,7 @@ fn install_hooks_once() {
             libc::SIGINT,
             libc::SIGTERM,
             libc::SIGHUP,
+            libc::SIGQUIT,
             libc::SIGSEGV,
             libc::SIGABRT,
             libc::SIGILL,
@@ -343,5 +344,29 @@ impl Drop for VtGuard {
         }
         restore_console();
         let _ = self.fd;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The crash-safety invariant: a restore runs **at most once** and is safe
+    /// even with no real tty — the `GUARD_ACTIVE` swap is what stops a concurrent
+    /// `Drop` and signal handler from both issuing the restore ioctls. Exercised
+    /// headlessly with a sentinel fd so it touches no console.
+    #[test]
+    fn restore_console_is_idempotent_without_a_tty() {
+        TTY_FD.store(-1, Ordering::SeqCst);
+        GUARD_ACTIVE.store(true, Ordering::SeqCst);
+
+        restore_console();
+        assert!(
+            !GUARD_ACTIVE.load(Ordering::SeqCst),
+            "first restore clears the guard"
+        );
+        // A second restore (the Drop-after-signal case) is a no-op.
+        restore_console();
+        assert!(!GUARD_ACTIVE.load(Ordering::SeqCst));
     }
 }

@@ -8,7 +8,7 @@
 //!
 //! * [`evdev`] — pure-Rust, reads `/dev/input/event*` directly. The portable
 //!   default; no system libraries.
-//! * [`libinput`] (feature `libinput`) — pointer acceleration, gestures, tap,
+//! * `libinput` (feature `libinput`) — pointer acceleration, gestures, tap,
 //!   calibration, hotplug via udev. Needs the C library.
 //!
 //! Both implement [`InputSource`], which the event loop multiplexes alongside
@@ -17,7 +17,7 @@
 use std::os::unix::io::RawFd;
 
 use crate::error::Result;
-use crate::geom::Point;
+use crate::geom::{Point, Size};
 
 #[cfg(feature = "evdev")]
 pub mod evdev;
@@ -164,4 +164,9 @@ pub trait InputSource {
     /// Read all currently-available events, normalizing each into `sink`.
     /// Called after any [`fds`](InputSource::fds) descriptor signals readable.
     fn dispatch(&mut self, sink: &mut dyn FnMut(InputEvent)) -> Result<()>;
+
+    /// Update the surface size used to scale absolute/touch coordinates into
+    /// pixels, after a display mode change or hotplug. Default: ignore (sources
+    /// that only report relative motion don't care).
+    fn set_surface(&mut self, _size: Size) {}
 }

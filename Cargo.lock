@@ -352,7 +352,7 @@ dependencies = [
 
 [[package]]
 name = "fbui"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "fbui-platform",
  "fbui-render",
@@ -361,7 +361,7 @@ dependencies = [
 
 [[package]]
 name = "fbui-platform"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "bitflags",
  "calloop",
@@ -375,7 +375,7 @@ dependencies = [
 
 [[package]]
 name = "fbui-render"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "cosmic-text",
  "criterion",
@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "fbui-testkit"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "image",
  "tiny-skia",
@@ -395,7 +395,7 @@ dependencies = [
 
 [[package]]
 name = "fbui-widgets"
-version = "0.0.0"
+version = "0.1.0"
 dependencies = [
  "fbui-render",
  "fbui-testkit",

@@ -1,6 +1,6 @@
 [package]
 name = "fbui"
-version = "0.0.0"
+version.workspace = true
 description = "fbui: a framework for building UIs that draw straight to the Linux framebuffer/DRM — no X11, no Wayland. Umbrella crate re-exporting the render layer and widget toolkit, plus an app runner that drives the widget tree on a real display through the platform layer (behind the `platform` feature)."
 edition.workspace = true
 rust-version = "1.89"

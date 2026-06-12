@@ -1,15 +1,25 @@
 # fbui — Plan: a framebuffer UI framework for Linux (no X11/Wayland)
 
-Status: **Phase 3 implemented** (`fbui-widgets/` + `fbui/`) — the widget toolkit:
-a retained tree with an Elm-ish `update(msg) → state → damage → paint` loop,
-`taffy` flexbox layout, focus/keyboard navigation, theming, and the v1 widget set
-(Label, Button, Checkbox, Slider, TextInput, Row/Column containers, ScrollView,
-windowed List, Image). Headless and damage-bounded; the `fbui` umbrella adds a
-feature-gated runner that drives it on a real display. Widget snapshot + behavior
-tests green; the design was fixed first in
-[`fbui-widgets/DESIGN.md`](fbui-widgets/DESIGN.md). Stack, kinetic scroll, touch
-gestures, and the Pi-class/on-device gates are deferred (Phase 4 / hardware). See
-[`fbui-widgets/PHASE3.md`](fbui-widgets/PHASE3.md). **Phase 2** (`fbui-render/`) —
+Status: **Phase 4 implemented — 0.1.0 cut** (all crates) — hardening for real
+devices: a headless **gesture recognizer** (tap/long-press/drag/fling) that
+unifies mouse and touch, **kinetic ("flick to coast") scrolling** on a new
+`Widget::animate` frame-clock hook, **RGB565 ordered dithering** for small
+panels, **display hotplug / mode-change** handling (`Display::reconfigure` →
+`on_display_changed`) without restart, a **crash-safety audit** (SIGQUIT +
+restore-idempotency) and a **fuzzed evdev parser**, plus the docs and CI a 0.1
+needs (a [running-on-your-device guide](docs/running-on-your-device.md), a
+[CHANGELOG](CHANGELOG.md) + versioning policy, and `cargo doc`/bench gates). The
+crates.io upload and on-device hotplug/perf verification remain hardware-/
+release-gated. See [`PHASE4.md`](PHASE4.md). **Phase 3** (`fbui-widgets/` +
+`fbui/`) — the widget toolkit: a retained tree with an Elm-ish
+`update(msg) → state → damage → paint` loop, `taffy` flexbox layout,
+focus/keyboard navigation, theming, and the v1 widget set (Label, Button,
+Checkbox, Slider, TextInput, Row/Column containers, ScrollView, windowed List,
+Image). Headless and damage-bounded; the `fbui` umbrella adds a feature-gated
+runner that drives it on a real display. Widget snapshot + behavior tests green;
+the design was fixed first in [`fbui-widgets/DESIGN.md`](fbui-widgets/DESIGN.md).
+See [`fbui-widgets/PHASE3.md`](fbui-widgets/PHASE3.md). **Phase 2**
+(`fbui-render/`) —
 the headless CPU rendering layer: a tiny-skia painter (rects, paths, gradients,
 clipping, opacity groups, image blit), cosmic-text/swash text with a bounded
 glyph atlas, damage tracking with buffer-age, fractional HiDPI, and a

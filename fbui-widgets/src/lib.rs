@@ -2,7 +2,8 @@
 //!
 //! Phase 3 of [`fbui`](https://github.com/aoprisan/fbui): a **retained** widget
 //! tree with an Elm-ish control loop — `update(msg) → mutate state → mark damage
-//! → paint` — laid out by `taffy` and drawn through the Phase 2 [`Painter`]. It
+//! → paint` — laid out by `taffy` and drawn through the Phase 2
+//! [`Painter`](fbui_render::Painter). It
 //! is headless: a [`Ui`] runs and paints into a [`fbui_render::Surface`] with no
 //! device in the loop, which is what makes widgets snapshot-testable. The
 //! umbrella `fbui` crate wires a `Ui` to a real display via Phase 1.
@@ -28,6 +29,8 @@
 
 pub mod ctx;
 pub mod event;
+pub mod gesture;
+pub mod kinetic;
 pub mod style;
 pub mod theme;
 pub mod tree;
@@ -37,10 +40,11 @@ pub mod widgets;
 
 pub use ctx::{EventCtx, PaintCtx};
 pub use event::{Event, Key, Modifiers, PointerButton};
+pub use gesture::{Gesture, GestureConfig, GestureRecognizer};
 pub use style::Style;
 pub use theme::{Metrics, Palette, Theme};
 pub use tree::{Ui, WidgetId};
-pub use widget::Widget;
+pub use widget::{Anim, Widget};
 
 // Re-export the render layer so downstreams need only depend on the toolkit.
 pub use fbui_render;

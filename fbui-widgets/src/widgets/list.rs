@@ -10,12 +10,27 @@ use fbui_render::geom::{Point, Rect};
 
 use crate::ctx::{EventCtx, PaintCtx};
 use crate::event::{Event, Key, PointerButton};
+use crate::kinetic::Kinetic;
 use crate::style::{self, Style};
 use crate::theme::Theme;
 use crate::util::text_style;
-use crate::widget::Widget;
+use crate::widget::{Anim, Widget};
 
 const ROW_H: f32 = 40.0;
+
+/// Movement (logical px) past which a press becomes a scroll-drag rather than a
+/// row selection.
+const DRAG_SLOP: f32 = 6.0;
+
+/// In-progress pointer drag over the list.
+struct Drag {
+    /// Where the press began (to tell a tap from a drag).
+    start_y: f32,
+    /// Last seen y, for incremental scrolling.
+    last_y: f32,
+    /// Whether it has crossed the slop and become a scroll.
+    moved: bool,
+}
 
 /// A scrollable, single-selection list of text rows.
 pub struct List<Msg> {
@@ -24,6 +39,11 @@ pub struct List<Msg> {
     offset: f32,
     selected: Option<usize>,
     on_select: Option<Box<dyn Fn(usize) -> Msg>>,
+    /// Last viewport height seen, so kinetic [`animate`](Widget::animate) can clamp
+    /// without a layout context.
+    viewport_h: f32,
+    drag: Option<Drag>,
+    kinetic: Kinetic,
 }
 
 impl<Msg> List<Msg> {
@@ -34,6 +54,9 @@ impl<Msg> List<Msg> {
             offset: 0.0,
             selected: None,
             on_select: None,
+            viewport_h: 0.0,
+            drag: None,
+            kinetic: Kinetic::new(),
         }
     }
 
@@ -52,6 +75,19 @@ impl<Msg> List<Msg> {
         self.rows = rows;
         self.selected = None;
         self.offset = 0.0;
+        self.kinetic.stop();
+        self.drag = None;
+    }
+
+    /// Apply a scroll delta clamped to `viewport_h`; returns whether it moved.
+    fn apply_scroll(&mut self, dy: f32, viewport_h: f32) -> bool {
+        let new = (self.offset + dy).clamp(0.0, self.max_offset(viewport_h));
+        if (new - self.offset).abs() > f32::EPSILON {
+            self.offset = new;
+            true
+        } else {
+            false
+        }
     }
 
     pub fn selected(&self) -> Option<usize> {
@@ -165,12 +201,11 @@ impl<Msg: 'static> Widget<Msg> for List<Msg> {
 
     fn event(&mut self, ctx: &mut EventCtx<Msg>) {
         let b = ctx.bounds();
+        self.viewport_h = b.h;
         let ev = ctx.event().clone();
         match ev {
             Event::Scroll { delta_y, .. } => {
-                let new = (self.offset + delta_y).clamp(0.0, self.max_offset(b.h));
-                if (new - self.offset).abs() > f32::EPSILON {
-                    self.offset = new;
+                if self.apply_scroll(delta_y, b.h) {
                     ctx.request_paint();
                 }
                 ctx.set_handled();
@@ -179,12 +214,51 @@ impl<Msg: 'static> Widget<Msg> for List<Msg> {
                 button: PointerButton::Left,
                 pos,
             } => {
+                // Start a press: any coast halts, and we decide tap-vs-scroll on
+                // move/release so a drag scrolls instead of selecting.
+                self.kinetic.stop();
                 ctx.request_focus();
-                let idx = ((pos.y - b.y + self.offset) / self.row_h).floor() as i64;
-                if idx >= 0 {
-                    self.select(idx as usize, ctx);
-                }
+                self.drag = Some(Drag {
+                    start_y: pos.y,
+                    last_y: pos.y,
+                    moved: false,
+                });
+                ctx.capture_pointer();
                 ctx.set_handled();
+            }
+            Event::PointerMove { pos } => {
+                if let Some(drag) = &mut self.drag {
+                    let dy = drag.last_y - pos.y;
+                    drag.last_y = pos.y;
+                    if (pos.y - drag.start_y).abs() > DRAG_SLOP {
+                        drag.moved = true;
+                    }
+                    if self.apply_scroll(dy, b.h) {
+                        ctx.request_paint();
+                    }
+                }
+            }
+            Event::PointerUp {
+                button: PointerButton::Left,
+                pos,
+            } => {
+                if let Some(drag) = self.drag.take() {
+                    ctx.release_pointer();
+                    // A press that didn't wander is a tap: select the row under it.
+                    if !drag.moved {
+                        let idx = ((pos.y - b.y + self.offset) / self.row_h).floor() as i64;
+                        if idx >= 0 {
+                            self.select(idx as usize, ctx);
+                        }
+                    }
+                }
+            }
+            Event::Fling { velocity_y, .. } => {
+                if self.max_offset(b.h) > 0.0 {
+                    self.kinetic.start(-velocity_y);
+                    ctx.request_paint();
+                    ctx.set_handled();
+                }
             }
             Event::Key {
                 key: Key::Down,
@@ -205,6 +279,28 @@ impl<Msg: 'static> Widget<Msg> for List<Msg> {
                 ctx.set_handled();
             }
             _ => {}
+        }
+    }
+
+    fn animate(&mut self, dt: f32) -> Anim {
+        if !self.kinetic.is_running() {
+            return Anim::IDLE;
+        }
+        let dy = self.kinetic.step(dt);
+        let moved = self.apply_scroll(dy, self.viewport_h);
+        if !moved {
+            self.kinetic.stop();
+        }
+        if moved {
+            // List paints with its own offset (no child re-placement), so a
+            // repaint of its bounds is all that's needed.
+            Anim {
+                repaint: true,
+                relayout: false,
+                running: self.kinetic.is_running(),
+            }
+        } else {
+            Anim::IDLE
         }
     }
 

@@ -220,6 +220,32 @@ impl<Msg: 'static> Ui<Msg> {
         self.needs_layout || !self.damage.is_empty()
     }
 
+    /// Advance every widget's animation by `dt` seconds, accumulating damage for
+    /// the ones that changed. Returns `true` if any widget is still animating, so
+    /// the runner knows whether to keep the frame clock spinning.
+    ///
+    /// This is the hook kinetic scrolling rides on: a flung [`ScrollView`] /
+    /// [`List`] coasts here until its velocity decays.
+    ///
+    /// [`ScrollView`]: crate::widgets::ScrollView
+    /// [`List`]: crate::widgets::List
+    pub fn animate(&mut self, dt: f32) -> bool {
+        let ids: Vec<WidgetId> = self.nodes.keys().collect();
+        let mut running = false;
+        for id in ids {
+            let anim = self.nodes[id].widget.animate(dt);
+            if anim.relayout {
+                self.needs_layout = true;
+            }
+            if anim.repaint || anim.relayout {
+                let b = self.nodes[id].layout;
+                self.damage.push(b);
+            }
+            running |= anim.running;
+        }
+        running
+    }
+
     fn mark_full(&mut self) {
         self.needs_layout = true;
         self.damage

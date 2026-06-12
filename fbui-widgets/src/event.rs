@@ -62,6 +62,18 @@ pub enum Event {
         delta_x: f32,
         delta_y: f32,
     },
+    /// A recognized tap (quick press-and-release in place). Delivered in addition
+    /// to the raw `PointerDown`/`PointerUp` for widgets that want tap semantics.
+    Tap { pos: Point },
+    /// A recognized long-press (contact held in place past the timeout).
+    LongPress { pos: Point },
+    /// A drag was released with momentum — `velocity` is in logical pixels per
+    /// second. Scrollable widgets turn this into kinetic (coasting) scroll.
+    Fling {
+        pos: Point,
+        velocity_x: f32,
+        velocity_y: f32,
+    },
     /// A key changed state. `text` is the committed string for printable keys.
     Key {
         key: Key,
@@ -81,7 +93,10 @@ impl Event {
             Event::PointerDown { pos, .. }
             | Event::PointerUp { pos, .. }
             | Event::PointerMove { pos }
-            | Event::Scroll { pos, .. } => Some(*pos),
+            | Event::Scroll { pos, .. }
+            | Event::Tap { pos }
+            | Event::LongPress { pos }
+            | Event::Fling { pos, .. } => Some(*pos),
             _ => None,
         }
     }

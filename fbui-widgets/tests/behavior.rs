@@ -166,6 +166,40 @@ fn list_click_selects_row() {
 }
 
 #[test]
+fn fling_kinetically_scrolls_the_list() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let rows: Vec<String> = (0..1000).map(|i| format!("row {i}")).collect();
+    let list = ui.add_child(root, List::new(rows).on_select(Msg::Picked));
+    ui.layout_now();
+    let b = ui.bounds(list).unwrap();
+
+    // Fling upward (negative velocity_y) over the list: content should coast up.
+    ui.event(Event::Fling {
+        pos: Point::new(b.x + 20.0, b.y + 20.0),
+        velocity_x: 0.0,
+        velocity_y: -2000.0,
+    });
+    assert!(ui.animate(1.0 / 60.0), "coast is running after a fling");
+
+    // Run the coast to rest.
+    for _ in 0..600 {
+        if !ui.animate(1.0 / 60.0) {
+            break;
+        }
+    }
+    assert!(!ui.animate(1.0 / 60.0), "coast settles to rest");
+
+    // The list scrolled, so the row now under the top of the viewport is no
+    // longer row 0 — a tap there selects a later row.
+    click(&mut ui, Point::new(b.x + 20.0, b.y + 10.0));
+    match ui.take_messages().as_slice() {
+        [Msg::Picked(idx)] => assert!(*idx > 0, "scrolled past row 0, got {idx}"),
+        other => panic!("expected one Picked(>0), got {other:?}"),
+    }
+}
+
+#[test]
 fn mutation_marks_dirty_paint_clears_it() {
     let mut ui = ui();
     let root = ui.set_root(Container::column());

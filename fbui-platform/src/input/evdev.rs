@@ -41,6 +41,14 @@ const BTN_TOUCH: u16 = 0x14a;
 /// First button-class code; KEY codes below this are keyboard keys.
 const BTN_FIRST: u16 = 0x100;
 
+// `EV_*` event-type codes from `<linux/input-event-codes.h>`. We match on these
+// raw `u16`s (rather than the crate's `EventType` enum) so the packet logic is
+// one pure function that the fuzz test can drive with arbitrary tuples.
+const EV_SYN: u16 = 0x00;
+const EV_KEY: u16 = 0x01;
+const EV_REL: u16 = 0x02;
+const EV_ABS: u16 = 0x03;
+
 /// Linear range of an absolute axis, for scaling device units to pixels.
 #[derive(Clone, Copy)]
 struct AbsRange {
@@ -49,22 +57,26 @@ struct AbsRange {
 }
 
 impl AbsRange {
-    /// Map a device-unit value onto `[0, extent)` pixels.
+    /// Map a device-unit value onto `[0, extent)` pixels, clamped — a device that
+    /// reports values outside its advertised range (or a fuzzed/garbage packet)
+    /// must never yield an out-of-surface coordinate.
     fn scale(self, v: i32, extent: u32) -> i32 {
         if self.max <= self.min || extent == 0 {
             return v;
         }
         let t = (v - self.min) as f64 / (self.max - self.min) as f64;
-        (t * (extent - 1) as f64).round() as i32
+        let px = (t * (extent - 1) as f64).round() as i32;
+        px.clamp(0, extent as i32 - 1)
     }
 }
 
-/// Per-device accumulator: input packets are a burst of type/code/value events
-/// terminated by `SYN_REPORT`, so we coalesce motion within a packet and flush
-/// on sync.
-struct DeviceState {
-    device: Device,
-    fd: RawFd,
+/// Per-device packet accumulator — **no `Device`**, so the packet-coalescing
+/// logic is a pure state machine the fuzz test can drive with arbitrary
+/// type/code/value tuples.
+///
+/// Input packets are a burst of type/code/value events terminated by
+/// `SYN_REPORT`, so we coalesce motion within a packet and flush on sync.
+struct PacketState {
     is_multitouch: bool,
     abs_x: Option<AbsRange>,
     abs_y: Option<AbsRange>,
@@ -83,17 +95,9 @@ struct DeviceState {
     pending_id: Option<i32>,
 }
 
-impl DeviceState {
-    fn new(device: Device) -> Self {
-        let fd = device.as_raw_fd();
-        let is_multitouch = device
-            .supported_absolute_axes()
-            .map(|axes| axes.iter().any(|a| a.0 == ABS_MT_SLOT))
-            .unwrap_or(false);
-        let (abs_x, abs_y) = abs_ranges(&device);
-        DeviceState {
-            device,
-            fd,
+impl PacketState {
+    fn new(is_multitouch: bool, abs_x: Option<AbsRange>, abs_y: Option<AbsRange>) -> Self {
+        PacketState {
             is_multitouch,
             abs_x,
             abs_y,
@@ -107,6 +111,29 @@ impl DeviceState {
             pending_x: None,
             pending_y: None,
             pending_id: None,
+        }
+    }
+}
+
+/// An open device plus its packet accumulator.
+struct DeviceState {
+    device: Device,
+    fd: RawFd,
+    packet: PacketState,
+}
+
+impl DeviceState {
+    fn new(device: Device) -> Self {
+        let fd = device.as_raw_fd();
+        let is_multitouch = device
+            .supported_absolute_axes()
+            .map(|axes| axes.iter().any(|a| a.0 == ABS_MT_SLOT))
+            .unwrap_or(false);
+        let (abs_x, abs_y) = abs_ranges(&device);
+        DeviceState {
+            device,
+            fd,
+            packet: PacketState::new(is_multitouch, abs_x, abs_y),
         }
     }
 }
@@ -191,12 +218,6 @@ impl EvdevInput {
             surface,
         })
     }
-
-    /// Update the surface size used to scale absolute coordinates (on mode
-    /// change / hotplug of the display).
-    pub fn set_surface(&mut self, surface: Size) {
-        self.surface = surface;
-    }
 }
 
 /// Put a device in nonblocking mode so `fetch_events` drains and returns instead
@@ -223,40 +244,79 @@ impl InputSource for EvdevInput {
                 Err(e) => return Err(Error::io("evdev fetch_events", e)),
             };
             for ev in &events {
-                translate(dev, keymap, surface, ev, sink);
+                translate(&mut dev.packet, keymap, surface, ev, sink);
             }
         }
         Ok(())
     }
+
+    fn set_surface(&mut self, size: Size) {
+        self.surface = size;
+    }
 }
 
-/// Translate one raw evdev event, flushing coalesced motion on `SYN_REPORT`.
+/// Translate one raw evdev event by handing its raw type/code/value to the pure
+/// [`feed_raw`] state machine (so the live path and the fuzz test share code).
 fn translate(
-    dev: &mut DeviceState,
+    packet: &mut PacketState,
     keymap: &mut Keymap,
     surface: Size,
     ev: &evdev::InputEvent,
     sink: &mut dyn FnMut(InputEvent),
 ) {
-    let code = ev.code();
-    let value = ev.value();
-    match ev.event_type() {
-        EventType::KEY => {
+    feed_raw(
+        packet,
+        keymap,
+        surface,
+        raw_event_type(ev.event_type()),
+        ev.code(),
+        ev.value(),
+        sink,
+    );
+}
+
+/// Map the crate's `EventType` to its raw `EV_*` code. Unknown types map to a
+/// value [`feed_raw`] ignores.
+fn raw_event_type(t: EventType) -> u16 {
+    match t {
+        EventType::SYNCHRONIZATION => EV_SYN,
+        EventType::KEY => EV_KEY,
+        EventType::RELATIVE => EV_REL,
+        EventType::ABSOLUTE => EV_ABS,
+        _ => 0xffff,
+    }
+}
+
+/// The pure packet state machine: fold one `(type, code, value)` tuple into
+/// `packet`, emitting normalized events (coalesced motion flushes on `SYN`).
+/// Total over *all* inputs — no tuple can panic it — which is what the fuzz test
+/// asserts.
+fn feed_raw(
+    packet: &mut PacketState,
+    keymap: &mut Keymap,
+    surface: Size,
+    ev_type: u16,
+    code: u16,
+    value: i32,
+    sink: &mut dyn FnMut(InputEvent),
+) {
+    match ev_type {
+        EV_KEY => {
             if code >= BTN_FIRST {
-                handle_button(dev, code, value, sink);
+                handle_button(packet, code, value, sink);
             } else {
                 handle_key(keymap, code as u32, value, sink);
             }
         }
-        EventType::RELATIVE => match code {
-            REL_X => dev.rel_dx += value as f64,
-            REL_Y => dev.rel_dy += value as f64,
-            REL_WHEEL => dev.rel_wheel += value as f64,
-            REL_HWHEEL => dev.rel_hwheel += value as f64,
+        EV_REL => match code {
+            REL_X => packet.rel_dx += value as f64,
+            REL_Y => packet.rel_dy += value as f64,
+            REL_WHEEL => packet.rel_wheel += value as f64,
+            REL_HWHEEL => packet.rel_hwheel += value as f64,
             _ => {}
         },
-        EventType::ABSOLUTE => handle_abs(dev, code, value),
-        EventType::SYNCHRONIZATION => flush_packet(dev, surface, sink),
+        EV_ABS => handle_abs(packet, code, value),
+        EV_SYN => flush_packet(packet, surface, sink),
         _ => {}
     }
 }
@@ -277,7 +337,7 @@ fn handle_key(keymap: &mut Keymap, code: u32, value: i32, sink: &mut dyn FnMut(I
     }));
 }
 
-fn handle_button(dev: &mut DeviceState, code: u16, value: i32, sink: &mut dyn FnMut(InputEvent)) {
+fn handle_button(dev: &mut PacketState, code: u16, value: i32, sink: &mut dyn FnMut(InputEvent)) {
     // On a touchscreen, BTN_TOUCH brackets a single-finger contact; for MT
     // devices the slot/tracking-id machinery drives touch instead, so ignore it.
     if code == BTN_TOUCH && dev.is_multitouch {
@@ -297,7 +357,7 @@ fn handle_button(dev: &mut DeviceState, code: u16, value: i32, sink: &mut dyn Fn
     sink(InputEvent::PointerButton { button, state });
 }
 
-fn handle_abs(dev: &mut DeviceState, code: u16, value: i32) {
+fn handle_abs(dev: &mut PacketState, code: u16, value: i32) {
     match code {
         ABS_X => dev.abs_x_val = Some(value),
         ABS_Y => dev.abs_y_val = Some(value),
@@ -310,7 +370,7 @@ fn handle_abs(dev: &mut DeviceState, code: u16, value: i32) {
 }
 
 /// Emit the coalesced result of one input packet.
-fn flush_packet(dev: &mut DeviceState, surface: Size, sink: &mut dyn FnMut(InputEvent)) {
+fn flush_packet(dev: &mut PacketState, surface: Size, sink: &mut dyn FnMut(InputEvent)) {
     // Relative pointer motion.
     if dev.rel_dx != 0.0 || dev.rel_dy != 0.0 {
         sink(InputEvent::PointerMotion {
@@ -348,7 +408,7 @@ fn flush_packet(dev: &mut DeviceState, surface: Size, sink: &mut dyn FnMut(Input
 }
 
 /// Resolve one MT packet for the current slot into a touch event.
-fn flush_touch(dev: &mut DeviceState, surface: Size, sink: &mut dyn FnMut(InputEvent)) {
+fn flush_touch(dev: &mut PacketState, surface: Size, sink: &mut dyn FnMut(InputEvent)) {
     let slot = dev.cur_slot;
     let pos = match (dev.pending_x.take(), dev.pending_y.take()) {
         (Some(x), Some(y)) => {
@@ -391,5 +451,86 @@ mod tests {
     fn abs_range_identity_when_degenerate() {
         let r = AbsRange { min: 5, max: 5 };
         assert_eq!(r.scale(42, 100), 42);
+    }
+
+    #[test]
+    fn abs_range_clamps_out_of_range_values() {
+        let r = AbsRange { min: 0, max: 1000 };
+        // Values outside the advertised range never escape the surface.
+        assert_eq!(r.scale(-5000, 100), 0);
+        assert_eq!(r.scale(50_000, 100), 99);
+    }
+
+    /// Deterministic fuzz of the pure packet parser: throw a few hundred thousand
+    /// arbitrary `(type, code, value)` tuples at [`feed_raw`] and assert it never
+    /// panics, never overflows, and never emits an out-of-surface coordinate.
+    /// This is the Phase 4 "fuzz the input-event parser" exit task, done without a
+    /// fuzzing harness so it runs in plain `cargo test` / CI.
+    #[test]
+    fn feed_raw_survives_arbitrary_input() {
+        let surface = Size::new(1920, 1080);
+        // xorshift64 — a tiny deterministic PRNG, no dev-deps.
+        let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+
+        for &mt in &[false, true] {
+            let mut keymap = Keymap::new();
+            let mut packet = PacketState::new(
+                mt,
+                Some(AbsRange { min: 0, max: 32767 }),
+                Some(AbsRange {
+                    min: -10,
+                    max: 4096,
+                }),
+            );
+            let mut emitted: u64 = 0;
+            for _ in 0..300_000 {
+                let r = next();
+                // Bias toward valid event types (0..=5 covers SYN/KEY/REL/ABS plus
+                // a couple the parser must ignore) but let `code`/`value` be wild.
+                let ev_type = (r & 0x7) as u16;
+                let code = ((r >> 3) & 0xffff) as u16;
+                let value = (r >> 24) as i32;
+                feed_raw(
+                    &mut packet,
+                    &mut keymap,
+                    surface,
+                    ev_type,
+                    code,
+                    value,
+                    &mut |ev| {
+                        emitted += 1;
+                        // Any positioned event must land inside the surface.
+                        let pos = match ev {
+                            InputEvent::TouchDown { position, .. }
+                            | InputEvent::TouchMotion { position, .. }
+                            | InputEvent::PointerMotionAbsolute { position } => Some(position),
+                            _ => None,
+                        };
+                        if let Some(p) = pos {
+                            assert!(
+                                p.x >= 0 && p.x < surface.w as i32,
+                                "x {} out of [0,{})",
+                                p.x,
+                                surface.w
+                            );
+                            assert!(
+                                p.y >= 0 && p.y < surface.h as i32,
+                                "y {} out of [0,{})",
+                                p.y,
+                                surface.h
+                            );
+                        }
+                    },
+                );
+            }
+            // It did parse *something* over 300k tuples — the test isn't a no-op.
+            assert!(emitted > 0, "parser emitted no events at all");
+        }
     }
 }

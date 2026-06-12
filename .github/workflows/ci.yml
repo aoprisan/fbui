@@ -44,6 +44,19 @@ jobs:
           cargo clippy -p fbui-render --all-targets --features platform
           # The umbrella + on-device runner and examples (counter/form/big_list).
           cargo clippy -p fbui --all-targets --features platform
+      # Docs must build clean (warnings = errors): broken intra-doc links fail the
+      # build. The umbrella's `run` lives behind `platform`, so document it with
+      # the feature on.
+      - name: rustdoc (warnings as errors)
+        env:
+          RUSTDOCFLAGS: "-D warnings"
+        run: |
+          cargo doc --no-deps -p fbui-platform -p fbui-render -p fbui-widgets -p fbui-testkit
+          cargo doc --no-deps -p fbui --features platform
+      # Keep the benchmarks compiling (they're a regression gate; running them for
+      # numbers needs stable hardware, but they must not bit-rot).
+      - name: benches compile
+        run: cargo bench -p fbui-render --no-run
 
   # MSRV gate: the crate claims rust-version 1.76; prove it builds there.
   msrv:

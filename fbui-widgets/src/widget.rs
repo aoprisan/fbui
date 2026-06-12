@@ -16,6 +16,49 @@ use crate::ctx::{EventCtx, PaintCtx};
 use crate::style::Style;
 use crate::theme::Theme;
 
+/// What a widget's [`animate`](Widget::animate) step changed this frame, and
+/// whether it wants to keep being ticked.
+///
+/// Returned each frame so the [`Ui`](crate::Ui) knows what to mark dirty and
+/// whether the animation clock must keep running (kinetic scroll coasting, say).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Anim {
+    /// The widget's appearance changed; repaint its bounds.
+    pub repaint: bool,
+    /// The widget's geometry changed (e.g. a scroll offset that re-places
+    /// children); a relayout is needed before repaint.
+    pub relayout: bool,
+    /// The animation is still running; keep ticking next frame.
+    pub running: bool,
+}
+
+impl Anim {
+    /// Nothing animated this frame.
+    pub const IDLE: Anim = Anim {
+        repaint: false,
+        relayout: false,
+        running: false,
+    };
+
+    /// A frame that repainted and wants to continue.
+    pub fn repaint() -> Anim {
+        Anim {
+            repaint: true,
+            relayout: false,
+            running: true,
+        }
+    }
+
+    /// A frame that changed geometry and wants to continue.
+    pub fn relayout() -> Anim {
+        Anim {
+            repaint: true,
+            relayout: true,
+            running: true,
+        }
+    }
+}
+
 /// Available space for a measure, re-exported from taffy.
 pub use taffy::AvailableSpace;
 /// Known dimensions for a measure (`Some` = constrained), re-exported from taffy.
@@ -51,6 +94,14 @@ pub trait Widget<Msg>: Any {
 
     /// Handle one event. Default: ignore.
     fn event(&mut self, _ctx: &mut EventCtx<Msg>) {}
+
+    /// Advance any time-based animation by `dt` seconds, returning what changed
+    /// and whether to keep ticking (see [`Anim`]). Called by
+    /// [`Ui::animate`](crate::Ui::animate) on the frame clock. Default: nothing
+    /// animates. Kinetic scrolling lives here.
+    fn animate(&mut self, _dt: f32) -> Anim {
+        Anim::IDLE
+    }
 
     /// Whether this widget accepts keyboard focus (tab order, key events).
     fn focusable(&self) -> bool {

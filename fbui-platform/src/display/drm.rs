@@ -113,6 +113,17 @@ impl DumbBuf {
         // (we only munmap at teardown); `&mut self` makes access exclusive.
         unsafe { std::slice::from_raw_parts_mut(self.ptr, self.len) }
     }
+
+    /// Unmap our forgotten mapping and drop the kernel framebuffer + dumb buffer.
+    /// Called both at teardown and when a mode change replaces the buffers.
+    fn destroy(&mut self, card: &Card) {
+        // SAFETY: unmap our forgotten mapping; the handles are ours to destroy.
+        unsafe {
+            libc::munmap(self.ptr as *mut libc::c_void, self.len);
+        }
+        let _ = card.destroy_framebuffer(self.fb);
+        let _ = card.destroy_dumb_buffer(self.db);
+    }
 }
 
 /// The DRM dumb-buffer display.
@@ -308,24 +319,78 @@ impl Display for DrmDisplay {
         self.back = 1;
         Ok(())
     }
+
+    fn reconfigure(&mut self) -> Result<Option<DisplayInfo>> {
+        // Need master to re-allocate buffers and modeset; skip while suspended.
+        if !self.master {
+            return Ok(None);
+        }
+        // Read the connector's *cached* state (force = false): the kernel updates
+        // it on a hotplug IRQ, so this is cheap and doesn't trigger a reprobe.
+        let con = self
+            .card
+            .get_connector(self.connector, false)
+            .map_err(|e| Error::io("get_connector", e))?;
+
+        // If the connector went away, keep the current mode (nothing valid to
+        // switch to); a real disconnect is handled by the app exiting.
+        if con.state() != connector::State::Connected {
+            return Ok(None);
+        }
+
+        let new_mode = con
+            .modes()
+            .iter()
+            .find(|m| m.mode_type().contains(ModeTypeFlags::PREFERRED))
+            .or_else(|| con.modes().first())
+            .copied();
+        let Some(new_mode) = new_mode else {
+            return Ok(None);
+        };
+        if !mode_changed(&new_mode, &self.mode) {
+            return Ok(None);
+        }
+
+        // The mode changed: allocate fresh buffers at the new size, swap them in,
+        // destroy the old ones, then modeset to the new mode.
+        let (w, h) = new_mode.size();
+        let size = Size::new(w as u32, h as u32);
+        let fourcc = self.info.format.drm_fourcc_kind();
+        let new_buffers = [
+            DumbBuf::create(&self.card, size, fourcc)?,
+            DumbBuf::create(&self.card, size, fourcc)?,
+        ];
+        let mut old = std::mem::replace(&mut self.buffers, new_buffers);
+        for b in old.iter_mut() {
+            b.destroy(&self.card);
+        }
+
+        self.mode = new_mode;
+        self.info.size = size;
+        self.info.refresh_mhz = new_mode.vrefresh().saturating_mul(1000);
+        self.back = 1;
+        self.flip_pending = false;
+        self.modeset()?;
+        Ok(Some(self.info))
+    }
 }
 
 impl Drop for DrmDisplay {
     fn drop(&mut self) {
-        // Buffers own kernel objects; tear them down explicitly. We move them out
-        // of the array via `std::mem::replace` with throwaway-but-valid stand-ins
-        // is awkward, so destroy by reading the raw fields. Simpler: take them.
+        // Buffers own kernel objects; tear them down explicitly (no Drop on
+        // `DumbBuf` since teardown needs the card).
         let card = &self.card;
-        // SAFETY-free: just consume each buffer's resources.
         for b in self.buffers.iter_mut() {
-            // SAFETY: unmap our forgotten mapping; drop the kernel handles.
-            unsafe {
-                libc::munmap(b.ptr as *mut libc::c_void, b.len);
-            }
-            let _ = card.destroy_framebuffer(b.fb);
-            let _ = card.destroy_dumb_buffer(b.db);
+            b.destroy(card);
         }
     }
+}
+
+/// Whether two modes are the same output configuration for our purposes
+/// (resolution + refresh). A bare size/refresh compare is enough to decide
+/// whether the scanout must be rebuilt.
+fn mode_changed(a: &Mode, b: &Mode) -> bool {
+    a.size() != b.size() || a.vrefresh() != b.vrefresh()
 }
 
 /// Pick the CRTC for a connector: prefer the one its current encoder drives,

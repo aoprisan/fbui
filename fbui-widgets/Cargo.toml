@@ -1,6 +1,6 @@
 [package]
 name = "fbui-widgets"
-version = "0.0.0"
+version.workspace = true
 description = "fbui widget toolkit: a retained widget tree with an Elm-ish update(msg) -> state -> damage -> paint loop, taffy flexbox/grid layout, and a software-rendered widget set (Label, Button, Checkbox, Slider, TextInput, containers, ScrollView, List, Image). Headless by design; draws through fbui-render's Painter."
 edition.workspace = true
 # Tracks fbui-render's heavier-dep MSRV floor (cosmic-text 1.89).
