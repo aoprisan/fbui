@@ -80,6 +80,50 @@ to TCG emulation — correct but slow; fine for the smoke test.)
 
 ---
 
+## 2b. One-shot visual demo from macOS (`scripts/qemu/launch-demo.sh`)
+
+If you just want to **see the echo demo** without provisioning a guest by hand,
+the host-side launcher does it in two steps. It avoids installing a Rust
+toolchain in the guest by building the example as an ordinary arm64 **glibc**
+binary in a Docker container and sharing it into a Debian guest over 9p.
+
+```sh
+# 1. Build the demo binary on the host (native arm64 build in Docker — no cross,
+#    no static linking). glibc is pinned to bookworm to match the guest below.
+docker run --rm --platform linux/arm64 \
+  -v "$PWD":/src -w /src \
+  -e CARGO_TARGET_DIR=/src/target/linux-arm64 \
+  rust:slim-bookworm \
+  cargo build --release -p fbui-platform --example echo
+
+# 2. Boot the guest (downloads a Debian bookworm arm64 cloud image on first run,
+#    builds a cloud-init seed, opens a graphical window). Add --fresh to reset.
+scripts/qemu/launch-demo.sh
+```
+
+The launcher boots Debian arm64 under HVF with `virtio-gpu-pci` (the real VT the
+demo needs), `usb-tablet` (absolute pointer), and the working tree mounted
+read-only at `/mnt/fbui` over virtio-9p. cloud-init
+(`scripts/qemu/cloud-init/{user-data,meta-data}`) autologins **root on tty1** and
+stages `/root/run-demo.sh`. The serial console — including cloud-init progress and
+the `=== FBUI-DEMO PROVISIONED ===` marker — is logged to
+`~/.cache/fbui-qemu/serial.log` (`tail -f` it).
+
+When the graphical window shows the root shell, run:
+
+```sh
+./run-demo.sh        # = /mnt/fbui/target/linux-arm64/release/examples/echo
+```
+
+Move the mouse (the arrow cursor follows), type (colored cells appear), press
+**Esc** to quit — the VT guard restores text mode on exit.
+
+> Disk: the guest stays ~sub-1 GB (no toolchain inside it); the `rust` image and
+> cloud image are cached on the host. The binary's glibc (2.36, bookworm) must be
+> ≤ the guest's; both use bookworm, so they match.
+
+---
+
 ## 3. Run the tests in the guest
 
 Clone the repo and check out the branch, then use the helper script
