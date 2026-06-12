@@ -65,6 +65,11 @@ cargo run -p fbui-platform --example echo   # from a real text VT, as root
 Default features are the pure-Rust set (`drm-backend fbdev evdev noseat
 event-loop`); they build and test anywhere. See below for the C-library backends.
 
+To exercise the real DRM/input/VT paths on a non-Linux host (e.g. **QEMU on
+macOS**) or any Linux VM, see [`docs/qemu.md`](docs/qemu.md) and the
+`scripts/qemu-test.sh` helper (`smoke` runs the device integration tests against
+VKMS; `demo` runs the echo example).
+
 ## Feature flags
 
 | Feature | Default | Needs | Provides |
