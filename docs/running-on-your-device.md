@@ -119,7 +119,11 @@ fn main() -> fbui_platform::Result<()> {
 
 - `card` / `fb` / `tty` — device nodes (defaults: `/dev/dri/card0`, `/dev/fb0`,
   `/dev/tty`).
-- `prefer_fbdev` — skip DRM and go straight to fbdev.
+- `backend` — which display backend to bring up: `Backend::Auto` (default: DRM
+  dumb buffers, then fbdev), `DrmDumb`, or `Fbdev`. Also selectable at runtime
+  with the **`FBUI_BACKEND`** env var (`auto` / `drm` / `fbdev`), e.g.
+  `FBUI_BACKEND=fbdev ./app` to force the software framebuffer. (`gpu` is
+  reserved for the Phase 6 GPU path; see [`PHASE6.md`](../PHASE6.md).)
 - `prefer_libinput` — use libinput instead of raw evdev (needs the `libinput`
   feature; falls back to evdev if it can't initialize).
 - `vt_guard` — take over the console. **Disable** it for serial/pty/SSH bring-up,

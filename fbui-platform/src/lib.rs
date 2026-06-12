@@ -29,6 +29,7 @@
 //! [`begin_frame`]: Display::begin_frame
 //! [`present`]: Display::present
 
+pub mod backend;
 pub mod cursor;
 pub mod display;
 pub mod error;
@@ -44,6 +45,7 @@ pub mod event_loop;
 
 use std::path::PathBuf;
 
+pub use crate::backend::{Attempt, Backend};
 pub use crate::display::{BackendKind, Display, DisplayInfo, Frame};
 pub use crate::error::{Error, Result};
 pub use crate::format::PixelFormat;
@@ -68,9 +70,10 @@ pub struct PlatformConfig {
     pub fb: PathBuf,
     /// Controlling terminal to take graphics mode on.
     pub tty: PathBuf,
-    /// Skip DRM entirely and go straight to fbdev (for boards where DRM is
-    /// flaky or absent).
-    pub prefer_fbdev: bool,
+    /// Which display backend to bring up. [`Backend::Auto`] (the default) tries
+    /// DRM/KMS dumb buffers then the fbdev fallback; an explicit choice (or the
+    /// `FBUI_BACKEND` env var) overrides it. The software path is the default.
+    pub backend: Backend,
     /// Prefer the libinput backend over raw evdev (requires the `libinput`
     /// feature; falls back to evdev if it can't initialize).
     pub prefer_libinput: bool,
@@ -85,7 +88,9 @@ impl Default for PlatformConfig {
             card: PathBuf::from("/dev/dri/card0"),
             fb: PathBuf::from("/dev/fb0"),
             tty: PathBuf::from("/dev/tty"),
-            prefer_fbdev: false,
+            // Honor FBUI_BACKEND so the backend can be chosen at runtime without
+            // recompiling; unset ⇒ Auto.
+            backend: Backend::from_env(),
             prefer_libinput: false,
             vt_guard: true,
         }
@@ -185,32 +190,78 @@ fn open_seat() -> Result<Box<dyn Seat>> {
     Err(Error::FeatureDisabled("noseat"))
 }
 
-/// Open the display: DRM dumb buffers first, fbdev as the fallback.
+/// Open the display by walking the [`Backend::order`] for the configured
+/// preference, returning the first attempt that succeeds. Only [`Backend::Auto`]
+/// falls back between attempts; an explicit choice surfaces its error.
 #[allow(unused_variables)]
 fn open_display(seat: &mut dyn Seat, config: &PlatformConfig) -> Result<Box<dyn Display>> {
-    #[cfg(feature = "drm-backend")]
-    if !config.prefer_fbdev {
-        match seat.open_device(&config.card) {
-            Ok(fd) => {
-                let card = crate::display::drm::Card::from_owned_fd(fd);
-                match crate::display::drm::DrmDisplay::new(card) {
-                    Ok(d) => return Ok(Box::new(d)),
-                    Err(e) => eprintln!("[platform] DRM init failed ({e}); trying fbdev"),
-                }
+    let order = config.backend.order();
+    let mut last_err: Option<Error> = None;
+    for &attempt in order {
+        match try_open(seat, config, attempt) {
+            Ok(Some(display)) => return Ok(display),
+            // Feature not compiled in: skip to the next attempt.
+            Ok(None) => {
+                eprintln!("[platform] {attempt:?} backend not compiled in; skipping");
             }
-            Err(e) => eprintln!(
-                "[platform] open {} failed ({e}); trying fbdev",
-                config.card.display()
-            ),
+            Err(e) => {
+                eprintln!("[platform] {attempt:?} backend unavailable ({e})");
+                last_err = Some(e);
+            }
         }
     }
-    #[cfg(feature = "fbdev")]
-    {
-        let d = crate::display::fbdev::FbdevDisplay::open(&config.fb.to_string_lossy())?;
-        return Ok(Box::new(d));
+    Err(last_err.unwrap_or_else(|| {
+        Error::unsupported(format!(
+            "no usable display backend for {:?} (compiled-in: {})",
+            config.backend,
+            compiled_backends()
+        ))
+    }))
+}
+
+/// Try one concrete backend. `Ok(None)` means "this backend isn't compiled in"
+/// (skip it); `Err` means it's present but failed to come up.
+#[allow(unused_variables)]
+fn try_open(
+    seat: &mut dyn Seat,
+    config: &PlatformConfig,
+    attempt: Attempt,
+) -> Result<Option<Box<dyn Display>>> {
+    match attempt {
+        #[cfg(feature = "drm-backend")]
+        Attempt::DrmDumb => {
+            let fd = seat.open_device(&config.card)?;
+            let card = crate::display::drm::Card::from_owned_fd(fd);
+            let display = crate::display::drm::DrmDisplay::new(card)?;
+            Ok(Some(Box::new(display)))
+        }
+        #[cfg(not(feature = "drm-backend"))]
+        Attempt::DrmDumb => Ok(None),
+        #[cfg(feature = "fbdev")]
+        Attempt::Fbdev => {
+            let display = crate::display::fbdev::FbdevDisplay::open(&config.fb.to_string_lossy())?;
+            Ok(Some(Box::new(display)))
+        }
+        #[cfg(not(feature = "fbdev"))]
+        Attempt::Fbdev => Ok(None),
+        // The DRM+GBM+EGL path (Phase 6). The trait seam is here; the backend
+        // itself needs the `gpu` feature and a GPU/EGL host (see PHASE6.md).
+        Attempt::Gpu => Err(Error::unsupported(
+            "GPU backend (drm-gbm-egl) is not built in; it requires the `gpu` \
+             feature and a GPU/EGL host — see PHASE6.md",
+        )),
     }
-    #[allow(unreachable_code)]
-    Err(Error::unsupported("no display backend compiled in"))
+}
+
+/// Human-readable list of which display backends this build actually contains,
+/// for the "no usable backend" diagnostic.
+fn compiled_backends() -> &'static str {
+    match (cfg!(feature = "drm-backend"), cfg!(feature = "fbdev")) {
+        (true, true) => "drm-dumb, fbdev",
+        (true, false) => "drm-dumb",
+        (false, true) => "fbdev",
+        (false, false) => "none",
+    }
 }
 
 /// Open the input source(s): libinput if requested+available, else evdev.

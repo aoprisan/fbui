@@ -1,6 +1,18 @@
 # fbui — Plan: a framebuffer UI framework for Linux (no X11/Wayland)
 
-Status: **Phase 5 implemented** (all crates) — performance & animation: a pure,
+Status: **Phase 6 in progress** — the optional GPU path. The software-side seam
+is landed and tested: **runtime display-backend selection** (`Backend` =
+`Auto`/`DrmDumb`/`Fbdev`/`Gpu`, chosen from `PlatformConfig` or the
+`FBUI_BACKEND` env var; `Auto` keeps the software path the default and only
+falls back, an explicit choice fails loudly). Walking the GPU backend against
+the Phase 1 trait surfaced the one CPU-leaning assumption (`Display::begin_frame`
+hands out a CPU buffer) and the minimal additive `FrameTarget` extension to fix
+it. The `drm-gbm-egl` backend + GPU painter (femtovg/thin-GL, with a `fill_glyph`
+text seam) are designed in [`PHASE6.md`](PHASE6.md) and gated on a GPU/EGL host —
+they can't be built in CI (the `gbm` crate probes for `libgbm`), the same way
+DRM/VKMS, libinput, and libseat were gated in Phases 1–4; the painter trait
+lands with the GPU impl that validates it. **Phase 5** (all crates) — performance
+& animation: a pure,
 damage-aware **animation API** (`Easing`/`Tween`/`Lerp` on the `Widget::animate`
 frame-clock hook, with an animated `Switch` widget), a **scroll-blit** fast path
 (`Surface::scroll_region` + region-aware `List` painting — a long-list scroll

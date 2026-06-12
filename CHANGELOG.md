@@ -15,9 +15,34 @@ built against. The MSRV is part of the contract: `fbui-platform` builds on Rust
 **1.76**; the render/widget stack tracks its heavier dependencies (cosmic-text,
 image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
-## [Unreleased] — Phase 5: performance & animation
+## [Unreleased]
 
-### Added
+### Phase 6: optional GPU path (in progress)
+
+#### Added
+
+- **Runtime display-backend selection**: a `Backend` preference
+  (`Auto`/`DrmDumb`/`Fbdev`/`Gpu`) on `PlatformConfig`, also read from the
+  `FBUI_BACKEND` environment variable, with a unit-tested `Backend::order`
+  fallback policy. `Auto` keeps the software path the default and only it falls
+  back; an explicit choice fails loudly. `open_display` walks the order and
+  reports which backends are compiled in.
+
+#### Changed
+
+- `PlatformConfig.prefer_fbdev: bool` is replaced by `backend: Backend` (set
+  `Backend::Fbdev` for the old `prefer_fbdev = true`).
+
+#### Designed / gated
+
+- The `drm-gbm-egl` GPU backend and GPU painter are specified in
+  [`PHASE6.md`](PHASE6.md), including the one additive `Display`-trait extension
+  (`FrameTarget`) the GPU path needs. The implementation links `libgbm`/`libEGL`
+  and needs a GPU/EGL host, so it's gated like the DRM/libinput/libseat backends.
+
+### Phase 5: performance & animation
+
+#### Added
 
 - **Animation API** (`fbui-widgets::anim`): `Easing` curves, a `Lerp` trait
   (`f32`, `Color`), and a `Tween<T>` advanced by the frame `dt` — pure and
@@ -36,7 +61,7 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 - A `scroll` benchmark (`fbui-widgets`) and CI gates for it and the `profile`
   feature.
 
-### Known gaps
+#### Known gaps
 
 - The DRM hardware **cursor-plane** overlay (cursor move without a widget
   repaint) is deferred — it needs a real DRM device.
