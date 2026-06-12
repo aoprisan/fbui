@@ -1,11 +1,18 @@
 # fbui — Plan: a framebuffer UI framework for Linux (no X11/Wayland)
 
-Status: **Phase 1 implemented** (`fbui-platform/`) — the platform-layer API and
-its pure-Rust backends (drm-dumb, fbdev, evdev, noseat, calloop) build and test
-green; libinput/libseat/xkbcommon are feature-gated and pending a host with
-those libraries, and the DRM/VT criteria await hardware/VKMS CI. See
+Status: **Phase 2 implemented** (`fbui-render/`) — the headless CPU rendering
+layer: a tiny-skia painter (rects, paths, gradients, clipping, opacity groups,
+image blit), cosmic-text/swash text with a bounded glyph atlas, damage tracking
+with buffer-age, fractional HiDPI, and a damaged-span copy-out. 50 headless tests
+green (golden snapshots for every painter primitive via the new `fbui-testkit`
+harness; CJK + RTL text covered); the Pi-class perf gate awaits ARM hardware. The
+one platform coupling is feature-gated. See
+[`fbui-render/PHASE2.md`](fbui-render/PHASE2.md). **Phase 1** (`fbui-platform/`) —
+the platform-layer API and its pure-Rust backends — builds and tests green;
+libinput/libseat/xkbcommon are feature-gated pending a host with those libraries,
+and the DRM/VT criteria await hardware/VKMS CI. See
 [`fbui-platform/PHASE1.md`](fbui-platform/PHASE1.md). **Phase 0 spike**
-(`spikes/`) remains as the kernel-facing reference. Phases 2+ are still plan /
+(`spikes/`) remains as the kernel-facing reference. Phases 3+ are still plan /
 research only.
 
 The goal is a UI framework that draws directly to the display on Linux consoles

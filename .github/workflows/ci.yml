@@ -25,6 +25,14 @@ jobs:
         run: cargo fmt --all -- --check
       - name: clippy
         run: cargo clippy --workspace --all-targets
+      # The render layer's text tests (and CJK/RTL ink checks) need real fonts;
+      # runners ship a sparse set, so install a covering set up front. The ink
+      # checks self-skip if a script still isn't covered, but with these they run.
+      - name: system fonts
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            fontconfig fonts-dejavu-core fonts-noto-core fonts-noto-cjk
       - name: unit tests
         run: cargo test --workspace
       - name: feature matrix builds
@@ -32,6 +40,8 @@ jobs:
           cargo check -p fbui-platform --no-default-features --features "fbdev noseat"
           cargo check -p fbui-platform --no-default-features --features "drm-backend noseat"
           cargo check -p fbui-platform --no-default-features --features "fbdev evdev event-loop noseat"
+          # The render layer headless (default) and with the platform glue.
+          cargo clippy -p fbui-render --all-targets --features platform
 
   # MSRV gate: the crate claims rust-version 1.76; prove it builds there.
   msrv:
