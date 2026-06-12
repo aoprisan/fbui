@@ -64,6 +64,11 @@ impl Rect {
         self.w <= 0.0 || self.h <= 0.0
     }
 
+    /// Whether `p` lies in `[x, x+w) × [y, y+h)` (half-open).
+    pub fn contains_point(&self, p: Point) -> bool {
+        p.x >= self.x && p.x < self.right() && p.y >= self.y && p.y < self.bottom()
+    }
+
     /// Shrink (positive) or grow (negative) by `d` on every side.
     pub fn inset(&self, d: f32) -> Rect {
         Rect::new(

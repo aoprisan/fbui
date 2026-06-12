@@ -42,6 +42,8 @@ jobs:
           cargo check -p fbui-platform --no-default-features --features "fbdev evdev event-loop noseat"
           # The render layer headless (default) and with the platform glue.
           cargo clippy -p fbui-render --all-targets --features platform
+          # The umbrella + on-device runner and examples (counter/form/big_list).
+          cargo clippy -p fbui --all-targets --features platform
 
   # MSRV gate: the crate claims rust-version 1.76; prove it builds there.
   msrv:

@@ -1,19 +1,27 @@
 # fbui — Plan: a framebuffer UI framework for Linux (no X11/Wayland)
 
-Status: **Phase 2 implemented** (`fbui-render/`) — the headless CPU rendering
-layer: a tiny-skia painter (rects, paths, gradients, clipping, opacity groups,
-image blit), cosmic-text/swash text with a bounded glyph atlas, damage tracking
-with buffer-age, fractional HiDPI, and a damaged-span copy-out. 50 headless tests
-green (golden snapshots for every painter primitive via the new `fbui-testkit`
-harness; CJK + RTL text covered); the Pi-class perf gate awaits ARM hardware. The
-one platform coupling is feature-gated. See
+Status: **Phase 3 implemented** (`fbui-widgets/` + `fbui/`) — the widget toolkit:
+a retained tree with an Elm-ish `update(msg) → state → damage → paint` loop,
+`taffy` flexbox layout, focus/keyboard navigation, theming, and the v1 widget set
+(Label, Button, Checkbox, Slider, TextInput, Row/Column containers, ScrollView,
+windowed List, Image). Headless and damage-bounded; the `fbui` umbrella adds a
+feature-gated runner that drives it on a real display. Widget snapshot + behavior
+tests green; the design was fixed first in
+[`fbui-widgets/DESIGN.md`](fbui-widgets/DESIGN.md). Stack, kinetic scroll, touch
+gestures, and the Pi-class/on-device gates are deferred (Phase 4 / hardware). See
+[`fbui-widgets/PHASE3.md`](fbui-widgets/PHASE3.md). **Phase 2** (`fbui-render/`) —
+the headless CPU rendering layer: a tiny-skia painter (rects, paths, gradients,
+clipping, opacity groups, image blit), cosmic-text/swash text with a bounded
+glyph atlas, damage tracking with buffer-age, fractional HiDPI, and a
+damaged-span copy-out. Golden snapshots for every painter primitive via the
+`fbui-testkit` harness; CJK + RTL text covered. See
 [`fbui-render/PHASE2.md`](fbui-render/PHASE2.md). **Phase 1** (`fbui-platform/`) —
 the platform-layer API and its pure-Rust backends — builds and tests green;
 libinput/libseat/xkbcommon are feature-gated pending a host with those libraries,
 and the DRM/VT criteria await hardware/VKMS CI. See
 [`fbui-platform/PHASE1.md`](fbui-platform/PHASE1.md). **Phase 0 spike**
-(`spikes/`) remains as the kernel-facing reference. Phases 3+ are still plan /
-research only.
+(`spikes/`) remains as the kernel-facing reference. Phases 4+ (hardening,
+animation, GPU path) are still plan / research only.
 
 The goal is a UI framework that draws directly to the display on Linux consoles
 (TTY), embedded devices, and kiosks — no X server, no Wayland compositor.

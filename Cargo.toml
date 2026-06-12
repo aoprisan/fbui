@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["fbui-platform", "fbui-render", "fbui-testkit"]
+members = ["fbui-platform", "fbui-render", "fbui-testkit", "fbui-widgets", "fbui"]
 # The Phase 0 spike keeps its own lockfile and throwaway deps; it is not part of
 # the framework workspace.
 exclude = ["spikes"]

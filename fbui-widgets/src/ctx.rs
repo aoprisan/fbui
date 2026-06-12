@@ -1,0 +1,219 @@
+//! The contexts handed to widgets during event handling and painting.
+//!
+//! Widgets never touch the [`Ui`](crate::Ui) directly — that would alias the very
+//! tree the walk is borrowing. Instead a widget receives a context that exposes
+//! *its own* bounds, the theme/fonts, and a set of **request** sinks: emit a
+//! message, mark damage, ask for relayout/focus/pointer-capture. The Ui applies
+//! those requests after the widget returns. This keeps the borrow graph simple
+//! and the data-flow one-directional (see `DESIGN.md` §3).
+
+use fbui_render::geom::{Point, Rect};
+use fbui_render::{FontContext, Painter};
+
+use crate::event::Event;
+use crate::theme::Theme;
+use crate::tree::WidgetId;
+
+/// A focus-movement request raised by a widget during event handling.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum FocusOp {
+    /// Give focus to a specific widget (usually the one handling the event).
+    Request(WidgetId),
+    /// Move to the next / previous focusable widget in tab order.
+    Next,
+    Prev,
+    /// Drop focus entirely.
+    Clear,
+}
+
+/// A pointer-capture request.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum CaptureOp {
+    Set(WidgetId),
+    Clear,
+}
+
+/// The mutable side-effects a widget can request in one event pass. Owned by the
+/// [`Ui`](crate::Ui) and lent to each [`EventCtx`] as a single `&mut`.
+pub(crate) struct Outputs<Msg> {
+    pub messages: Vec<Msg>,
+    pub damage: Vec<Rect>,
+    pub relayout: bool,
+    pub focus: Option<FocusOp>,
+    pub capture: Option<CaptureOp>,
+    pub handled: bool,
+}
+
+impl<Msg> Default for Outputs<Msg> {
+    fn default() -> Self {
+        Outputs {
+            messages: Vec::new(),
+            damage: Vec::new(),
+            relayout: false,
+            focus: None,
+            capture: None,
+            handled: false,
+        }
+    }
+}
+
+impl<Msg> Outputs<Msg> {
+    pub fn reset_for_event(&mut self) {
+        self.focus = None;
+        self.capture = None;
+        self.handled = false;
+    }
+}
+
+/// Context for [`Widget::event`](crate::Widget::event).
+pub struct EventCtx<'a, Msg> {
+    pub(crate) event: &'a Event,
+    pub(crate) bounds: Rect,
+    pub(crate) theme: &'a Theme,
+    pub(crate) fonts: &'a mut FontContext,
+    pub(crate) hovered: bool,
+    pub(crate) focused: bool,
+    pub(crate) self_id: WidgetId,
+    pub(crate) out: &'a mut Outputs<Msg>,
+}
+
+impl<'a, Msg> EventCtx<'a, Msg> {
+    /// The event being handled.
+    pub fn event(&self) -> &Event {
+        self.event
+    }
+
+    /// This widget's absolute logical bounds.
+    pub fn bounds(&self) -> Rect {
+        self.bounds
+    }
+
+    pub fn theme(&self) -> &Theme {
+        self.theme
+    }
+
+    /// Font context, for hit-testing against shaped text (e.g. caret placement).
+    pub fn fonts(&mut self) -> &mut FontContext {
+        self.fonts
+    }
+
+    /// Whether the pointer is currently over this widget.
+    pub fn is_hovered(&self) -> bool {
+        self.hovered
+    }
+
+    /// Whether this widget holds keyboard focus.
+    pub fn is_focused(&self) -> bool {
+        self.focused
+    }
+
+    /// Emit an application message.
+    pub fn emit(&mut self, msg: Msg) {
+        self.out.messages.push(msg);
+    }
+
+    /// Mark this widget's whole bounds as needing repaint.
+    pub fn request_paint(&mut self) {
+        let b = self.bounds;
+        self.out.damage.push(b);
+    }
+
+    /// Mark a specific logical rectangle as needing repaint.
+    pub fn request_paint_rect(&mut self, rect: Rect) {
+        self.out.damage.push(rect);
+    }
+
+    /// Ask for a layout recompute (geometry may have changed).
+    pub fn request_layout(&mut self) {
+        self.out.relayout = true;
+    }
+
+    /// Take keyboard focus.
+    pub fn request_focus(&mut self) {
+        self.out.focus = Some(FocusOp::Request(self.self_id));
+    }
+
+    /// Move focus to the next focusable widget.
+    pub fn focus_next(&mut self) {
+        self.out.focus = Some(FocusOp::Next);
+    }
+
+    /// Move focus to the previous focusable widget.
+    pub fn focus_prev(&mut self) {
+        self.out.focus = Some(FocusOp::Prev);
+    }
+
+    /// Drop keyboard focus.
+    pub fn clear_focus(&mut self) {
+        self.out.focus = Some(FocusOp::Clear);
+    }
+
+    /// Capture the pointer: keep receiving motion/release even outside bounds
+    /// (drags, slider thumbs).
+    pub fn capture_pointer(&mut self) {
+        self.out.capture = Some(CaptureOp::Set(self.self_id));
+    }
+
+    /// Release a previously captured pointer.
+    pub fn release_pointer(&mut self) {
+        self.out.capture = Some(CaptureOp::Clear);
+    }
+
+    /// Stop this event propagating to widgets behind this one.
+    pub fn set_handled(&mut self) {
+        self.out.handled = true;
+    }
+
+    /// The pointer position in this widget's local space (origin at its top-left),
+    /// if the event carries one.
+    pub fn local_pointer(&self) -> Option<Point> {
+        self.event
+            .pointer_pos()
+            .map(|p| Point::new(p.x - self.bounds.x, p.y - self.bounds.y))
+    }
+}
+
+/// Context for [`Widget::paint`](crate::Widget::paint).
+pub struct PaintCtx<'a, 'p> {
+    pub(crate) painter: &'a mut Painter<'p>,
+    pub(crate) fonts: &'a mut FontContext,
+    pub(crate) theme: &'a Theme,
+    pub(crate) bounds: Rect,
+    pub(crate) hovered: bool,
+    pub(crate) focused: bool,
+}
+
+impl<'a, 'p> PaintCtx<'a, 'p> {
+    /// The painter to draw with (logical coordinates).
+    pub fn painter(&mut self) -> &mut Painter<'p> {
+        self.painter
+    }
+
+    /// The font context, for measuring/drawing text.
+    pub fn fonts(&mut self) -> &mut FontContext {
+        self.fonts
+    }
+
+    /// Both the painter and fonts at once — convenient when drawing text, which
+    /// needs the two together.
+    pub fn painter_and_fonts(&mut self) -> (&mut Painter<'p>, &mut FontContext) {
+        (self.painter, self.fonts)
+    }
+
+    pub fn theme(&self) -> &Theme {
+        self.theme
+    }
+
+    /// This widget's absolute logical bounds.
+    pub fn bounds(&self) -> Rect {
+        self.bounds
+    }
+
+    pub fn is_hovered(&self) -> bool {
+        self.hovered
+    }
+
+    pub fn is_focused(&self) -> bool {
+        self.focused
+    }
+}
