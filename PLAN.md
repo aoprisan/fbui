@@ -172,20 +172,175 @@ the fds (idle apps burn ~0% CPU).
 
 ---
 
-## 4. Milestones
+## 4. Multiphase plan
 
-| # | Deliverable | Proves |
-|---|---|---|
-| **M0 — spike** | Binary that opens DRM, page-flips two dumb buffers showing animated color bars; clean VT restore on exit/panic; same demo on fbdev. | The risky kernel-facing plumbing, before any framework code. |
-| **M1 — platform** | `fbui-platform` crate: `Display` trait (drm-dumb + fbdev), libinput→normalized events, xkbcommon keymaps, libseat + noseat, VT switching, calloop loop. Demo: cursor + keystroke echo. | Stable foundation API. |
-| **M2 — renderer** | `fbui-render`: painter over tiny-skia, cosmic-text + glyph atlas, damage tracking, snapshot test harness. Demo: static "settings page" mock at <5 ms repaint on a Pi-class CPU. | Performance viability. |
-| **M3 — widgets** | `fbui-widgets` + `fbui` umbrella: taffy layout, v1 widget set, focus/theme. Demo apps: counter, form, scrolling list. | The actual framework exists. |
-| **M4 — hardening** | Touch gestures, RGB565, hotplug/mode-change, VKMS CI, docs + `cargo doc`, 0.1 release. | Usable by others. |
-| **M5+ (backlog)** | GBM/EGL GPU backend, IME, accessibility (AccessKit), animations API, multi-display, declarative macro layer. | — |
+Phases are strictly ordered: each ends with a runnable artifact and explicit
+exit criteria, and the next phase's API design depends on what the previous
+one taught us. Durations assume one experienced developer working part-time;
+treat them as relative sizing, not commitments.
 
-M0 is deliberately tiny and should be the first code written: if dumb-buffer
-page-flipping or VT handling surprises us on target hardware, it changes M1's
-API and we want to know before the trait is designed.
+### Phase 0 — Kernel-facing spike (~1–2 weeks)
+
+*De-risk the plumbing before designing any API.* No framework code; a single
+throwaway binary in `spikes/`.
+
+**Tasks**
+1. Open a DRM card with `drm-rs`; enumerate connectors, pick the connected
+   one and its preferred mode; resolve encoder → CRTC.
+2. Allocate two XRGB8888 dumb buffers, modeset, then page-flip animated
+   color bars with `PageFlipFlags::EVENT`, blocking on the DRM fd (vsync).
+3. Shadow-buffer discipline from the start: render to normal RAM, row-copy
+   into the write-combined dumb-buffer mapping. Measure both direct and
+   shadow paths to quantify the difference for the record.
+4. VT guard: `KD_GRAPHICS` + keyboard mute (`K_OFF`), restored
+   unconditionally via RAII drop, panic hook, and SIGINT/SIGTERM handler.
+5. Same color-bar demo on legacy fbdev (`/dev/fb0` mmap, kernel-reported
+   `line_length` stride) to validate the fallback's quirks.
+6. Run the matrix: QEMU (`-vga std`), VKMS, Raspberry Pi or similar ARM
+   board, a generic Intel laptop. Record per-target surprises in
+   `spikes/NOTES.md`.
+
+**Exit criteria:** tear-free 60 fps bars on at least two real targets; a
+`kill -9`-adjacent crash test (panic, Ctrl-C) never leaves the console dead;
+the notes document stride/format/master-lock surprises that feed Phase 1's
+trait design.
+
+### Phase 1 — Platform layer: `fbui-platform` (~3–4 weeks)
+
+*The stable foundation API. Everything above it must be ignorant of DRM vs
+fbdev.*
+
+**Tasks**
+1. `Display` trait: mode info, format, `frame()` → mapped back buffer +
+   stride, `present(damage)` with vsync semantics; backends `drm-dumb`
+   (primary) and `fbdev` (feature-gated fallback).
+2. Seat management: `libseat` for logind/seatd systems; `noseat` feature
+   (root / `video`+`input` groups) for bare embedded, mirroring Slint's
+   split.
+3. Input: libinput via `input.rs` (udev discovery, hotplug); keymaps via
+   `xkbcommon`; raw-`evdev` feature for libinput-less systems. Output is a
+   normalized `InputEvent` enum (keysym + UTF-8, pointer abs/rel, touch
+   down/move/up/cancel, scroll).
+4. Full VT lifecycle: everything from Phase 0 plus cooperative switching —
+   `VT_SETMODE`/`VT_PROCESS` with release/acquire signals: on release drop
+   DRM master and pause rendering; on acquire re-acquire master, restore the
+   CRTC, force full redraw.
+5. `calloop` event loop wiring: DRM fd, libinput fd, timers, user wakeup
+   channel. Idle = blocked on fds, ~0% CPU.
+6. Integration tests against VKMS + uinput in CI (containerized, root).
+
+**Exit criteria:** demo binary shows a software cursor and echoes keystrokes;
+VT switching away and back works repeatedly without artifacts; runs both as
+root (noseat) and as an unprivileged seat user; CI green on VKMS.
+
+### Phase 2 — Rendering layer: `fbui-render` (~3–4 weeks)
+
+*Headless by design — depends on `fbui-platform` only in examples.*
+
+**Tasks**
+1. Painter API over `tiny-skia`: rects, rounded rects, paths, strokes,
+   gradients, clipping, opacity groups, PNG/JPEG blit via `image`.
+2. Text: `cosmic-text` for shaping/bidi/fallback; `swash` rasterization into
+   a glyph atlas keyed by (font, size, subpixel offset); cache eviction
+   policy.
+3. Damage tracking: dirty-rect collection, union/merge heuristics, repaint
+   only damaged region, row-wise copy-out of damaged spans only.
+4. Scale-factor plumbing (integer + fractional) end to end.
+5. Snapshot-test harness: scenes painted to `Pixmap`, PNG comparison with
+   per-pixel tolerance; this harness is a deliverable (`fbui-testkit`).
+6. Benchmark suite (criterion): full-frame and small-damage repaints at
+   720p/1080p on x86 and ARM.
+
+**Exit criteria:** a static "settings page" mock (text-heavy, ~30 elements)
+repaints a small damage region in **<5 ms on a Pi-class CPU** and a full
+frame in <16 ms at 1080p; snapshot tests cover every painter primitive;
+CJK + RTL sample text renders correctly.
+
+### Phase 3 — Widget toolkit: `fbui-widgets` + `fbui` umbrella (~4–6 weeks)
+
+*The framework proper: retained tree, Elm-ish `update(msg) → state → damage
+→ paint`.*
+
+**Tasks**
+1. Widget tree & ownership model; message dispatch; state → damage
+   propagation rules (the design doc for this is the phase's first task and
+   gets reviewed before code).
+2. `taffy` integration: widgets as flexbox/grid nodes, text measure
+   functions, incremental relayout on damage.
+3. v1 widgets: `Label`, `Button`, `Checkbox`, `Slider`, `TextInput` (cursor,
+   selection, clipboard-less editing; **no IME**), `Image`, `Row`/`Column`/
+   `Stack`, `ScrollView` (kinetic on touch), `List` (windowed, for long
+   content).
+4. Focus model and keyboard navigation (Tab/Shift-Tab/arrows), pointer
+   capture, hover states.
+5. Theming: style struct (palette, spacing, radii, font stack), light/dark,
+   runtime switch.
+6. Example apps in `examples/`: counter, form with validation, scrolling
+   list of 10k rows.
+
+**Exit criteria:** all three examples run on real hardware from a TTY with
+keyboard, mouse, and touch; widget snapshot tests pass; the 10k-row list
+scrolls at display refresh on Pi-class hardware; public API survives a
+write-an-app-you-didn't-plan test (dogfood: a small Wi-Fi settings panel).
+
+### Phase 4 — Hardening & 0.1 release (~2–3 weeks)
+
+**Tasks**
+1. Touch gestures (tap/long-press/drag/fling) unified with pointer events.
+2. RGB565 output conversion path for small panels.
+3. Display hotplug and mode-change handling (DRM uevents) without restart.
+4. Crash-safety audit: every exit path (panic in user code, OOM, signals)
+   restores the console; fuzz the input-event parser.
+5. Docs: `cargo doc` clean, a "running on your device" guide (permissions,
+   seatd vs logind vs root, kernel config), CHANGELOG, versioning policy.
+6. CI matrix: VKMS integration, snapshot tests, benches as regression
+   gates, MSRV check; publish 0.1 to crates.io.
+
+**Exit criteria:** an external tester can take a Pi + touchscreen from blank
+TTY to running the form example using only the docs; 0.1.0 published.
+
+### Phase 5 — Performance & animation (~2–3 weeks)
+
+**Tasks**
+1. Animations API (timeline + easing) driven by the frame clock, damage-aware
+   (animating widget damages only itself).
+2. Partial-update fast paths: scroll-blit (move existing pixels, repaint only
+   the exposed strip), cursor overlay without widget repaint (DRM cursor
+   plane where available).
+3. Profiling story: `tracing` spans through input→update→layout→paint→
+   present; flamegraph docs.
+
+**Exit criteria:** animated transitions at refresh rate on Pi-class hardware
+with measured CPU budget documented; scrolling CPU usage drops measurably vs
+Phase 3 baseline.
+
+### Phase 6 — Optional GPU path (~4+ weeks, parallelizable after Phase 4)
+
+**Tasks**
+1. `drm-gbm-egl` backend behind the same `Display` trait (GBM surface, EGL
+   context, atomic commits) — validates that the Phase 1 trait didn't bake in
+   software-only assumptions.
+2. GPU painter implementation (likely via `femtovg` or a thin GL renderer)
+   behind the Phase 2 painter trait.
+
+**Exit criteria:** examples run unchanged on both backends, selected at
+runtime; software path remains the default and fully supported.
+
+### Phase 7 — Ecosystem backlog (unscheduled)
+
+IME support, accessibility (AccessKit), multi-display, declarative UI macro
+layer, Vulkan KHR-display backend, no_std/`embedded-graphics` bridge for
+MCU-class targets. Each gets its own mini-plan when prioritized; none blocks
+1.0 readiness for the kiosk/embedded niche.
+
+### Sequencing rationale
+
+Phase 0 exists because dumb-buffer page-flipping and VT handling are where
+real hardware diverges from documentation; discovering that *after* the
+`Display` trait is designed means redesigning it. Phases 1–3 each freeze the
+API the next phase consumes. Phase 6 is deliberately late: a GPU path added
+early tends to become the only well-tested path, and this framework's reason
+to exist is excellent software rendering.
 
 ---
 
