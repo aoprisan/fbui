@@ -9,10 +9,22 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+default = []
+# Emit `tracing` spans through the event → layout → paint pipeline so an app can
+# capture a flamegraph of a frame. Off by default (and zero-cost when off).
+profile = ["dep:tracing"]
+
 [dependencies]
 fbui-render = { path = "../fbui-render" }
 taffy = "0.11"
 slotmap = "1"
+tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
 
 [dev-dependencies]
 fbui-testkit = { path = "../fbui-testkit" }
+criterion = { version = "0.5", default-features = false }
+
+[[bench]]
+name = "scroll"
+harness = false

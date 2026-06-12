@@ -10,6 +10,7 @@ mod label;
 mod list;
 mod scroll;
 mod slider;
+mod switch;
 mod text_input;
 
 pub use button::Button;
@@ -20,4 +21,5 @@ pub use label::Label;
 pub use list::List;
 pub use scroll::ScrollView;
 pub use slider::Slider;
+pub use switch::Switch;
 pub use text_input::TextInput;

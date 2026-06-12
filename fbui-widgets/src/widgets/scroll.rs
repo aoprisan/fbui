@@ -150,6 +150,7 @@ impl<Msg: 'static> Widget<Msg> for ScrollView {
                 if self.max_offset() > 0.0 {
                     self.kinetic.start(-velocity_y);
                     ctx.request_paint();
+                    ctx.request_anim();
                     ctx.set_handled();
                 }
             }
@@ -172,6 +173,7 @@ impl<Msg: 'static> Widget<Msg> for ScrollView {
                 repaint: true,
                 relayout: true,
                 running: self.kinetic.is_running(),
+                damage: None,
             }
         } else {
             Anim::IDLE

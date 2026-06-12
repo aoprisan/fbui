@@ -42,6 +42,9 @@ pub(crate) struct Outputs<Msg> {
     pub focus: Option<FocusOp>,
     pub capture: Option<CaptureOp>,
     pub handled: bool,
+    /// A widget started a time-based animation; the Ui should keep ticking
+    /// [`animate`](crate::Ui::animate) until it settles.
+    pub animate: bool,
 }
 
 impl<Msg> Default for Outputs<Msg> {
@@ -53,6 +56,7 @@ impl<Msg> Default for Outputs<Msg> {
             focus: None,
             capture: None,
             handled: false,
+            animate: false,
         }
     }
 }
@@ -62,6 +66,7 @@ impl<Msg> Outputs<Msg> {
         self.focus = None;
         self.capture = None;
         self.handled = false;
+        self.animate = false;
     }
 }
 
@@ -164,6 +169,14 @@ impl<'a, Msg> EventCtx<'a, Msg> {
         self.out.handled = true;
     }
 
+    /// Signal that this widget began a time-based animation, so the Ui keeps
+    /// calling [`animate`](crate::Widget::animate) on the frame clock until the
+    /// animation settles. Pair it with starting a [`Tween`](crate::anim::Tween)
+    /// or kinetic coast in the same handler.
+    pub fn request_anim(&mut self) {
+        self.out.animate = true;
+    }
+
     /// The pointer position in this widget's local space (origin at its top-left),
     /// if the event carries one.
     pub fn local_pointer(&self) -> Option<Point> {
@@ -179,6 +192,7 @@ pub struct PaintCtx<'a, 'p> {
     pub(crate) fonts: &'a mut FontContext,
     pub(crate) theme: &'a Theme,
     pub(crate) bounds: Rect,
+    pub(crate) region: Rect,
     pub(crate) hovered: bool,
     pub(crate) focused: bool,
 }
@@ -207,6 +221,14 @@ impl<'a, 'p> PaintCtx<'a, 'p> {
     /// This widget's absolute logical bounds.
     pub fn bounds(&self) -> Rect {
         self.bounds
+    }
+
+    /// The logical region currently being repainted (the active clip). A widget
+    /// that paints many independent pieces — list rows, grid cells — can skip the
+    /// ones that don't intersect this, turning a small damage rect into
+    /// proportionally small work.
+    pub fn region(&self) -> Rect {
+        self.region
     }
 
     pub fn is_hovered(&self) -> bool {

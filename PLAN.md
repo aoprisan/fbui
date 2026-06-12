@@ -1,7 +1,16 @@
 # fbui — Plan: a framebuffer UI framework for Linux (no X11/Wayland)
 
-Status: **Phase 4 implemented — 0.1.0 cut** (all crates) — hardening for real
-devices: a headless **gesture recognizer** (tap/long-press/drag/fling) that
+Status: **Phase 5 implemented** (all crates) — performance & animation: a pure,
+damage-aware **animation API** (`Easing`/`Tween`/`Lerp` on the `Widget::animate`
+frame-clock hook, with an animated `Switch` widget), a **scroll-blit** fast path
+(`Surface::scroll_region` + region-aware `List` painting — a long-list scroll
+repaints the exposed strip, not the viewport; ~34% measured drop, byte-exact vs a
+full repaint), and a **`tracing` profiling** story (a `profile` feature spanning
+input→update→layout→paint→present, plus a flamegraph guide). The DRM
+hardware-cursor-plane overlay and on-device Pi-refresh numbers remain
+hardware-gated. See [`PHASE5.md`](PHASE5.md). **Phase 4** — 0.1.0 cut (all
+crates) — hardening for real devices: a headless **gesture recognizer**
+(tap/long-press/drag/fling) that
 unifies mouse and touch, **kinetic ("flick to coast") scrolling** on a new
 `Widget::animate` frame-clock hook, **RGB565 ordered dithering** for small
 panels, **display hotplug / mode-change** handling (`Display::reconfigure` →

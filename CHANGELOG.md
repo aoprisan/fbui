@@ -15,7 +15,34 @@ built against. The MSRV is part of the contract: `fbui-platform` builds on Rust
 **1.76**; the render/widget stack tracks its heavier dependencies (cosmic-text,
 image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
-## [Unreleased]
+## [Unreleased] — Phase 5: performance & animation
+
+### Added
+
+- **Animation API** (`fbui-widgets::anim`): `Easing` curves, a `Lerp` trait
+  (`f32`, `Color`), and a `Tween<T>` advanced by the frame `dt` — pure and
+  damage-aware. A new animated `Switch` widget is the worked example.
+- **`Widget::animate` / `Ui` plumbing**: `EventCtx::request_anim` and
+  `Ui::is_animating` so the runner advances animation only while something moves;
+  Phase 4's kinetic coast now rides the same flag.
+- **Scroll-blit fast path**: `Surface::scroll_region` shifts a region's pixels in
+  place and reports the exposed strip; a new `Widget::scroll_blit` hook +
+  `Anim::damage` + `PaintCtx::region` let `List` repaint only the strip that
+  scrolled into view instead of the whole viewport. Benchmarked (~34% here) and
+  pinned byte-for-byte against a full repaint.
+- **`tracing` profiling** (`profile` feature on `fbui` / `fbui-widgets`): nested
+  spans through input → update → layout → paint → present, with a flamegraph
+  guide in [`docs/profiling.md`](docs/profiling.md). Zero-cost when off.
+- A `scroll` benchmark (`fbui-widgets`) and CI gates for it and the `profile`
+  feature.
+
+### Known gaps
+
+- The DRM hardware **cursor-plane** overlay (cursor move without a widget
+  repaint) is deferred — it needs a real DRM device.
+- Scroll-blit is wired into `List`; `ScrollView` still full-repaints its region.
+- On-device Pi-class refresh-rate / CPU-budget figures need ARM hardware; the
+  blit-vs-full *ratio* is the CI gate.
 
 ## [0.1.0] — Phase 4: hardening & first release
 

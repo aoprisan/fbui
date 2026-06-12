@@ -72,7 +72,6 @@ pub fn run<A: App>(mut app: A) -> fbui_platform::Result<()> {
         gestures: GestureRecognizer::default(),
         start: now,
         last_tick: now,
-        animating: false,
     };
     platform.run(&mut runner)
 }
@@ -94,8 +93,6 @@ struct Runner<A: App> {
     start: Instant,
     /// Last `tick` time, for the animation `dt`.
     last_tick: Instant,
-    /// Whether a kinetic animation is currently coasting (keeps the clock alive).
-    animating: bool,
 }
 
 impl<A: App> Runner<A> {
@@ -120,12 +117,13 @@ impl<A: App> Runner<A> {
             Gesture::Tap { pos } => self.dispatch(Event::Tap { pos }),
             Gesture::LongPress { pos } => self.dispatch(Event::LongPress { pos }),
             Gesture::Fling { pos, velocity } => {
+                // The scrollable widget under `pos` starts its kinetic coast and
+                // calls `request_anim`, which is what keeps the clock alive.
                 self.dispatch(Event::Fling {
                     pos,
                     velocity_x: velocity.x,
                     velocity_y: velocity.y,
                 });
-                self.animating = true;
             }
             Gesture::DragBegin { .. } | Gesture::DragUpdate { .. } | Gesture::DragEnd { .. } => {}
         }
@@ -171,6 +169,7 @@ impl<A: App> Runner<A> {
 
 impl<A: App> PlatformHandler for Runner<A> {
     fn on_input(&mut self, event: InputEvent) -> Flow {
+        crate::span!("input");
         match event {
             InputEvent::Key(k) => {
                 if k.keysym == keysym::ESCAPE && k.state == KeyState::Pressed {
@@ -265,6 +264,7 @@ impl<A: App> PlatformHandler for Runner<A> {
     fn render(&mut self, frame: &mut Frame<'_>) -> Vec<PRect> {
         let Runner { ui, surface, .. } = self;
         ui.paint(surface);
+        crate::span!("present");
         surface.copy_into_frame(frame)
     }
 
@@ -297,6 +297,7 @@ impl<A: App> PlatformHandler for Runner<A> {
     }
 
     fn tick(&mut self) -> Flow {
+        crate::span!("tick");
         let now = Instant::now();
         let dt = (now - self.last_tick).as_secs_f32();
         self.last_tick = now;
@@ -307,10 +308,11 @@ impl<A: App> PlatformHandler for Runner<A> {
             self.apply_gesture(g);
         }
 
-        // Advance kinetic scrolling. Clamp dt so a long stall (VT switch) doesn't
-        // teleport the coast.
-        if self.animating {
-            self.animating = self.ui.animate(dt.min(0.05));
+        // Advance any running animation (kinetic coast, widget tweens). Clamp dt
+        // so a long stall (VT switch) doesn't teleport it. `is_animating` gates
+        // the tree walk so an idle UI does no work here.
+        if self.ui.is_animating() {
+            self.ui.animate(dt.min(0.05));
             let msgs = self.ui.take_messages();
             for m in msgs {
                 self.app.update(m, &mut self.ui);

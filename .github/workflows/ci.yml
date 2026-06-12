@@ -44,6 +44,9 @@ jobs:
           cargo clippy -p fbui-render --all-targets --features platform
           # The umbrella + on-device runner and examples (counter/form/big_list).
           cargo clippy -p fbui --all-targets --features platform
+          # The Phase 5 tracing instrumentation (zero-cost when off).
+          cargo clippy -p fbui-widgets --all-targets --features profile
+          cargo clippy -p fbui --all-targets --features "platform profile"
       # Docs must build clean (warnings = errors): broken intra-doc links fail the
       # build. The umbrella's `run` lives behind `platform`, so document it with
       # the feature on.
@@ -56,7 +59,9 @@ jobs:
       # Keep the benchmarks compiling (they're a regression gate; running them for
       # numbers needs stable hardware, but they must not bit-rot).
       - name: benches compile
-        run: cargo bench -p fbui-render --no-run
+        run: |
+          cargo bench -p fbui-render --no-run
+          cargo bench -p fbui-widgets --no-run
 
   # MSRV gate: the crate claims rust-version 1.76; prove it builds there.
   msrv:

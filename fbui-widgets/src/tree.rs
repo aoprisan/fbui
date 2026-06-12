@@ -61,6 +61,8 @@ pub struct Ui<Msg> {
     /// Logical damage awaiting the next paint.
     damage: Vec<Rect>,
     needs_layout: bool,
+    /// At least one widget has a running animation; drive [`animate`](Self::animate).
+    animating: bool,
 }
 
 impl<Msg: 'static> Ui<Msg> {
@@ -81,6 +83,7 @@ impl<Msg: 'static> Ui<Msg> {
             messages: Vec::new(),
             damage: Vec::new(),
             needs_layout: true,
+            animating: false,
         }
     }
 
@@ -146,6 +149,9 @@ impl<Msg: 'static> Ui<Msg> {
         let _ = self.taffy.set_style(node.taffy, style);
         self.damage.push(node.layout);
         self.needs_layout = true;
+        // A programmatic mutation may have started an animation (e.g. retargeting
+        // a tween). Tick once; `animate` clears this again if nothing is running.
+        self.animating = true;
         Some(r)
     }
 
@@ -230,6 +236,7 @@ impl<Msg: 'static> Ui<Msg> {
     /// [`ScrollView`]: crate::widgets::ScrollView
     /// [`List`]: crate::widgets::List
     pub fn animate(&mut self, dt: f32) -> bool {
+        crate::span!("ui.animate");
         let ids: Vec<WidgetId> = self.nodes.keys().collect();
         let mut running = false;
         for id in ids {
@@ -237,13 +244,24 @@ impl<Msg: 'static> Ui<Msg> {
             if anim.relayout {
                 self.needs_layout = true;
             }
-            if anim.repaint || anim.relayout {
+            if let Some(d) = anim.damage {
+                // A precise rect (scroll-blit strip / moved thumb); the bulk was
+                // shifted by `scroll_blit`, applied in `paint`.
+                self.damage.push(d);
+            } else if anim.repaint || anim.relayout {
                 let b = self.nodes[id].layout;
                 self.damage.push(b);
             }
             running |= anim.running;
         }
+        self.animating = running;
         running
+    }
+
+    /// Whether any widget has a running animation, so the runner knows to keep
+    /// calling [`animate`](Self::animate) on the frame clock.
+    pub fn is_animating(&self) -> bool {
+        self.animating
     }
 
     fn mark_full(&mut self) {
@@ -255,6 +273,7 @@ impl<Msg: 'static> Ui<Msg> {
     // ---- layout ----------------------------------------------------------
 
     fn relayout(&mut self) {
+        crate::span!("ui.layout");
         let Some(root) = self.root else {
             self.needs_layout = false;
             return;
@@ -337,6 +356,7 @@ impl<Msg: 'static> Ui<Msg> {
     /// queued; call [`take_messages`](Ui::take_messages) / [`paint`](Ui::paint)
     /// after.
     pub fn event(&mut self, event: Event) {
+        crate::span!("ui.event");
         if self.needs_layout {
             self.relayout();
         }
@@ -458,6 +478,10 @@ impl<Msg: 'static> Ui<Msg> {
             self.damage
                 .push(Rect::new(0.0, 0.0, self.size.w, self.size.h));
         }
+        if self.out.animate {
+            self.animating = true;
+            self.out.animate = false;
+        }
         if let Some(op) = self.out.capture.take() {
             match op {
                 CaptureOp::Set(id) => self.capture = Some(id),
@@ -543,8 +567,22 @@ impl<Msg: 'static> Ui<Msg> {
     /// under a dirty child are correct; subtrees that don't intersect the region
     /// are skipped. The surface's own damage tracker bounds the copy-out.
     pub fn paint(&mut self, surface: &mut Surface) {
+        crate::span!("ui.paint");
         if self.needs_layout {
             self.relayout();
+        }
+        // Scroll-blit fast path: any widget with a pending vertical scroll has its
+        // existing pixels shifted in place (a sequential memmove) rather than
+        // re-rasterized; only the exposed strip is added to the repaint set. The
+        // widget separately damaged the small bits that don't shift (e.g. a moved
+        // scrollbar thumb), so this stays correct.
+        let ids: Vec<WidgetId> = self.nodes.keys().collect();
+        for id in ids {
+            if let Some(dy) = self.nodes[id].widget.scroll_blit() {
+                let bounds = self.nodes[id].layout;
+                let strip = surface.scroll_region(bounds, dy);
+                self.damage.push(strip);
+            }
         }
         if self.damage.is_empty() {
             return;
@@ -606,6 +644,7 @@ fn paint_node<Msg: 'static>(
         fonts,
         theme,
         bounds: b,
+        region,
         hovered: hover == Some(id),
         focused: focus == Some(id),
     };

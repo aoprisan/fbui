@@ -27,6 +27,22 @@
 //! ui.add_child(root, Button::new("Click me").on_press(|| Msg::Clicked));
 //! ```
 
+/// Enter a `tracing` span for the rest of the current scope when the `profile`
+/// feature is on; expands to nothing otherwise (zero cost in normal builds).
+/// Defined before the modules so they can all use it.
+#[cfg(feature = "profile")]
+macro_rules! span {
+    ($name:expr) => {
+        let _guard = tracing::info_span!($name).entered();
+    };
+}
+#[cfg(not(feature = "profile"))]
+macro_rules! span {
+    ($name:expr) => {};
+}
+pub(crate) use span;
+
+pub mod anim;
 pub mod ctx;
 pub mod event;
 pub mod gesture;
@@ -38,6 +54,7 @@ mod util;
 pub mod widget;
 pub mod widgets;
 
+pub use anim::{Easing, Lerp, Tween};
 pub use ctx::{EventCtx, PaintCtx};
 pub use event::{Event, Key, Modifiers, PointerButton};
 pub use gesture::{Gesture, GestureConfig, GestureRecognizer};
