@@ -1,7 +1,12 @@
 # fbui — Plan: a framebuffer UI framework for Linux (no X11/Wayland)
 
-Status: **Phase 0 spike implemented** (`spikes/`) — pending real-hardware
-validation; everything above Phase 0 is still plan / research only.
+Status: **Phase 1 implemented** (`fbui-platform/`) — the platform-layer API and
+its pure-Rust backends (drm-dumb, fbdev, evdev, noseat, calloop) build and test
+green; libinput/libseat/xkbcommon are feature-gated and pending a host with
+those libraries, and the DRM/VT criteria await hardware/VKMS CI. See
+[`fbui-platform/PHASE1.md`](fbui-platform/PHASE1.md). **Phase 0 spike**
+(`spikes/`) remains as the kernel-facing reference. Phases 2+ are still plan /
+research only.
 
 The goal is a UI framework that draws directly to the display on Linux consoles
 (TTY), embedded devices, and kiosks — no X server, no Wayland compositor.

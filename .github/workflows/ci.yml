@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+jobs:
+  # Fast gate: formatting, lints, build, and the headless unit tests. These need
+  # no devices and run on the default feature set (pure-Rust backends only).
+  check:
+    name: fmt + clippy + unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        run: cargo clippy --workspace --all-targets
+      - name: unit tests
+        run: cargo test --workspace
+      - name: feature matrix builds
+        run: |
+          cargo check -p fbui-platform --no-default-features --features "fbdev noseat"
+          cargo check -p fbui-platform --no-default-features --features "drm-backend noseat"
+          cargo check -p fbui-platform --no-default-features --features "fbdev evdev event-loop noseat"
+
+  # MSRV gate: the crate claims rust-version 1.76; prove it builds there.
+  msrv:
+    name: MSRV (1.76)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.76.0
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build -p fbui-platform
+
+  # The Phase 1 exit criterion: the platform layer driving real (virtual) kernel
+  # devices. Loads VKMS (virtual KMS) and uinput, then runs the `#[ignore]`d
+  # integration tests as root. VKMS's connector is writeback, so this validates
+  # modeset + page-flip-event plumbing, not pixels.
+  vkms:
+    name: VKMS + uinput integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: load virtual kernel drivers
+        run: |
+          sudo modprobe vkms || (echo "vkms unavailable on this runner kernel" && exit 1)
+          sudo modprobe uinput
+          # Wait for the card node VKMS creates.
+          for i in $(seq 1 20); do ls /dev/dri/card* 2>/dev/null && break; sleep 0.5; done
+          ls -l /dev/dri /dev/uinput
+      - name: build integration tests
+        run: cargo test -p fbui-platform --test integration --no-run
+      - name: run device tests (as root)
+        env:
+          # VKMS usually enumerates as the last card; let the test override.
+          FBUI_DRM_CARD: /dev/dri/card0
+        run: |
+          # Run the ignored, device-backed tests with elevated privileges and
+          # access to the freshly-loaded card / uinput nodes.
+          sudo -E $(command -v cargo) test -p fbui-platform --test integration -- --ignored --nocapture

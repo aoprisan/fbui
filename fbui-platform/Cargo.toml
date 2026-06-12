@@ -1,0 +1,62 @@
+[package]
+name = "fbui-platform"
+version = "0.0.0"
+description = "fbui platform layer: a display-server-free foundation for Linux framebuffer UIs. Display backends (DRM/KMS dumb buffers + legacy fbdev) behind one trait, normalized input, seat/VT session lifecycle, and a calloop event loop. Everything above this layer is ignorant of DRM vs fbdev."
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+# The default set is everything that builds with no system C libraries: the
+# DRM and fbdev display backends, raw-evdev input, the direct-device (`noseat`)
+# session path, and the calloop event loop. The libinput/libseat/xkbcommon
+# backends are gated off because they link system libraries; enable them on
+# hosts (and CI images) that provide the headers.
+default = ["drm-backend", "fbdev", "evdev", "noseat", "event-loop"]
+
+drm-backend = ["dep:drm"]
+fbdev = []
+
+# Input: raw evdev (pure Rust) is the portable default; libinput is the richer
+# path (hotplug, gestures, calibration) but needs the C library.
+evdev = ["dep:evdev"]
+libinput = ["dep:input"]
+# xkbcommon gives real keymaps/layouts/compose; without it we fall back to a
+# built-in US-QWERTY table good enough to bring a system up.
+xkbcommon = ["dep:xkbcommon"]
+
+# Session: `noseat` opens devices directly (root, or `video`+`input` groups);
+# `libseat` brokers them through logind/seatd so an unprivileged user can run.
+noseat = []
+libseat = ["dep:libseat"]
+
+event-loop = ["dep:calloop"]
+
+[dependencies]
+libc = "0.2"
+bitflags = "2"
+drm = { version = "0.15", optional = true }
+evdev = { version = "0.13", optional = true }
+calloop = { version = "0.14", optional = true }
+input = { version = "0.9", optional = true }
+xkbcommon = { version = "0.8", optional = true }
+libseat = { version = "0.2", optional = true }
+
+[dev-dependencies]
+# The integration tests drive the kernel ABI directly: `libc` for poll(2) and
+# `evdev` for synthesizing a uinput device. They're separate test crates, so
+# they don't inherit the library's optional deps.
+libc = "0.2"
+evdev = "0.13"
+
+[[example]]
+name = "echo"
+required-features = ["event-loop"]
+
+[[test]]
+name = "integration"
+# Compiles under default features; the DRM/uinput cases are `#[ignore]` and only
+# run in a privileged CI container.
+required-features = ["drm-backend", "fbdev", "evdev"]
