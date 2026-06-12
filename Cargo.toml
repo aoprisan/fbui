@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["fbui-platform"]
+# The Phase 0 spike keeps its own lockfile and throwaway deps; it is not part of
+# the framework workspace.
+exclude = ["spikes"]
+
+[workspace.package]
+edition = "2021"
+rust-version = "1.76"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/aoprisan/fbui"
+
+[profile.release]
+debug = true
