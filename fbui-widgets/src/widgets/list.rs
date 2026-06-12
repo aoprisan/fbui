@@ -1,0 +1,214 @@
+//! [`List`] — a windowed list that lays out and paints only visible rows.
+//!
+//! Rows are data, not child widgets, so a 10 000-row list costs the same to
+//! paint as a 10-row one: only the rows intersecting the viewport are drawn. This
+//! is the windowing the Phase 3 exit criteria call for.
+
+use std::any::Any;
+
+use fbui_render::geom::{Point, Rect};
+
+use crate::ctx::{EventCtx, PaintCtx};
+use crate::event::{Event, Key, PointerButton};
+use crate::style::{self, Style};
+use crate::theme::Theme;
+use crate::util::text_style;
+use crate::widget::Widget;
+
+const ROW_H: f32 = 40.0;
+
+/// A scrollable, single-selection list of text rows.
+pub struct List<Msg> {
+    rows: Vec<String>,
+    row_h: f32,
+    offset: f32,
+    selected: Option<usize>,
+    on_select: Option<Box<dyn Fn(usize) -> Msg>>,
+}
+
+impl<Msg> List<Msg> {
+    pub fn new(rows: Vec<String>) -> Self {
+        List {
+            rows,
+            row_h: ROW_H,
+            offset: 0.0,
+            selected: None,
+            on_select: None,
+        }
+    }
+
+    pub fn row_height(mut self, h: f32) -> Self {
+        self.row_h = h;
+        self
+    }
+
+    pub fn on_select(mut self, f: impl Fn(usize) -> Msg + 'static) -> Self {
+        self.on_select = Some(Box::new(f));
+        self
+    }
+
+    /// Replace the rows (call via [`Ui::with`](crate::Ui::with)).
+    pub fn set_rows(&mut self, rows: Vec<String>) {
+        self.rows = rows;
+        self.selected = None;
+        self.offset = 0.0;
+    }
+
+    pub fn selected(&self) -> Option<usize> {
+        self.selected
+    }
+
+    fn total_h(&self) -> f32 {
+        self.rows.len() as f32 * self.row_h
+    }
+
+    fn max_offset(&self, viewport_h: f32) -> f32 {
+        (self.total_h() - viewport_h).max(0.0)
+    }
+
+    fn select(&mut self, idx: usize, ctx: &mut EventCtx<Msg>) {
+        if idx >= self.rows.len() {
+            return;
+        }
+        self.selected = Some(idx);
+        if let Some(f) = &self.on_select {
+            ctx.emit(f(idx));
+        }
+        // Keep the selection in view.
+        let b = ctx.bounds();
+        let top = idx as f32 * self.row_h;
+        let bottom = top + self.row_h;
+        if top < self.offset {
+            self.offset = top;
+        } else if bottom > self.offset + b.h {
+            self.offset = bottom - b.h;
+        }
+        self.offset = self.offset.clamp(0.0, self.max_offset(b.h));
+        ctx.request_paint();
+    }
+}
+
+impl<Msg: 'static> Widget<Msg> for List<Msg> {
+    fn layout_style(&self, _theme: &Theme) -> Style {
+        Style {
+            size: taffy::Size {
+                width: style::percent(1.0),
+                height: style::percent(1.0),
+            },
+            flex_grow: 1.0,
+            ..Style::default()
+        }
+    }
+
+    fn focusable(&self) -> bool {
+        true
+    }
+
+    fn paint(&self, ctx: &mut PaintCtx) {
+        let b = ctx.bounds();
+        let theme = ctx.theme();
+        let (surface, accent, on_accent, line) = (
+            theme.palette.surface,
+            theme.palette.accent,
+            theme.palette.on_accent,
+            theme.palette.line,
+        );
+        // Two prebuilt styles (normal + on-selection) so we hold no theme borrow
+        // once we start painting.
+        let st_normal = text_style(theme, theme.metrics.font_size, theme.palette.text);
+        let st_selected = text_style(theme, theme.metrics.font_size, on_accent);
+        let font_size = theme.metrics.font_size;
+
+        // Visible row window.
+        let first = (self.offset / self.row_h).floor().max(0.0) as usize;
+        let last = (((self.offset + b.h) / self.row_h).ceil() as usize).min(self.rows.len());
+        let max_off = self.max_offset(b.h);
+        let offset = self.offset;
+        let row_h = self.row_h;
+        let selected = self.selected;
+        let rows = &self.rows;
+
+        let (p, fonts) = ctx.painter_and_fonts();
+        p.fill_rect(b, surface);
+        p.push_clip(b);
+        for (n, row) in rows[first..last].iter().enumerate() {
+            let i = first + n;
+            let ry = b.y + i as f32 * row_h - offset;
+            let row_rect = Rect::new(b.x, ry, b.w, row_h);
+            let row_style = if selected == Some(i) {
+                p.fill_rect(row_rect, accent);
+                &st_selected
+            } else {
+                if i > first {
+                    p.fill_rect(Rect::new(b.x + 8.0, ry, b.w - 16.0, 1.0), line);
+                }
+                &st_normal
+            };
+            fonts.draw_text(
+                p,
+                row,
+                row_style,
+                Point::new(b.x + 12.0, ry + (row_h - font_size) / 2.0 - 1.0),
+                None,
+            );
+        }
+        // Scrollbar.
+        if max_off > 0.0 {
+            let frac = (b.h / self.total_h()).clamp(0.0, 1.0);
+            let thumb_h = (b.h * frac).max(24.0);
+            let t = offset / max_off;
+            let thumb_y = b.y + t * (b.h - thumb_h);
+            p.fill_rounded_rect(Rect::new(b.right() - 6.0, thumb_y, 4.0, thumb_h), 2.0, line);
+        }
+        p.pop_clip();
+    }
+
+    fn event(&mut self, ctx: &mut EventCtx<Msg>) {
+        let b = ctx.bounds();
+        let ev = ctx.event().clone();
+        match ev {
+            Event::Scroll { delta_y, .. } => {
+                let new = (self.offset + delta_y).clamp(0.0, self.max_offset(b.h));
+                if (new - self.offset).abs() > f32::EPSILON {
+                    self.offset = new;
+                    ctx.request_paint();
+                }
+                ctx.set_handled();
+            }
+            Event::PointerDown {
+                button: PointerButton::Left,
+                pos,
+            } => {
+                ctx.request_focus();
+                let idx = ((pos.y - b.y + self.offset) / self.row_h).floor() as i64;
+                if idx >= 0 {
+                    self.select(idx as usize, ctx);
+                }
+                ctx.set_handled();
+            }
+            Event::Key {
+                key: Key::Down,
+                pressed: true,
+                ..
+            } if ctx.is_focused() => {
+                let next = self.selected.map(|s| s + 1).unwrap_or(0);
+                self.select(next, ctx);
+                ctx.set_handled();
+            }
+            Event::Key {
+                key: Key::Up,
+                pressed: true,
+                ..
+            } if ctx.is_focused() => {
+                let prev = self.selected.unwrap_or(0).saturating_sub(1);
+                self.select(prev, ctx);
+                ctx.set_handled();
+            }
+            _ => {}
+        }
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}

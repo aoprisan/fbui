@@ -1,0 +1,46 @@
+[package]
+name = "fbui-render"
+version = "0.0.0"
+description = "fbui rendering layer: a headless, CPU software renderer for Linux framebuffer UIs. A tiny-skia painter (rects, paths, gradients, clipping, opacity groups, image blit), cosmic-text/swash text with a bounded glyph atlas, damage tracking, fractional scale, and a damaged-span copy-out into any platform back buffer. Depends on fbui-platform only behind the `platform` feature."
+edition.workspace = true
+# Not the workspace's 1.76: cosmic-text (1.89) and image (1.88) pull the floor up.
+# fbui-platform keeps the lower MSRV; the render stack tracks its heavier deps.
+rust-version = "1.89"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+# Core is headless and self-contained: it draws into a normal-RAM shadow buffer
+# and knows how to copy damaged spans into a caller-supplied byte target. None of
+# that needs a kernel device, so the default build pulls in no platform code.
+default = []
+
+# The `platform` feature adds the one coupling point PLAN/PHASE1 promised: a
+# `present()` glue that drives an `fbui_platform::Display` (begin_frame ->
+# copy-out -> present). It is opt-in so the core stays headless-by-design.
+platform = ["dep:fbui-platform"]
+
+[dependencies]
+# tiny-skia is the CPU rasterizer; cosmic-text shapes/lays out text and re-exports
+# the swash rasterizer + fontdb font loading; image decodes PNG/JPEG for blits.
+tiny-skia = "0.12"
+cosmic-text = "0.19"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+# Only linked when the `platform` glue is enabled.
+fbui-platform = { path = "../fbui-platform", optional = true }
+
+[dev-dependencies]
+# Snapshot tests compare painter output against committed golden PNGs through the
+# testkit harness; criterion drives the repaint benchmarks.
+fbui-testkit = { path = "../fbui-testkit" }
+criterion = { version = "0.5", default-features = false }
+
+[[bench]]
+name = "repaint"
+harness = false
+
+[[example]]
+name = "present"
+required-features = ["platform"]

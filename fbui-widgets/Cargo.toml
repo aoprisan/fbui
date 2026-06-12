@@ -1,0 +1,18 @@
+[package]
+name = "fbui-widgets"
+version = "0.0.0"
+description = "fbui widget toolkit: a retained widget tree with an Elm-ish update(msg) -> state -> damage -> paint loop, taffy flexbox/grid layout, and a software-rendered widget set (Label, Button, Checkbox, Slider, TextInput, containers, ScrollView, List, Image). Headless by design; draws through fbui-render's Painter."
+edition.workspace = true
+# Tracks fbui-render's heavier-dep MSRV floor (cosmic-text 1.89).
+rust-version = "1.89"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+fbui-render = { path = "../fbui-render" }
+taffy = "0.11"
+slotmap = "1"
+
+[dev-dependencies]
+fbui-testkit = { path = "../fbui-testkit" }
