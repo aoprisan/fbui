@@ -4,7 +4,7 @@
 //! font fallback, and HarfBuzz-grade shaping — so CJK and right-to-left scripts
 //! "just work" given fonts that cover them. We own only the glue: shape a string
 //! into a [`TextLayout`], then composite each glyph's coverage (cached in the
-//! bounded [`GlyphAtlas`]) into the painter's shadow buffer with source-over
+//! bounded `GlyphAtlas`) into the painter's shadow buffer with source-over
 //! alpha blending.
 //!
 //! HiDPI is handled at rasterization time: glyphs are rendered at

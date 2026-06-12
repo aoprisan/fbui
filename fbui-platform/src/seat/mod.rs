@@ -7,7 +7,7 @@
 //!   the `video`+`input` groups; the right answer for bare embedded/kiosk where
 //!   there is no session manager. VT switching is mediated by [`crate::vt`]
 //!   instead.
-//! * [`libseat`] (feature) — broker every open through logind/seatd, so an
+//! * `libseat` (feature) — broker every open through logind/seatd, so an
 //!   unprivileged user on the active seat can run, and session
 //!   activate/deactivate (the VT handoff) arrives as [`SessionEvent`]s.
 //!

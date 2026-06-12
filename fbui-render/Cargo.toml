@@ -1,6 +1,6 @@
 [package]
 name = "fbui-render"
-version = "0.0.0"
+version.workspace = true
 description = "fbui rendering layer: a headless, CPU software renderer for Linux framebuffer UIs. A tiny-skia painter (rects, paths, gradients, clipping, opacity groups, image blit), cosmic-text/swash text with a bounded glyph atlas, damage tracking, fractional scale, and a damaged-span copy-out into any platform back buffer. Depends on fbui-platform only behind the `platform` feature."
 edition.workspace = true
 # Not the workspace's 1.76: cosmic-text (1.89) and image (1.88) pull the floor up.

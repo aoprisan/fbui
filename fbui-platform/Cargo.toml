@@ -1,6 +1,6 @@
 [package]
 name = "fbui-platform"
-version = "0.0.0"
+version.workspace = true
 description = "fbui platform layer: a display-server-free foundation for Linux framebuffer UIs. Display backends (DRM/KMS dumb buffers + legacy fbdev) behind one trait, normalized input, seat/VT session lifecycle, and a calloop event loop. Everything above this layer is ignorant of DRM vs fbdev."
 edition.workspace = true
 rust-version.workspace = true

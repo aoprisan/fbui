@@ -1,6 +1,6 @@
 [package]
 name = "fbui-testkit"
-version = "0.0.0"
+version.workspace = true
 description = "fbui test harness: golden-image snapshot assertions for the software renderer. Compares a tiny-skia Pixmap against a committed PNG with a per-pixel tolerance, writes an `.actual.png` + a side-by-side diff on mismatch, and refreshes goldens when FBUI_UPDATE_SNAPSHOTS is set. A Phase 2 deliverable in its own right (PLAN §4)."
 edition.workspace = true
 # image's MSRV (1.88); kept in step with fbui-render's heavier-dep floor.

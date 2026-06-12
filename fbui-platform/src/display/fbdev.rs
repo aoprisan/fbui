@@ -184,6 +184,39 @@ impl Display for FbdevDisplay {
     fn dispatch_present(&mut self) -> Result<bool> {
         Ok(false)
     }
+
+    fn reconfigure(&mut self) -> Result<Option<DisplayInfo>> {
+        // Re-read the kernel's screeninfo; a console mode change (or a panel that
+        // re-trains) updates these. Cheap ioctls, safe to poll.
+        let mut var = FbVarScreeninfo::default();
+        let mut fix = FbFixScreeninfo::default();
+        // SAFETY: correct struct types for these fb ioctls.
+        unsafe {
+            ioctl_ptr(self.fd, FBIOGET_VSCREENINFO, &mut var)
+                .map_err(|e| Error::io("FBIOGET_VSCREENINFO", e))?;
+            ioctl_ptr(self.fd, FBIOGET_FSCREENINFO, &mut fix)
+                .map_err(|e| Error::io("FBIOGET_FSCREENINFO", e))?;
+        }
+        let format = pixel_format_from_var(&var)?;
+        let size = Size::new(var.xres, var.yres);
+        let line_length = fix.line_length as usize;
+        if size == self.info.size && format == self.info.format && line_length == self.line_length {
+            return Ok(None);
+        }
+
+        // Geometry changed: re-map at the new size and update our view of it.
+        // Assigning a fresh map drops (munmaps) the old one.
+        self.map = FbMap::map(self.fd, fix.smem_len as usize)?;
+        self.can_pan = var.yres_virtual >= var.yres * 2 && fix.ypanstep > 0;
+        self.page_stride = var.yres as usize * line_length;
+        self.line_length = line_length;
+        self.var = var;
+        self.draw_page = 0;
+        self.info.size = size;
+        self.info.format = format;
+        self.info.buffers = if self.can_pan { 2 } else { 1 };
+        Ok(Some(self.info))
+    }
 }
 
 /// Map the kernel's `var` bitfields to one of our [`PixelFormat`]s, or reject

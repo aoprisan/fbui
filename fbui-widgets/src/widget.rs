@@ -9,12 +9,61 @@
 
 use std::any::Any;
 
-use fbui_render::geom::{Point, Size};
+use fbui_render::geom::{Point, Rect, Size};
 use fbui_render::FontContext;
 
 use crate::ctx::{EventCtx, PaintCtx};
 use crate::style::Style;
 use crate::theme::Theme;
+
+/// What a widget's [`animate`](Widget::animate) step changed this frame, and
+/// whether it wants to keep being ticked.
+///
+/// Returned each frame so the [`Ui`](crate::Ui) knows what to mark dirty and
+/// whether the animation clock must keep running (kinetic scroll coasting, say).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Anim {
+    /// The widget's appearance changed; repaint its bounds.
+    pub repaint: bool,
+    /// The widget's geometry changed (e.g. a scroll offset that re-places
+    /// children); a relayout is needed before repaint.
+    pub relayout: bool,
+    /// The animation is still running; keep ticking next frame.
+    pub running: bool,
+    /// Repaint exactly this logical rect instead of the widget's whole bounds.
+    /// Used by the scroll-blit fast path: the bulk was shifted by
+    /// [`scroll_blit`](Widget::scroll_blit), so only this strip needs redrawing.
+    pub damage: Option<Rect>,
+}
+
+impl Anim {
+    /// Nothing animated this frame.
+    pub const IDLE: Anim = Anim {
+        repaint: false,
+        relayout: false,
+        running: false,
+        damage: None,
+    };
+
+    /// A frame that repainted (whole bounds) and wants to continue.
+    pub fn repaint() -> Anim {
+        Anim {
+            repaint: true,
+            running: true,
+            ..Anim::IDLE
+        }
+    }
+
+    /// A frame that changed geometry and wants to continue.
+    pub fn relayout() -> Anim {
+        Anim {
+            repaint: true,
+            relayout: true,
+            running: true,
+            damage: None,
+        }
+    }
+}
 
 /// Available space for a measure, re-exported from taffy.
 pub use taffy::AvailableSpace;
@@ -51,6 +100,23 @@ pub trait Widget<Msg>: Any {
 
     /// Handle one event. Default: ignore.
     fn event(&mut self, _ctx: &mut EventCtx<Msg>) {}
+
+    /// Advance any time-based animation by `dt` seconds, returning what changed
+    /// and whether to keep ticking (see [`Anim`]). Called by
+    /// [`Ui::animate`](crate::Ui::animate) on the frame clock. Default: nothing
+    /// animates. Kinetic scrolling lives here.
+    fn animate(&mut self, _dt: f32) -> Anim {
+        Anim::IDLE
+    }
+
+    /// A pending vertical scroll-blit (logical px) to apply before repaint,
+    /// consuming it. The [`Ui`](crate::Ui) shifts the widget's existing pixels by
+    /// this much via [`Surface::scroll_region`](fbui_render::Surface::scroll_region)
+    /// — reusing them instead of re-rasterizing — and the widget then repaints only
+    /// the newly-exposed strip. Positive = content moves down. Default: none.
+    fn scroll_blit(&mut self) -> Option<f32> {
+        None
+    }
 
     /// Whether this widget accepts keyboard focus (tab order, key events).
     fn focusable(&self) -> bool {

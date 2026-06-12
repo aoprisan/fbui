@@ -25,7 +25,7 @@ use calloop::generic::Generic;
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop as Calloop, Interest, Mode, PostAction};
 
-use crate::display::{Display, Frame};
+use crate::display::{Display, DisplayInfo, Frame};
 use crate::error::{Error, Result};
 use crate::geom::Rect;
 use crate::input::{InputEvent, InputSource};
@@ -59,6 +59,13 @@ pub trait PlatformHandler {
     /// (`false`, switched away). Default: ignore.
     fn on_session(&mut self, active: bool) {
         let _ = active;
+    }
+
+    /// The display was reconfigured by a hotplug / mode change; `info` is the new
+    /// scanout geometry. Rebuild size-dependent state (surfaces, layout) before
+    /// the next [`render`](PlatformHandler::render). Default: ignore.
+    fn on_display_changed(&mut self, info: DisplayInfo) {
+        let _ = info;
     }
 
     /// Called once per loop wakeup after events are drained, for app-driven
@@ -172,6 +179,25 @@ impl LoopState<'_> {
             }
         }
         self.try_render()
+    }
+
+    /// Poll the display for a hotplug / mode change and, if it changed, rescale
+    /// input and tell the handler so it can rebuild its surface. Called on a low
+    /// cadence from the main loop — `reconfigure` reads cached connector state, so
+    /// this is cheap.
+    fn poll_display_change(&mut self) -> Result<()> {
+        if !self.active {
+            return Ok(());
+        }
+        if let Some(info) = self.display.reconfigure()? {
+            for src in &mut self.inputs {
+                src.set_surface(info.size);
+            }
+            self.handler.on_display_changed(info);
+            self.needs_redraw = true;
+            self.try_render()?;
+        }
+        Ok(())
     }
 
     /// A seat (libseat) session change — same suspend/resume, manager-driven.
@@ -293,6 +319,12 @@ pub(crate) fn run_loop(
     // Initial paint before we start sleeping in poll.
     state.try_render()?;
 
+    // Hotplug detection without a udev monitor: poll the connector's cached state
+    // on a low cadence. Cheap (no reprobe), and the only portable option until a
+    // udev/uevent source is wired in.
+    let hotplug_every = Duration::from_millis(1000);
+    let mut last_hotplug = std::time::Instant::now();
+
     loop {
         if state.exit {
             break;
@@ -302,6 +334,10 @@ pub(crate) fn run_loop(
             Flow::Redraw => state.needs_redraw = true,
             Flow::Exit => state.exit = true,
             Flow::Continue => {}
+        }
+        if last_hotplug.elapsed() >= hotplug_every {
+            last_hotplug = std::time::Instant::now();
+            state.poll_display_change()?;
         }
         state.try_render()?;
         // Block until at least one fd is ready (or the fbdev timer fires). The

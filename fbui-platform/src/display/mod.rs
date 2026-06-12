@@ -144,4 +144,16 @@ pub trait Display {
     fn resume(&mut self) -> Result<()> {
         Ok(())
     }
+
+    /// Re-probe the output for a hotplug / mode change and, if the active mode
+    /// changed, reconfigure to it — returning the new [`DisplayInfo`].
+    ///
+    /// Returns `Ok(None)` when nothing changed (the common case), so the event
+    /// loop can poll this cheaply. The DRM backend re-reads the connector's
+    /// current mode and re-allocates its buffers when the resolution changes;
+    /// fbdev re-reads its `var` screeninfo. Default: outputs are fixed, nothing
+    /// to do.
+    fn reconfigure(&mut self) -> Result<Option<DisplayInfo>> {
+        Ok(None)
+    }
 }

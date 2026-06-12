@@ -2,8 +2,8 @@
 //!
 //! The viewport clips and translates its subtree; the [`Ui`](crate::Ui) feeds it
 //! its content vs. viewport extents after layout (via `set_scroll_metrics`), so it
-//! can clamp scrolling without reaching into the tree. Kinetic/fling scrolling is
-//! Phase 4.
+//! can clamp scrolling without reaching into the tree. A [`Fling`](Event::Fling)
+//! (Phase 4) starts a kinetic coast that decays in [`animate`](Widget::animate).
 
 use std::any::Any;
 
@@ -11,9 +11,10 @@ use fbui_render::geom::{Point, Rect, Size};
 
 use crate::ctx::{EventCtx, PaintCtx};
 use crate::event::{Event, PointerButton};
+use crate::kinetic::Kinetic;
 use crate::style::{self, Style};
 use crate::theme::Theme;
-use crate::widget::Widget;
+use crate::widget::{Anim, Widget};
 
 /// A vertically scrolling container.
 pub struct ScrollView {
@@ -21,6 +22,8 @@ pub struct ScrollView {
     content_h: f32,
     viewport_h: f32,
     drag: Option<f32>,
+    /// Momentum after a fling, in offset-pixels per second; 0 when at rest.
+    kinetic: Kinetic,
 }
 
 impl ScrollView {
@@ -30,6 +33,7 @@ impl ScrollView {
             content_h: 0.0,
             viewport_h: 0.0,
             drag: None,
+            kinetic: Kinetic::new(),
         }
     }
 
@@ -37,10 +41,19 @@ impl ScrollView {
         (self.content_h - self.viewport_h).max(0.0)
     }
 
-    fn scroll_by<Msg>(&mut self, dy: f32, ctx: &mut EventCtx<Msg>) {
+    /// Apply a scroll delta, clamped. Returns whether the offset actually moved.
+    fn apply_scroll(&mut self, dy: f32) -> bool {
         let new = (self.offset + dy).clamp(0.0, self.max_offset());
         if (new - self.offset).abs() > f32::EPSILON {
             self.offset = new;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn scroll_by<Msg>(&mut self, dy: f32, ctx: &mut EventCtx<Msg>) {
+        if self.apply_scroll(dy) {
             // Children must be re-placed at the new offset.
             ctx.request_layout();
             ctx.request_paint();
@@ -112,6 +125,8 @@ impl<Msg: 'static> Widget<Msg> for ScrollView {
                 button: PointerButton::Left,
                 pos,
             } => {
+                // A new touch stops any coast and starts a drag.
+                self.kinetic.stop();
                 self.drag = Some(pos.y);
                 ctx.capture_pointer();
             }
@@ -129,7 +144,39 @@ impl<Msg: 'static> Widget<Msg> for ScrollView {
                     ctx.release_pointer();
                 }
             }
+            Event::Fling { velocity_y, .. } => {
+                // Finger moving up (negative velocity_y) coasts content upward,
+                // i.e. a positive offset velocity — matching the drag mapping.
+                if self.max_offset() > 0.0 {
+                    self.kinetic.start(-velocity_y);
+                    ctx.request_paint();
+                    ctx.request_anim();
+                    ctx.set_handled();
+                }
+            }
             _ => {}
+        }
+    }
+
+    fn animate(&mut self, dt: f32) -> Anim {
+        if !self.kinetic.is_running() {
+            return Anim::IDLE;
+        }
+        let dy = self.kinetic.step(dt);
+        let moved = self.apply_scroll(dy);
+        if !moved {
+            // Hit a bound: nothing left to coast into.
+            self.kinetic.stop();
+        }
+        if moved {
+            Anim {
+                repaint: true,
+                relayout: true,
+                running: self.kinetic.is_running(),
+                damage: None,
+            }
+        } else {
+            Anim::IDLE
         }
     }
 

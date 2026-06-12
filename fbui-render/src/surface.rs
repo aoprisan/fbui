@@ -16,7 +16,7 @@
 use crate::color::Color;
 use crate::copyout::{self, TargetFormat};
 use crate::damage::DamageTracker;
-use crate::geom::IRect;
+use crate::geom::{IRect, Rect};
 use crate::painter::Painter;
 use crate::scale::Scale;
 
@@ -26,6 +26,8 @@ pub struct Surface {
     scale: Scale,
     damage: DamageTracker,
     base: Color,
+    /// Apply ordered dithering when copying out to a 16-bit (RGB565) target.
+    dither_565: bool,
 }
 
 impl Surface {
@@ -47,7 +49,21 @@ impl Surface {
             scale,
             damage: DamageTracker::new(),
             base,
+            dither_565: false,
         }
+    }
+
+    /// Enable (or disable) ordered dithering on the RGB565 copy-out path. Off by
+    /// default; turn it on for 16-bit panels to suppress gradient banding. A
+    /// no-op for 32-bit targets. The runner enables it automatically when the
+    /// display reports an [`Rgb565`](crate::copyout::TargetFormat::Rgb565) format.
+    pub fn set_dither(&mut self, on: bool) {
+        self.dither_565 = on;
+    }
+
+    /// Whether RGB565 dithering is enabled.
+    pub fn dither(&self) -> bool {
+        self.dither_565
     }
 
     pub fn width(&self) -> u32 {
@@ -98,6 +114,66 @@ impl Surface {
         f(&mut painter);
     }
 
+    /// Vertically scroll the pixels inside `rect` (logical) by `dy` logical
+    /// pixels, **reusing them instead of re-rasterizing** — the scroll-blit fast
+    /// path (Phase 5). Positive `dy` moves content downward.
+    ///
+    /// The moved region is registered as damage (the scanout must receive the
+    /// shifted pixels), and the method returns the newly-**exposed strip**
+    /// (logical) that the caller still has to repaint — a fraction of the region.
+    /// If the shift is zero or as large as the region (nothing to reuse), the
+    /// whole `rect` is returned and no pixels are moved.
+    ///
+    /// This is what makes flick-scrolling a long list cheap: the expensive part
+    /// (shaping and rasterizing every visible row) shrinks to just the one row
+    /// band that scrolled into view; the rest is a sequential `memmove`.
+    pub fn scroll_region(&mut self, rect: Rect, dy: f32) -> Rect {
+        let dev = self
+            .scale
+            .to_device_rect(rect)
+            .clamp_to(self.width(), self.height());
+        let ddy = (dy * self.scale.factor()).round() as i32;
+        if dev.is_empty() || ddy == 0 || ddy.unsigned_abs() >= dev.h {
+            // Nothing reusable: the caller repaints the whole rect.
+            if !dev.is_empty() {
+                self.damage.add(dev);
+            }
+            return rect;
+        }
+
+        let stride = self.width() as usize;
+        let bpp = 4usize;
+        let x0 = dev.x as usize;
+        let cols = dev.w as usize;
+        let y0 = dev.y;
+        let h = dev.h as i32;
+        let data = self.shadow.data_mut();
+        let row = |y: i32| -> usize { (y as usize * stride + x0) * bpp };
+
+        if ddy > 0 {
+            // Content moves down: dest row y copies from y-ddy. Walk bottom-up so a
+            // source row is read before a later iteration overwrites it.
+            for y in (y0 + ddy..y0 + h).rev() {
+                let (s, d) = (row(y - ddy), row(y));
+                data.copy_within(s..s + cols * bpp, d);
+            }
+        } else {
+            // Content moves up: dest row y copies from y+|ddy|. Walk top-down.
+            let s = (-ddy) as usize;
+            for y in y0..y0 + h - s as i32 {
+                let (src, dst) = (row(y + s as i32), row(y));
+                data.copy_within(src..src + cols * bpp, dst);
+            }
+        }
+
+        self.damage.add(dev);
+        if dy > 0.0 {
+            Rect::new(rect.x, rect.y, rect.w, dy)
+        } else {
+            Rect::new(rect.x, rect.bottom() + dy, rect.w, -dy)
+        }
+    }
+
     /// Flush accumulated damage for a back buffer of the given `age`, copy the
     /// damaged spans into `dst`, and return the device-pixel regions that were
     /// written (so the caller can hand them to `present`).
@@ -113,7 +189,11 @@ impl Surface {
     ) -> Vec<IRect> {
         let (w, h) = (self.shadow.width(), self.shadow.height());
         let damage = self.damage.flush(age, w, h);
-        copyout::copy_out(&self.shadow, dst, stride, format, &damage);
+        if self.dither_565 && format == TargetFormat::Rgb565 {
+            copyout::copy_out_dithered(&self.shadow, dst, stride, format, &damage);
+        } else {
+            copyout::copy_out(&self.shadow, dst, stride, format, &damage);
+        }
         damage
     }
 }
@@ -148,6 +228,77 @@ mod tests {
         // The painted pixel made it across (white -> [B,G,R,X]=255,255,255).
         let off = 2 * 40 + 2 * 4;
         assert_eq!(&dst[off..off + 4], &[255, 255, 255, 0xff]);
+    }
+
+    fn row_color(s: &Surface, y: u32) -> (u8, u8, u8) {
+        let px = s.pixmap().pixel(0, y).unwrap();
+        (px.red(), px.green(), px.blue())
+    }
+
+    #[test]
+    fn scroll_region_shifts_pixels_up() {
+        // A 1×6 surface with a distinct colour per row.
+        let mut s = Surface::new(1, 6, Scale::ONE);
+        for y in 0..6u32 {
+            s.paint(|p| {
+                p.fill_rect(
+                    Rect::new(0.0, y as f32, 1.0, 1.0),
+                    Color::rgb(y as u8, 0, 0),
+                )
+            });
+        }
+        let _ = s.present_to_buffer(&mut [0u8; 6 * 4], 4, TargetFormat::Xrgb8888, 1);
+
+        // Scroll content up by 2: row y now shows the old row y+2.
+        let exposed = s.scroll_region(Rect::new(0.0, 0.0, 1.0, 6.0), -2.0);
+        assert_eq!(
+            exposed,
+            Rect::new(0.0, 4.0, 1.0, 2.0),
+            "bottom strip exposed"
+        );
+        assert_eq!(row_color(&s, 0), (2, 0, 0));
+        assert_eq!(row_color(&s, 1), (3, 0, 0));
+        assert_eq!(row_color(&s, 3), (5, 0, 0));
+        // The moved region is damaged for copy-out.
+        assert!(!s.is_clean());
+    }
+
+    #[test]
+    fn scroll_region_shifts_pixels_down() {
+        let mut s = Surface::new(1, 6, Scale::ONE);
+        for y in 0..6u32 {
+            s.paint(|p| {
+                p.fill_rect(
+                    Rect::new(0.0, y as f32, 1.0, 1.0),
+                    Color::rgb(y as u8, 0, 0),
+                )
+            });
+        }
+        let _ = s.present_to_buffer(&mut [0u8; 6 * 4], 4, TargetFormat::Xrgb8888, 1);
+
+        // Scroll content down by 2: row y now shows the old row y-2.
+        let exposed = s.scroll_region(Rect::new(0.0, 0.0, 1.0, 6.0), 2.0);
+        assert_eq!(exposed, Rect::new(0.0, 0.0, 1.0, 2.0), "top strip exposed");
+        assert_eq!(row_color(&s, 2), (0, 0, 0));
+        assert_eq!(row_color(&s, 5), (3, 0, 0));
+    }
+
+    #[test]
+    fn scroll_region_too_far_moves_nothing() {
+        let mut s = Surface::new(1, 4, Scale::ONE);
+        for y in 0..4u32 {
+            s.paint(|p| {
+                p.fill_rect(
+                    Rect::new(0.0, y as f32, 1.0, 1.0),
+                    Color::rgb(y as u8, 0, 0),
+                )
+            });
+        }
+        let _ = s.present_to_buffer(&mut [0u8; 4 * 4], 4, TargetFormat::Xrgb8888, 1);
+        // Shift >= height: nothing reusable, whole rect returned, pixels untouched.
+        let whole = Rect::new(0.0, 0.0, 1.0, 4.0);
+        assert_eq!(s.scroll_region(whole, 4.0), whole);
+        assert_eq!(row_color(&s, 1), (1, 0, 0));
     }
 
     #[test]

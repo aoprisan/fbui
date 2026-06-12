@@ -8,7 +8,7 @@
 //! The comparison is deliberately tolerant. tiny-skia is deterministic across
 //! platforms for the same version, but anti-aliased edges can wobble by a single
 //! code-value under different rounding, and we'd rather a one-LSB shimmer not
-//! redden CI. [`assert_snapshot`] takes a per-channel tolerance and a cap on how
+//! redden CI. [`assert_snapshot_in`] takes a per-channel tolerance and a cap on how
 //! many pixels may exceed it.
 //!
 //! ## Workflow

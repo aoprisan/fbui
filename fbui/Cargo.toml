@@ -1,6 +1,6 @@
 [package]
 name = "fbui"
-version = "0.0.0"
+version.workspace = true
 description = "fbui: a framework for building UIs that draw straight to the Linux framebuffer/DRM — no X11, no Wayland. Umbrella crate re-exporting the render layer and widget toolkit, plus an app runner that drives the widget tree on a real display through the platform layer (behind the `platform` feature)."
 edition.workspace = true
 rust-version = "1.89"
@@ -13,11 +13,15 @@ publish = false
 # feature pulls in fbui-platform and the on-device runner.
 default = []
 platform = ["dep:fbui-platform", "fbui-render/platform"]
+# Emit `tracing` spans through input → update → layout → paint → present so an
+# app can capture a per-frame flamegraph. Off by default, zero-cost when off.
+profile = ["dep:tracing", "fbui-widgets/profile"]
 
 [dependencies]
 fbui-render = { path = "../fbui-render" }
 fbui-widgets = { path = "../fbui-widgets" }
 fbui-platform = { path = "../fbui-platform", optional = true }
+tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
 
 [[example]]
 name = "counter"
