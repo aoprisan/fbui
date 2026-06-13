@@ -357,6 +357,7 @@ dependencies = [
  "fbui-platform",
  "fbui-render",
  "fbui-widgets",
+ "image",
  "tracing",
 ]
 
@@ -401,6 +402,7 @@ dependencies = [
  "criterion",
  "fbui-render",
  "fbui-testkit",
+ "image",
  "slotmap",
  "taffy",
  "tracing",
