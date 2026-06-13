@@ -21,6 +21,12 @@ default = []
 # copy-out -> present). It is opt-in so the core stays headless-by-design.
 platform = ["dep:fbui-platform"]
 
+# Compile in a default font (Inter Regular, OFL) so a target with no installed
+# fonts can render text turnkey via `FontContext::with_default_font`. Off by
+# default — it adds ~300 KB to the binary; apps that bundle their own font don't
+# pay for it. The font + its license live in `fonts/`.
+bundled-font = []
+
 [dependencies]
 # tiny-skia is the CPU rasterizer; cosmic-text shapes/lays out text and re-exports
 # the swash rasterizer + fontdb font loading; image decodes PNG/JPEG for blits.

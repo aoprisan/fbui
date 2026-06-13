@@ -108,8 +108,24 @@ impl TextLayout {
     }
 }
 
-/// Owns the font database and glyph cache. One per application (or per thread):
-/// `FontSystem` scans the system fonts on construction, which is not free.
+/// Embedded default font (Inter Regular, SIL Open Font License), compiled in
+/// only under the `bundled-font` feature. Lets a target render text with no
+/// host fonts and no asset files — see [`FontContext::with_default_font`]. The
+/// license travels with it in `fbui-render/fonts/Inter-LICENSE.txt`.
+#[cfg(feature = "bundled-font")]
+pub const DEFAULT_FONT: &[u8] = include_bytes!("../../fonts/Inter-Regular.ttf");
+
+/// Owns the font database and glyph cache. One per application (or per thread).
+///
+/// Construction does **not** scan the host's installed fonts: [`new`] starts
+/// from an empty database, so on a minimal target (a boot image, a kiosk) text
+/// renders only from fonts you load — deterministic and host-independent, which
+/// is what an embedded/ISO target wants. Use [`with_fonts`] to start from a
+/// bundled set, or [`with_default_font`] for the compiled-in default.
+///
+/// [`new`]: FontContext::new
+/// [`with_fonts`]: FontContext::with_fonts
+/// [`with_default_font`]: FontContext::with_default_font
 pub struct FontContext {
     font_system: FontSystem,
     atlas: GlyphAtlas,
@@ -122,12 +138,58 @@ impl Default for FontContext {
 }
 
 impl FontContext {
-    /// Build a context, loading the system font database.
+    /// Build a context with an empty font database. Load fonts with
+    /// [`load_font_data`](Self::load_font_data) before drawing, or prefer
+    /// [`with_fonts`](Self::with_fonts) to supply them up front.
     pub fn new() -> Self {
         FontContext {
             font_system: FontSystem::new(),
             atlas: GlyphAtlas::new(),
         }
+    }
+
+    /// Build a context from a fixed set of in-memory fonts (TTF/OTF), with **no**
+    /// host-font dependence — rendering is reproducible across machines, the
+    /// property a boot image or kiosk needs.
+    ///
+    /// The first loaded face is installed as the default for every generic family
+    /// (sans-serif/serif/monospace), so a default [`TextStyle`] resolves to it
+    /// without the caller naming a family. Supply whatever script coverage you
+    /// need: on a minimal target there is no fallback to a system font.
+    pub fn with_fonts(fonts: impl IntoIterator<Item = Vec<u8>>) -> Self {
+        let mut db = cosmic_text::fontdb::Database::new();
+        for data in fonts {
+            db.load_font_data(data);
+        }
+        // Point the generic families at the first loaded face so `Family::SansSerif`
+        // (the `TextStyle` default) matches it; otherwise cosmic-text looks for its
+        // built-in default names ("Open Sans", …) which an empty db never has.
+        // Bind in its own scope so the `faces()` borrow ends before the mutations.
+        let default_family = db
+            .faces()
+            .next()
+            .and_then(|f| f.families.first())
+            .map(|(name, _)| name.clone());
+        if let Some(name) = default_family {
+            db.set_sans_serif_family(name.clone());
+            db.set_serif_family(name.clone());
+            db.set_monospace_family(name);
+        }
+        FontContext {
+            // A fixed locale keeps shaping deterministic; the loaded fonts, not the
+            // host, decide coverage.
+            font_system: FontSystem::new_with_locale_and_db("en-US".to_string(), db),
+            atlas: GlyphAtlas::new(),
+        }
+    }
+
+    /// Build a context from the compiled-in [`DEFAULT_FONT`] (Inter Regular).
+    /// Available under the `bundled-font` feature — a turnkey path to legible
+    /// text on a target with no fonts of its own. Override by supplying your own
+    /// via [`with_fonts`](Self::with_fonts).
+    #[cfg(feature = "bundled-font")]
+    pub fn with_default_font() -> Self {
+        Self::with_fonts([DEFAULT_FONT.to_vec()])
     }
 
     /// Add a font from in-memory bytes (TTF/OTF). Useful for bundling a fixed

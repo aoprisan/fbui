@@ -9,18 +9,55 @@
 
 use std::time::Instant;
 
+use std::sync::mpsc::{self, Receiver, Sender};
+
+use fbui_platform::cursor::SoftwareCursor;
 use fbui_platform::{
     keysym, Button, Flow, Frame, InputEvent, KeyState, Keysym, Modifiers as PMods, Platform,
-    PlatformConfig, PlatformHandler, Point as PPoint, Rect as PRect,
+    PlatformConfig, PlatformHandler, Point as PPoint, Rect as PRect, Waker,
 };
-use fbui_render::geom::{Point, Size};
-use fbui_render::{Scale, Surface};
+use fbui_render::geom::{IRect, Point, Size};
+use fbui_render::{FontContext, Scale, Surface};
 use fbui_widgets::event::{Event, Key, Modifiers, PointerButton};
 use fbui_widgets::gesture::{Gesture, GestureRecognizer};
 use fbui_widgets::{Theme, Ui};
 
 /// How far one wheel notch scrolls, in logical pixels.
 const WHEEL_STEP: f32 = 48.0;
+
+/// A clonable, `Send` handle for delivering messages into the running app from
+/// another thread — a worker computing results, an IPC reader, a progress feed.
+///
+/// [`send`](Proxy::send) queues a message and wakes the event loop; the runner
+/// delivers it to [`App::update`] on the UI thread, exactly like a message a
+/// widget emitted. This is how a long-running background task (off the UI
+/// thread, so the UI never blocks) reports back. Obtain one from
+/// [`App::on_start`].
+pub struct Proxy<M> {
+    tx: Sender<M>,
+    waker: Waker,
+}
+
+impl<M> Clone for Proxy<M> {
+    fn clone(&self) -> Self {
+        Proxy {
+            tx: self.tx.clone(),
+            waker: self.waker.clone(),
+        }
+    }
+}
+
+impl<M> Proxy<M> {
+    /// Queue `msg` for [`App::update`] and wake the loop to process it. Returns
+    /// `false` if the app has already exited (the loop is gone).
+    pub fn send(&self, msg: M) -> bool {
+        if self.tx.send(msg).is_err() {
+            return false;
+        }
+        self.waker.wake();
+        true
+    }
+}
 
 /// The application a [`run`] call drives. Build the tree once, then handle the
 /// messages widgets emit.
@@ -31,6 +68,13 @@ pub trait App: 'static {
     /// Populate the tree. Called once, before the first frame.
     fn build(&mut self, ui: &mut Ui<Self::Message>);
 
+    /// Called once, before the first frame, with a [`Proxy`] for delivering
+    /// messages from background threads. Spawn workers here (an IPC reader, a
+    /// progress poller) and hand them a clone. Default: no background work.
+    fn on_start(&mut self, proxy: Proxy<Self::Message>) {
+        let _ = proxy;
+    }
+
     /// Handle one message: mutate application state and the widgets (via
     /// [`Ui::with`](fbui_widgets::Ui::with)).
     fn update(&mut self, msg: Self::Message, ui: &mut Ui<Self::Message>);
@@ -39,6 +83,28 @@ pub trait App: 'static {
     fn theme(&self) -> Theme {
         Theme::dark()
     }
+
+    /// Fonts to render text with, as TTF/OTF bytes — typically
+    /// `vec![include_bytes!("MyFont.ttf").to_vec()]`. Bundling your font here
+    /// keeps text host-independent, which a boot image or kiosk needs.
+    ///
+    /// Default: empty. When empty, the runner uses the compiled-in default font
+    /// if the `bundled-font` feature is on, and otherwise loads no fonts (text
+    /// won't render until you supply some).
+    fn fonts(&self) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
+}
+
+/// The font context for an app that returned no fonts: the compiled-in default
+/// under `bundled-font`, or an empty database otherwise.
+#[cfg(feature = "bundled-font")]
+fn default_font_context() -> FontContext {
+    FontContext::with_default_font()
+}
+#[cfg(not(feature = "bundled-font"))]
+fn default_font_context() -> FontContext {
+    FontContext::new()
 }
 
 /// Bring up the platform and run `app` until it exits (Esc, or a fatal error).
@@ -56,10 +122,19 @@ pub fn run<A: App>(mut app: A) -> fbui_platform::Result<()> {
     if platform.info().format == fbui_platform::PixelFormat::Rgb565 {
         surface.set_dither(true);
     }
-    let mut ui = Ui::<A::Message>::new(logical, scale, app.theme());
+    let fonts = app.fonts();
+    let font_ctx = if fonts.is_empty() {
+        default_font_context()
+    } else {
+        FontContext::with_fonts(fonts)
+    };
+    let mut ui = Ui::<A::Message>::with_fonts(logical, scale, app.theme(), font_ctx);
     app.build(&mut ui);
 
     let now = Instant::now();
+    // Background threads (spawned from `App::on_start`) deliver messages here; the
+    // runner drains them in `on_wake`. The `Waker` half arrives via `on_start`.
+    let (tx, rx) = mpsc::channel();
     let mut runner = Runner {
         app,
         ui,
@@ -69,9 +144,13 @@ pub fn run<A: App>(mut app: A) -> fbui_platform::Result<()> {
         phys_w: phys.w as f32,
         phys_h: phys.h as f32,
         cursor: (phys.w as f32 / 2.0, phys.h as f32 / 2.0),
+        cursor_sprite: SoftwareCursor::new(phys),
+        cursor_dirty: true,
         gestures: GestureRecognizer::default(),
         start: now,
         last_tick: now,
+        tx,
+        rx,
     };
     platform.run(&mut runner)
 }
@@ -86,6 +165,12 @@ struct Runner<A: App> {
     phys_h: f32,
     /// Pointer position in physical pixels (the platform tracks none itself).
     cursor: (f32, f32),
+    /// The arrow sprite composited over the frame; its position mirrors
+    /// [`cursor`](Self::cursor) each render so the pointer is actually visible.
+    cursor_sprite: SoftwareCursor,
+    /// The pointer moved since the last present, so the frame must be redrawn to
+    /// shift the arrow even when no widget changed.
+    cursor_dirty: bool,
     /// Recognizes taps/long-press/fling from the primary pointer/touch, so mouse
     /// and touch get the same higher-level gestures.
     gestures: GestureRecognizer,
@@ -93,6 +178,10 @@ struct Runner<A: App> {
     start: Instant,
     /// Last `tick` time, for the animation `dt`.
     last_tick: Instant,
+    /// Cloned into each [`Proxy`] so background threads can post messages.
+    tx: Sender<A::Message>,
+    /// Drained in [`on_wake`](PlatformHandler::on_wake) for `App::update`.
+    rx: Receiver<A::Message>,
 }
 
 impl<A: App> Runner<A> {
@@ -155,6 +244,7 @@ impl<A: App> Runner<A> {
             (p.x as f32).clamp(0.0, self.phys_w),
             (p.y as f32).clamp(0.0, self.phys_h),
         );
+        self.cursor_dirty = true;
     }
 
     /// Feed a widget event and run any resulting messages.
@@ -186,6 +276,7 @@ impl<A: App> PlatformHandler for Runner<A> {
             InputEvent::PointerMotion { dx, dy } => {
                 self.cursor.0 = (self.cursor.0 + dx as f32).clamp(0.0, self.phys_w);
                 self.cursor.1 = (self.cursor.1 + dy as f32).clamp(0.0, self.phys_h);
+                self.cursor_dirty = true;
                 let pos = self.cursor_logical();
                 self.dispatch(Event::PointerMove { pos });
                 self.gesture_move(pos);
@@ -254,7 +345,7 @@ impl<A: App> PlatformHandler for Runner<A> {
             _ => {}
         }
 
-        if self.ui.needs_paint() {
+        if self.ui.needs_paint() || self.cursor_dirty {
             Flow::Redraw
         } else {
             Flow::Continue
@@ -262,15 +353,50 @@ impl<A: App> PlatformHandler for Runner<A> {
     }
 
     fn render(&mut self, frame: &mut Frame<'_>) -> Vec<PRect> {
-        let Runner { ui, surface, .. } = self;
-        ui.paint(surface);
+        // Mirror the input cursor onto the sprite, then damage the pixels it is
+        // leaving and entering so copy-out refreshes them from the clean shadow
+        // (the arrow itself lives only in the frame, never the shadow).
+        self.cursor_sprite
+            .move_absolute(PPoint::new(self.cursor.0 as i32, self.cursor.1 as i32));
+        let d = self.cursor_sprite.damage();
+        self.surface
+            .damage_device_rect(IRect::new(d.x, d.y, d.w, d.h));
+
+        self.ui.paint(&mut self.surface);
         crate::span!("present");
-        surface.copy_into_frame(frame)
+        let rects = self.surface.copy_into_frame(frame);
+        // Composite the arrow on top of the just-copied UI, into the back buffer.
+        self.cursor_sprite.paint(frame);
+        self.cursor_dirty = false;
+        rects
+    }
+
+    fn on_start(&mut self, waker: Waker) {
+        // Hand the app a proxy: its own message sender paired with the loop waker.
+        let proxy = Proxy {
+            tx: self.tx.clone(),
+            waker,
+        };
+        self.app.on_start(proxy);
+    }
+
+    fn on_wake(&mut self) -> Flow {
+        // Drain everything a background thread queued (wakes coalesce), running
+        // each message through the app exactly like a widget-emitted one.
+        while let Ok(msg) = self.rx.try_recv() {
+            self.app.update(msg, &mut self.ui);
+        }
+        if self.ui.needs_paint() {
+            Flow::Redraw
+        } else {
+            Flow::Continue
+        }
     }
 
     fn on_session(&mut self, active: bool) {
         if active {
             // Back buffers hold unknown contents after a VT switch: full repaint.
+            self.cursor_dirty = true;
             self.ui.set_size(self.logical, self.scale);
         }
     }
@@ -293,6 +419,10 @@ impl<A: App> PlatformHandler for Runner<A> {
             self.cursor.0.clamp(0.0, self.phys_w),
             self.cursor.1.clamp(0.0, self.phys_h),
         );
+        // The surface was rebuilt at the new size; rebuild the sprite so its
+        // clamp bounds match, and force a redraw to repaint the arrow.
+        self.cursor_sprite = SoftwareCursor::new(info.size);
+        self.cursor_dirty = true;
         self.ui.set_size(self.logical, self.scale);
     }
 
@@ -365,5 +495,21 @@ fn map_key(sym: Keysym, text: Option<&str>) -> Option<Key> {
         Some(" ") => Some(Key::Space),
         Some(t) => t.chars().next().filter(|c| !c.is_control()).map(Key::Char),
         None => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A `Proxy` is only useful if it can move to a worker thread and be cloned
+    // for several; pin that contract so a future field can't silently break it.
+    #[test]
+    fn proxy_is_send_and_clone() {
+        fn assert_send<T: Send>() {}
+        fn assert_clone<T: Clone>() {}
+        assert_send::<Waker>();
+        assert_send::<Proxy<i32>>();
+        assert_clone::<Proxy<i32>>();
     }
 }

@@ -22,6 +22,7 @@ use std::os::unix::io::{AsFd, AsRawFd, BorrowedFd, RawFd};
 use std::time::Duration;
 
 use calloop::generic::Generic;
+use calloop::ping::{make_ping, Ping};
 use calloop::timer::{TimeoutAction, Timer};
 use calloop::{EventLoop as Calloop, Interest, Mode, PostAction};
 
@@ -41,6 +42,29 @@ pub enum Flow {
     Redraw,
     /// Tear down and return from [`run`](super::Platform::run).
     Exit,
+}
+
+/// A clonable, `Send` handle that wakes the event loop from another thread.
+///
+/// The loop owns no message channel of its own — this just delivers a
+/// "something happened, come look" signal. Each [`wake`](Waker::wake) schedules
+/// one [`PlatformHandler::on_wake`] call on the loop thread, where the app
+/// drains whatever queue it shares with its worker. It's the generic primitive
+/// behind app-defined background work (a progress feed, an IPC reader, a
+/// timer thread) without the platform layer knowing anything about it.
+///
+/// Wakes coalesce: several before the loop services them may collapse into one
+/// `on_wake`, so drain *all* pending work there rather than assuming one item.
+#[derive(Clone)]
+pub struct Waker {
+    ping: Ping,
+}
+
+impl Waker {
+    /// Wake the loop from any thread.
+    pub fn wake(&self) {
+        self.ping.ping();
+    }
 }
 
 /// The application side of the platform. The loop calls these; the app never
@@ -73,6 +97,19 @@ pub trait PlatformHandler {
     fn tick(&mut self) -> Flow {
         Flow::Continue
     }
+
+    /// Called once, before the first frame, with a [`Waker`] the app can hand to
+    /// background threads so they can wake the loop. Default: ignore.
+    fn on_start(&mut self, waker: Waker) {
+        let _ = waker;
+    }
+
+    /// A background thread called [`Waker::wake`]: drain whatever work it
+    /// signalled (a shared queue the app owns). Return [`Flow::Redraw`] if the
+    /// screen changed. Default: idle.
+    fn on_wake(&mut self) -> Flow {
+        Flow::Continue
+    }
 }
 
 /// An `AsFd` wrapper around a borrowed raw fd, so we can hand `calloop` a poll
@@ -97,6 +134,8 @@ struct LoopState<'h> {
     seat: Box<dyn Seat>,
     vt: VtGuard,
     handler: &'h mut dyn PlatformHandler,
+    /// Kernel uevent monitor (DRM hotplug trigger); `None` when unavailable.
+    uevent: Option<crate::uevent::UeventMonitor>,
     /// Session/VT currently ours? When false we neither render nor hold master.
     active: bool,
     /// A repaint is owed.
@@ -200,6 +239,28 @@ impl LoopState<'_> {
         Ok(())
     }
 
+    /// A DRM uevent arrived: reconfigure now (the periodic poll is the backstop).
+    fn on_uevent_ready(&mut self) -> Result<()> {
+        let is_drm = match &self.uevent {
+            Some(m) => m.drain_is_drm()?,
+            None => false,
+        };
+        if is_drm {
+            self.poll_display_change()?;
+        }
+        Ok(())
+    }
+
+    /// A background thread pinged the [`Waker`]: let the handler drain its queue.
+    fn on_wake_ready(&mut self) -> Result<()> {
+        match self.handler.on_wake() {
+            Flow::Continue => {}
+            Flow::Redraw => self.needs_redraw = true,
+            Flow::Exit => self.exit = true,
+        }
+        self.try_render()
+    }
+
     /// A seat (libseat) session change — same suspend/resume, manager-driven.
     fn on_seat_ready(&mut self) -> Result<()> {
         let mut events = Vec::new();
@@ -233,6 +294,7 @@ pub(crate) fn run_loop(
     inputs: Vec<Box<dyn InputSource>>,
     seat: Box<dyn Seat>,
     vt: VtGuard,
+    uevent: Option<crate::uevent::UeventMonitor>,
     handler: &mut dyn PlatformHandler,
 ) -> Result<()> {
     // Snapshot the fds before the devices move into `LoopState` (fd numbers are
@@ -241,6 +303,7 @@ pub(crate) fn run_loop(
     let input_fds: Vec<RawFd> = inputs.iter().flat_map(|s| s.fds()).collect();
     let vt_fd: Option<RawFd> = vt.switch_fd();
     let seat_fd: Option<RawFd> = seat.session_fd();
+    let uevent_fd: Option<RawFd> = uevent.as_ref().map(|m| m.fd());
     // fbdev has no flip fd, so pace it with a timer instead.
     let needs_timer = display_fd.is_none();
 
@@ -254,6 +317,7 @@ pub(crate) fn run_loop(
         seat,
         vt,
         handler,
+        uevent,
         active: true,
         needs_redraw: true, // force the first frame
         exit: false,
@@ -303,6 +367,29 @@ pub(crate) fn run_loop(
             )
             .map_err(|e| Error::io("insert seat source", std::io::Error::other(e.error)))?;
     }
+    // A ping so background threads can wake the loop (see [`Waker`]). The handler
+    // gets the sender via `on_start` below; pings land in `on_wake`.
+    let (ping, ping_source) = make_ping().map_err(|e| Error::io("make_ping", e))?;
+    handle
+        .insert_source(ping_source, |_, _, st: &mut LoopState| {
+            // PingSource has no error channel back to the loop; a transient render
+            // error is retried by the main loop's `try_render` next turn.
+            let _ = st.on_wake_ready();
+        })
+        .map_err(|e| Error::io("insert ping source", std::io::Error::other(e.error)))?;
+
+    if let Some(fd) = uevent_fd {
+        handle
+            .insert_source(
+                Generic::new(PollFd(fd), Interest::READ, Mode::Level),
+                |_, _, st: &mut LoopState| {
+                    st.on_uevent_ready().map_err(into_io)?;
+                    Ok(PostAction::Continue)
+                },
+            )
+            .map_err(|e| Error::io("insert uevent source", std::io::Error::other(e.error)))?;
+    }
+
     if needs_timer {
         let refresh = Duration::from_micros(16_666); // ~60 Hz pacing for fbdev
         handle
@@ -315,6 +402,10 @@ pub(crate) fn run_loop(
             )
             .map_err(|e| Error::io("insert timer", std::io::Error::other(e.error)))?;
     }
+
+    // Hand the app its wake handle before anything runs, so a worker spawned in
+    // `on_start` can signal the loop from the very first frame.
+    state.handler.on_start(Waker { ping });
 
     // Initial paint before we start sleeping in poll.
     state.try_render()?;

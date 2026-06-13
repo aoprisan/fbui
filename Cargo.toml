@@ -12,5 +12,16 @@ rust-version = "1.76"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/aoprisan/fbui"
 
+# Release tuned for shipping on an embedded / boot-image target: small and fast.
+# `opt-level = 3` keeps the CPU renderer quick (it's the perf-sensitive part);
+# LTO + one codegen unit shrink and speed the result; `panic = "abort"` drops the
+# unwind tables — safe here because the console is restored by a panic *hook*
+# (see fbui-platform `vt.rs`), which runs before abort, not by unwinding `Drop`.
+# `strip` removes symbols. Go `opt-level = "s"`/`"z"` if you need the binary even
+# smaller and can trade some render throughput. See docs/running-on-your-device.md.
 [profile.release]
-debug = true
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -3,7 +3,7 @@
 use std::any::Any;
 
 use fbui_render::geom::{Point, Size};
-use fbui_render::FontContext;
+use fbui_render::{Color, FontContext};
 
 use crate::ctx::{EventCtx, PaintCtx};
 use crate::event::{Event, Key, PointerButton};
@@ -12,11 +12,24 @@ use crate::theme::Theme;
 use crate::util::{darken, focus_ring, text_style};
 use crate::widget::{AvailableSize, KnownDims, Widget};
 
+/// A button's visual role, which picks its fill from the theme.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ButtonVariant {
+    /// Accent-filled — the primary action. The default.
+    #[default]
+    Primary,
+    /// Neutral surface fill, for secondary actions (Cancel, Back).
+    Secondary,
+    /// Danger fill, for destructive actions (Delete, Erase).
+    Danger,
+}
+
 /// A push button. Emits its `on_press` message on click (or Space/Enter when
 /// focused).
 pub struct Button<Msg> {
     label: String,
     on_press: Option<Box<dyn Fn() -> Msg>>,
+    variant: ButtonVariant,
     pressed: bool,
 }
 
@@ -25,6 +38,7 @@ impl<Msg> Button<Msg> {
         Button {
             label: label.into(),
             on_press: None,
+            variant: ButtonVariant::Primary,
             pressed: false,
         }
     }
@@ -33,6 +47,33 @@ impl<Msg> Button<Msg> {
     pub fn on_press(mut self, f: impl Fn() -> Msg + 'static) -> Self {
         self.on_press = Some(Box::new(f));
         self
+    }
+
+    /// Set the visual variant.
+    pub fn variant(mut self, variant: ButtonVariant) -> Self {
+        self.variant = variant;
+        self
+    }
+
+    /// Shorthand for the [`Secondary`](ButtonVariant::Secondary) variant.
+    pub fn secondary(self) -> Self {
+        self.variant(ButtonVariant::Secondary)
+    }
+
+    /// Shorthand for the [`Danger`](ButtonVariant::Danger) variant — a
+    /// destructive action.
+    pub fn danger(self) -> Self {
+        self.variant(ButtonVariant::Danger)
+    }
+
+    /// `(fill, text, focus-ring)` colors for this variant.
+    fn colors(&self, theme: &Theme) -> (Color, Color, Color) {
+        let p = &theme.palette;
+        match self.variant {
+            ButtonVariant::Primary => (p.accent, p.on_accent, p.accent),
+            ButtonVariant::Secondary => (p.surface_alt, p.text, p.accent),
+            ButtonVariant::Danger => (p.danger, p.on_accent, p.danger),
+        }
     }
 
     pub fn set_label(&mut self, label: impl Into<String>) {
@@ -79,13 +120,13 @@ impl<Msg: 'static> Widget<Msg> for Button<Msg> {
         // Extract everything from the theme before borrowing the painter.
         let theme = ctx.theme();
         let radius = theme.metrics.radius;
-        let accent = theme.palette.accent;
         let fw = theme.metrics.focus_width;
-        let st = text_style(theme, theme.metrics.font_size, theme.palette.on_accent);
+        let (fill, fg, ring) = self.colors(theme);
+        let st = text_style(theme, theme.metrics.font_size, fg);
         let bg = if self.pressed {
-            darken(accent, 0.8)
+            darken(fill, 0.8)
         } else {
-            accent
+            fill
         };
         let label = &self.label;
 
@@ -97,7 +138,7 @@ impl<Msg: 'static> Widget<Msg> for Button<Msg> {
         let ty = b.y + (b.h - ts.h) / 2.0;
         fonts.draw_text(p, label, &st, Point::new(tx, ty), None);
         if focused {
-            focus_ring(p, b, radius, accent, fw);
+            focus_ring(p, b, radius, ring, fw);
         }
     }
 

@@ -66,8 +66,16 @@ pub struct Ui<Msg> {
 }
 
 impl<Msg: 'static> Ui<Msg> {
-    /// Create an empty tree sized to `size` logical pixels at `scale`.
+    /// Create an empty tree sized to `size` logical pixels at `scale`, with an
+    /// empty font database (load fonts before drawing text, or use
+    /// [`with_fonts`](Self::with_fonts)).
     pub fn new(size: Size, scale: Scale, theme: Theme) -> Self {
+        Self::with_fonts(size, scale, theme, FontContext::new())
+    }
+
+    /// As [`new`](Self::new), but with a caller-built [`FontContext`] — the way
+    /// to bundle a fixed font so text renders without depending on host fonts.
+    pub fn with_fonts(size: Size, scale: Scale, theme: Theme, fonts: FontContext) -> Self {
         Ui {
             taffy: TaffyTree::new(),
             nodes: SlotMap::with_key(),
@@ -75,7 +83,7 @@ impl<Msg: 'static> Ui<Msg> {
             size,
             scale,
             theme,
-            fonts: FontContext::new(),
+            fonts,
             focus: None,
             hover: None,
             capture: None,

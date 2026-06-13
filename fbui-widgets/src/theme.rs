@@ -27,6 +27,9 @@ pub struct Palette {
     pub accent: Color,
     /// Text drawn on top of `accent`.
     pub on_accent: Color,
+    /// Destructive/danger actions (a "delete"/"erase" button); `on_accent` text
+    /// reads on top of it.
+    pub danger: Color,
     /// Hairlines, separators, inactive tracks.
     pub line: Color,
 }
@@ -64,6 +67,7 @@ impl Theme {
                 muted: Color::rgb(0x9a, 0xa0, 0xb0),
                 accent: Color::rgb(0x4c, 0x8d, 0xff),
                 on_accent: Color::WHITE,
+                danger: Color::rgb(0xe5, 0x4b, 0x4b),
                 line: Color::rgb(0x3a, 0x40, 0x4e),
             },
             metrics: default_metrics(),
@@ -82,6 +86,7 @@ impl Theme {
                 muted: Color::rgb(0x6a, 0x70, 0x80),
                 accent: Color::rgb(0x1f, 0x6f, 0xff),
                 on_accent: Color::WHITE,
+                danger: Color::rgb(0xd6, 0x3a, 0x3a),
                 line: Color::rgb(0xd2, 0xd6, 0xde),
             },
             metrics: default_metrics(),

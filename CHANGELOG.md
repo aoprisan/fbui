@@ -35,6 +35,56 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
   guide in [`docs/profiling.md`](docs/profiling.md). Zero-cost when off.
 - A `scroll` benchmark (`fbui-widgets`) and CI gates for it and the `profile`
   feature.
+- **Size-tuned release profile**: the workspace `[profile.release]` now builds for
+  shipping (LTO, one codegen unit, `panic = "abort"`, `strip`) instead of carrying
+  debug info. `panic = "abort"` is safe because the console restore is a panic
+  *hook* + signal handlers, which run before abort — not unwinding `Drop`. A
+  fully-featured release binary (DRM + evdev + text + bundled font) is ~3.4 MB. A
+  new "Small builds & fast boot" section in the device guide documents the profile,
+  the pure-Rust default features (no libinput/seatd/dbus/mesa in the image), and
+  font bundling.
+- **uevent hotplug trigger**: a pure-libc `NETLINK_KOBJECT_UEVENT` monitor
+  (`fbui-platform`, no libudev) watches for `SUBSYSTEM=drm` events and makes the
+  event loop reconfigure *immediately* on connect/disconnect/mode change, instead
+  of waiting for the ~1 s poll (which stays as a backstop). Best-effort: if the
+  netlink socket can't open (a sandbox without it), the poll still covers hotplug.
+  Closes the "wire a udev/uevent monitor" gap from 0.1.0.
+- **`Button` variants**: `ButtonVariant::{Primary, Secondary, Danger}` with
+  `Button::secondary()` / `danger()` shorthands, each pulling its fill from the
+  theme — including a new `Palette::danger` color, so a destructive action (an
+  "Erase" button) reads as dangerous. Runtime theme switching already worked via
+  `Ui::set_theme`.
+- **`ProgressBar` widget**: a read-only fraction indicator (`[0, 1]`) for
+  long-running work — the missing complement to the interactive `Slider`. Drive
+  it from `App::update` via `Ui::with` (e.g. from progress a worker posts through
+  a `Proxy`); it reuses the theme's track/accent colors. `Container` also gained
+  `width`/`height` builders to give an `auto`-sized child a definite length. The
+  `progress` example now shows a real bar.
+- **Cross-thread wakeup primitive**: a generic way to drive the UI from a
+  background thread. `fbui_platform::Waker` (a clonable, `Send` handle backed by a
+  `calloop` ping) wakes the event loop; new `PlatformHandler::on_start(waker)` /
+  `on_wake()` hooks deliver it and service it. At the runner level, `Proxy<M>`
+  pairs a message sender with the waker: `App::on_start(proxy)` hands one out, a
+  worker calls `proxy.send(msg)`, and the runner runs it through `App::update`
+  exactly like a widget-emitted message. The framework stays ignorant of what the
+  work is (IPC, I/O, a timer) — a new `progress` example shows the pattern. This
+  is the primitive an out-of-process backend's client uses to feed the UI.
+- **Host-independent / bundled fonts**: `FontContext::with_fonts(bytes)` builds a
+  text context from caller-supplied TTF/OTF with **no** dependence on the host's
+  installed fonts (the first face becomes the default family, so a plain
+  `TextStyle` resolves to it) — what a reproducible, fast-booting target needs.
+  `App::fonts()` and `Ui::with_fonts` plumb a font set through the runner. An
+  optional `bundled-font` feature compiles in a default font (Inter Regular, OFL;
+  `FontContext::with_default_font`) for turnkey text with no asset files, off by
+  default (~300 KB). A deterministic text test backs it. (Note: with cosmic-text
+  0.19, `FontContext::new()` no longer scans system fonts — it starts empty.)
+- **Visible mouse cursor in the runner**: the `fbui` app runner now composites a
+  software arrow over each frame (its position mirrors the pointer), so a mouse
+  is actually drawn — clicking already worked, the pointer just wasn't shown. The
+  arrow is overlaid into the back buffer after copy-out and never touches the
+  shadow; a new `Surface::damage_device_rect` refreshes the vacated pixels so the
+  buffer-age history erases the old position across every back buffer. A bare
+  pointer move now schedules a present even when no widget changed.
 
 ### Known gaps
 
