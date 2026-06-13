@@ -58,4 +58,4 @@ mod run;
 #[cfg(feature = "platform")]
 pub use fbui_platform::Result;
 #[cfg(feature = "platform")]
-pub use run::{run, App};
+pub use run::{run, App, Proxy};

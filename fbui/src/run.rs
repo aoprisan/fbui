@@ -9,10 +9,12 @@
 
 use std::time::Instant;
 
+use std::sync::mpsc::{self, Receiver, Sender};
+
 use fbui_platform::cursor::SoftwareCursor;
 use fbui_platform::{
     keysym, Button, Flow, Frame, InputEvent, KeyState, Keysym, Modifiers as PMods, Platform,
-    PlatformConfig, PlatformHandler, Point as PPoint, Rect as PRect,
+    PlatformConfig, PlatformHandler, Point as PPoint, Rect as PRect, Waker,
 };
 use fbui_render::geom::{IRect, Point, Size};
 use fbui_render::{FontContext, Scale, Surface};
@@ -23,6 +25,40 @@ use fbui_widgets::{Theme, Ui};
 /// How far one wheel notch scrolls, in logical pixels.
 const WHEEL_STEP: f32 = 48.0;
 
+/// A clonable, `Send` handle for delivering messages into the running app from
+/// another thread — a worker computing results, an IPC reader, a progress feed.
+///
+/// [`send`](Proxy::send) queues a message and wakes the event loop; the runner
+/// delivers it to [`App::update`] on the UI thread, exactly like a message a
+/// widget emitted. This is how a long-running background task (off the UI
+/// thread, so the UI never blocks) reports back. Obtain one from
+/// [`App::on_start`].
+pub struct Proxy<M> {
+    tx: Sender<M>,
+    waker: Waker,
+}
+
+impl<M> Clone for Proxy<M> {
+    fn clone(&self) -> Self {
+        Proxy {
+            tx: self.tx.clone(),
+            waker: self.waker.clone(),
+        }
+    }
+}
+
+impl<M> Proxy<M> {
+    /// Queue `msg` for [`App::update`] and wake the loop to process it. Returns
+    /// `false` if the app has already exited (the loop is gone).
+    pub fn send(&self, msg: M) -> bool {
+        if self.tx.send(msg).is_err() {
+            return false;
+        }
+        self.waker.wake();
+        true
+    }
+}
+
 /// The application a [`run`] call drives. Build the tree once, then handle the
 /// messages widgets emit.
 pub trait App: 'static {
@@ -31,6 +67,13 @@ pub trait App: 'static {
 
     /// Populate the tree. Called once, before the first frame.
     fn build(&mut self, ui: &mut Ui<Self::Message>);
+
+    /// Called once, before the first frame, with a [`Proxy`] for delivering
+    /// messages from background threads. Spawn workers here (an IPC reader, a
+    /// progress poller) and hand them a clone. Default: no background work.
+    fn on_start(&mut self, proxy: Proxy<Self::Message>) {
+        let _ = proxy;
+    }
 
     /// Handle one message: mutate application state and the widgets (via
     /// [`Ui::with`](fbui_widgets::Ui::with)).
@@ -89,6 +132,9 @@ pub fn run<A: App>(mut app: A) -> fbui_platform::Result<()> {
     app.build(&mut ui);
 
     let now = Instant::now();
+    // Background threads (spawned from `App::on_start`) deliver messages here; the
+    // runner drains them in `on_wake`. The `Waker` half arrives via `on_start`.
+    let (tx, rx) = mpsc::channel();
     let mut runner = Runner {
         app,
         ui,
@@ -103,6 +149,8 @@ pub fn run<A: App>(mut app: A) -> fbui_platform::Result<()> {
         gestures: GestureRecognizer::default(),
         start: now,
         last_tick: now,
+        tx,
+        rx,
     };
     platform.run(&mut runner)
 }
@@ -130,6 +178,10 @@ struct Runner<A: App> {
     start: Instant,
     /// Last `tick` time, for the animation `dt`.
     last_tick: Instant,
+    /// Cloned into each [`Proxy`] so background threads can post messages.
+    tx: Sender<A::Message>,
+    /// Drained in [`on_wake`](PlatformHandler::on_wake) for `App::update`.
+    rx: Receiver<A::Message>,
 }
 
 impl<A: App> Runner<A> {
@@ -319,6 +371,28 @@ impl<A: App> PlatformHandler for Runner<A> {
         rects
     }
 
+    fn on_start(&mut self, waker: Waker) {
+        // Hand the app a proxy: its own message sender paired with the loop waker.
+        let proxy = Proxy {
+            tx: self.tx.clone(),
+            waker,
+        };
+        self.app.on_start(proxy);
+    }
+
+    fn on_wake(&mut self) -> Flow {
+        // Drain everything a background thread queued (wakes coalesce), running
+        // each message through the app exactly like a widget-emitted one.
+        while let Ok(msg) = self.rx.try_recv() {
+            self.app.update(msg, &mut self.ui);
+        }
+        if self.ui.needs_paint() {
+            Flow::Redraw
+        } else {
+            Flow::Continue
+        }
+    }
+
     fn on_session(&mut self, active: bool) {
         if active {
             // Back buffers hold unknown contents after a VT switch: full repaint.
@@ -421,5 +495,21 @@ fn map_key(sym: Keysym, text: Option<&str>) -> Option<Key> {
         Some(" ") => Some(Key::Space),
         Some(t) => t.chars().next().filter(|c| !c.is_control()).map(Key::Char),
         None => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // A `Proxy` is only useful if it can move to a worker thread and be cloned
+    // for several; pin that contract so a future field can't silently break it.
+    #[test]
+    fn proxy_is_send_and_clone() {
+        fn assert_send<T: Send>() {}
+        fn assert_clone<T: Clone>() {}
+        assert_send::<Waker>();
+        assert_send::<Proxy<i32>>();
+        assert_clone::<Proxy<i32>>();
     }
 }

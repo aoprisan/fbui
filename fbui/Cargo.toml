@@ -38,3 +38,7 @@ required-features = ["platform"]
 [[example]]
 name = "big_list"
 required-features = ["platform"]
+
+[[example]]
+name = "progress"
+required-features = ["platform"]

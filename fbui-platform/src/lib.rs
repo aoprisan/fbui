@@ -55,7 +55,7 @@ pub use crate::seat::{Seat, SessionEvent};
 pub use crate::vt::{VtEvent, VtGuard};
 
 #[cfg(feature = "event-loop")]
-pub use crate::event_loop::{Flow, PlatformHandler};
+pub use crate::event_loop::{Flow, PlatformHandler, Waker};
 
 /// How to bring the platform up. [`Default`] picks the conventional nodes and
 /// enables the VT guard — the right answer for a fullscreen app on the active

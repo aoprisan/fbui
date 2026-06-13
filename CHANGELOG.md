@@ -35,6 +35,15 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
   guide in [`docs/profiling.md`](docs/profiling.md). Zero-cost when off.
 - A `scroll` benchmark (`fbui-widgets`) and CI gates for it and the `profile`
   feature.
+- **Cross-thread wakeup primitive**: a generic way to drive the UI from a
+  background thread. `fbui_platform::Waker` (a clonable, `Send` handle backed by a
+  `calloop` ping) wakes the event loop; new `PlatformHandler::on_start(waker)` /
+  `on_wake()` hooks deliver it and service it. At the runner level, `Proxy<M>`
+  pairs a message sender with the waker: `App::on_start(proxy)` hands one out, a
+  worker calls `proxy.send(msg)`, and the runner runs it through `App::update`
+  exactly like a widget-emitted message. The framework stays ignorant of what the
+  work is (IPC, I/O, a timer) — a new `progress` example shows the pattern. This
+  is the primitive an out-of-process backend's client uses to feed the UI.
 - **Host-independent / bundled fonts**: `FontContext::with_fonts(bytes)` builds a
   text context from caller-supplied TTF/OTF with **no** dependence on the host's
   installed fonts (the first face becomes the default family, so a plain
