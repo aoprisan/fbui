@@ -9,11 +9,12 @@
 
 use std::time::Instant;
 
+use fbui_platform::cursor::SoftwareCursor;
 use fbui_platform::{
     keysym, Button, Flow, Frame, InputEvent, KeyState, Keysym, Modifiers as PMods, Platform,
     PlatformConfig, PlatformHandler, Point as PPoint, Rect as PRect,
 };
-use fbui_render::geom::{Point, Size};
+use fbui_render::geom::{IRect, Point, Size};
 use fbui_render::{Scale, Surface};
 use fbui_widgets::event::{Event, Key, Modifiers, PointerButton};
 use fbui_widgets::gesture::{Gesture, GestureRecognizer};
@@ -69,6 +70,8 @@ pub fn run<A: App>(mut app: A) -> fbui_platform::Result<()> {
         phys_w: phys.w as f32,
         phys_h: phys.h as f32,
         cursor: (phys.w as f32 / 2.0, phys.h as f32 / 2.0),
+        cursor_sprite: SoftwareCursor::new(phys),
+        cursor_dirty: true,
         gestures: GestureRecognizer::default(),
         start: now,
         last_tick: now,
@@ -86,6 +89,12 @@ struct Runner<A: App> {
     phys_h: f32,
     /// Pointer position in physical pixels (the platform tracks none itself).
     cursor: (f32, f32),
+    /// The arrow sprite composited over the frame; its position mirrors
+    /// [`cursor`](Self::cursor) each render so the pointer is actually visible.
+    cursor_sprite: SoftwareCursor,
+    /// The pointer moved since the last present, so the frame must be redrawn to
+    /// shift the arrow even when no widget changed.
+    cursor_dirty: bool,
     /// Recognizes taps/long-press/fling from the primary pointer/touch, so mouse
     /// and touch get the same higher-level gestures.
     gestures: GestureRecognizer,
@@ -155,6 +164,7 @@ impl<A: App> Runner<A> {
             (p.x as f32).clamp(0.0, self.phys_w),
             (p.y as f32).clamp(0.0, self.phys_h),
         );
+        self.cursor_dirty = true;
     }
 
     /// Feed a widget event and run any resulting messages.
@@ -186,6 +196,7 @@ impl<A: App> PlatformHandler for Runner<A> {
             InputEvent::PointerMotion { dx, dy } => {
                 self.cursor.0 = (self.cursor.0 + dx as f32).clamp(0.0, self.phys_w);
                 self.cursor.1 = (self.cursor.1 + dy as f32).clamp(0.0, self.phys_h);
+                self.cursor_dirty = true;
                 let pos = self.cursor_logical();
                 self.dispatch(Event::PointerMove { pos });
                 self.gesture_move(pos);
@@ -254,7 +265,7 @@ impl<A: App> PlatformHandler for Runner<A> {
             _ => {}
         }
 
-        if self.ui.needs_paint() {
+        if self.ui.needs_paint() || self.cursor_dirty {
             Flow::Redraw
         } else {
             Flow::Continue
@@ -262,15 +273,28 @@ impl<A: App> PlatformHandler for Runner<A> {
     }
 
     fn render(&mut self, frame: &mut Frame<'_>) -> Vec<PRect> {
-        let Runner { ui, surface, .. } = self;
-        ui.paint(surface);
+        // Mirror the input cursor onto the sprite, then damage the pixels it is
+        // leaving and entering so copy-out refreshes them from the clean shadow
+        // (the arrow itself lives only in the frame, never the shadow).
+        self.cursor_sprite
+            .move_absolute(PPoint::new(self.cursor.0 as i32, self.cursor.1 as i32));
+        let d = self.cursor_sprite.damage();
+        self.surface
+            .damage_device_rect(IRect::new(d.x, d.y, d.w, d.h));
+
+        self.ui.paint(&mut self.surface);
         crate::span!("present");
-        surface.copy_into_frame(frame)
+        let rects = self.surface.copy_into_frame(frame);
+        // Composite the arrow on top of the just-copied UI, into the back buffer.
+        self.cursor_sprite.paint(frame);
+        self.cursor_dirty = false;
+        rects
     }
 
     fn on_session(&mut self, active: bool) {
         if active {
             // Back buffers hold unknown contents after a VT switch: full repaint.
+            self.cursor_dirty = true;
             self.ui.set_size(self.logical, self.scale);
         }
     }
@@ -293,6 +317,10 @@ impl<A: App> PlatformHandler for Runner<A> {
             self.cursor.0.clamp(0.0, self.phys_w),
             self.cursor.1.clamp(0.0, self.phys_h),
         );
+        // The surface was rebuilt at the new size; rebuild the sprite so its
+        // clamp bounds match, and force a redraw to repaint the arrow.
+        self.cursor_sprite = SoftwareCursor::new(info.size);
+        self.cursor_dirty = true;
         self.ui.set_size(self.logical, self.scale);
     }
 

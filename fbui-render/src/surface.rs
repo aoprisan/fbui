@@ -91,6 +91,18 @@ impl Surface {
         self.damage.is_clean()
     }
 
+    /// Register a device-pixel region as damaged without drawing into it.
+    ///
+    /// This is for overlays composited into the back buffer *after* copy-out — a
+    /// software cursor, say — whose pixels never live in the shadow. Damaging the
+    /// region the overlay last occupied makes the next copy-out refresh those
+    /// pixels from the (clean) shadow, erasing the overlay's old position before
+    /// it's redrawn elsewhere. Buffer-age history then carries the refresh across
+    /// every back buffer.
+    pub fn damage_device_rect(&mut self, r: IRect) {
+        self.damage.add(r);
+    }
+
     /// Borrow the shadow pixmap (for snapshot tests, PNG export, debugging).
     pub fn pixmap(&self) -> &tiny_skia::Pixmap {
         &self.shadow
@@ -308,5 +320,19 @@ mod tests {
         s.set_scale(Scale::new(2.0));
         let damage = s.present_to_buffer(&mut [0u8; 8 * 8 * 4], 32, TargetFormat::Xrgb8888, 1);
         assert_eq!(damage, vec![IRect::from_wh(8, 8)]);
+    }
+
+    #[test]
+    fn injected_device_damage_presents_without_painting() {
+        // The software-cursor contract: damaging a region the overlay vacated —
+        // with no paint into the shadow — still surfaces it as a copy-out region,
+        // so the next frame refreshes those pixels and erases the old arrow.
+        let mut s = Surface::new(8, 8, Scale::ONE);
+        let _ = s.present_to_buffer(&mut [0u8; 8 * 8 * 4], 32, TargetFormat::Xrgb8888, 1);
+        assert!(s.is_clean());
+        s.damage_device_rect(IRect::new(2, 3, 4, 4));
+        assert!(!s.is_clean());
+        let damage = s.present_to_buffer(&mut [0u8; 8 * 8 * 4], 32, TargetFormat::Xrgb8888, 1);
+        assert_eq!(damage, vec![IRect::new(2, 3, 4, 4)]);
     }
 }

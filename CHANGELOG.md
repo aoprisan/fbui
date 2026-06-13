@@ -35,6 +35,13 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
   guide in [`docs/profiling.md`](docs/profiling.md). Zero-cost when off.
 - A `scroll` benchmark (`fbui-widgets`) and CI gates for it and the `profile`
   feature.
+- **Visible mouse cursor in the runner**: the `fbui` app runner now composites a
+  software arrow over each frame (its position mirrors the pointer), so a mouse
+  is actually drawn — clicking already worked, the pointer just wasn't shown. The
+  arrow is overlaid into the back buffer after copy-out and never touches the
+  shadow; a new `Surface::damage_device_rect` refreshes the vacated pixels so the
+  buffer-age history erases the old position across every back buffer. A bare
+  pointer move now schedules a present even when no widget changed.
 
 ### Known gaps
 
