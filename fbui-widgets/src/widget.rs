@@ -77,6 +77,62 @@ pub type AvailableSize = taffy::Size<AvailableSpace>;
 /// `Msg` is the application's message type. Default method bodies make the common
 /// case (a non-focusable leaf with no intrinsic size) a two-method impl: `paint`
 /// and `as_any`.
+///
+/// # Implementing a custom widget
+///
+/// This trait is the entire extension story: the built-in widgets get no
+/// privileged API, so a downstream type that implements `Widget` drops into the
+/// tree via [`Ui::add_child`](crate::Ui::add_child) exactly like a
+/// [`Button`](crate::widgets::Button) or [`Label`](crate::widgets::Label). A leaf
+/// with an intrinsic size needs only `layout_style`, `measure`,
+/// `paint`, and `as_any_mut`:
+///
+/// ```
+/// use std::any::Any;
+///
+/// use fbui_widgets::widget::{AvailableSize, KnownDims};
+/// use fbui_widgets::{PaintCtx, Style, Theme, Widget};
+/// use fbui_widgets::fbui_render::geom::Size;
+/// use fbui_widgets::fbui_render::{Color, FontContext};
+///
+/// /// A fixed-size square of one solid color.
+/// struct Swatch {
+///     color: Color,
+///     side: f32,
+/// }
+///
+/// impl<Msg: 'static> Widget<Msg> for Swatch {
+///     fn layout_style(&self, _theme: &Theme) -> Style {
+///         Style::default()
+///     }
+///
+///     // Report an intrinsic size so layout reserves a square for us.
+///     fn measure(
+///         &mut self,
+///         _fonts: &mut FontContext,
+///         _theme: &Theme,
+///         _known: KnownDims,
+///         _available: AvailableSize,
+///     ) -> Option<Size> {
+///         Some(Size::new(self.side, self.side))
+///     }
+///
+///     fn paint(&self, ctx: &mut PaintCtx) {
+///         let bounds = ctx.bounds();
+///         ctx.painter().fill_rect(bounds, self.color);
+///     }
+///
+///     fn as_any_mut(&mut self) -> &mut dyn Any {
+///         self
+///     }
+/// }
+/// ```
+///
+/// For interactive and animated widgets, override [`event`](Widget::event)
+/// (emit messages and request repaints through the [`EventCtx`]),
+/// [`animate`](Widget::animate) (advance a frame-clock [`Tween`](crate::Tween)),
+/// and [`focusable`](Widget::focusable). The `custom_widget` example in the
+/// `fbui` crate walks through all of these end to end.
 pub trait Widget<Msg>: Any {
     /// The layout style (flex, size, padding, …) contributed to taffy.
     fn layout_style(&self, theme: &Theme) -> Style;

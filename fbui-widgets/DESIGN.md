@@ -185,3 +185,38 @@ and scroll-blit fast paths slot into rule §3.4 and the ScrollView; GPU (Phase 6
 swaps the Phase 2 painter without touching this layer. Nothing here assumes
 software rendering or a particular display — it only speaks `Painter`, `Event`,
 and damage.
+
+## 10. Writing a custom widget
+
+The widget set in §7 is not a closed enum — it is just the first set of types to
+implement the public `Widget<Msg>` trait. **A downstream crate adds a widget by
+implementing that same trait**, with no privileged or internal API: the built-in
+widgets and a third-party one are indistinguishable to the `Ui`, which stores
+both as `Box<dyn Widget<Msg>>` and drives them through the same trait methods.
+
+What a custom widget overrides depends on what it is:
+
+| Concern | Hook(s) | Default |
+|---|---|---|
+| Box model (flex, size, padding) | `layout_style` | required |
+| Intrinsic content size (text, image, a disc) | `measure` | `None` (size from style) |
+| Drawing | `paint` | required |
+| Input → messages + damage | `event` (via `EventCtx`) | ignore |
+| Frame-clock animation | `animate` (drive a `Tween`) | `Anim::IDLE` |
+| Keyboard focus / tab order | `focusable` | `false` |
+| Clipping + scrolling | `clips`, `content_offset`, `set_scroll_metrics`, `scroll_blit` | non-clipping, no offset |
+| App mutation by id (`Ui::with`) | `as_any_mut` | required |
+
+A leaf with a fixed size is `layout_style` + `measure` + `paint` + `as_any_mut`;
+an interactive, animated one adds `event`, `animate`, and `focusable`. The two
+data-flow rules from §3 still hold: a widget never touches the `Ui` directly, and
+mutation flows one way — events emit `Msg`s and request damage through the
+`EventCtx`, the app folds those into state in `update`, and the next frame
+repaints. The doctest on the `Widget` trait shows the minimal leaf; the
+`custom_widget` example in the `fbui` crate (a tappable, pulsing `Dot`) walks
+through the interactive and animated hooks end to end.
+
+Because the trait is the whole contract, the umbrella `fbui` crate re-exports the
+pieces an external implementor needs — the `widget`, `anim`, and `style` modules
+alongside `Widget`, `Anim`, `PaintCtx`, and `EventCtx` — so a custom widget never
+has to reach past `fbui` into the sub-crates.
