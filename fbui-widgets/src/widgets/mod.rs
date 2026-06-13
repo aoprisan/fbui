@@ -14,7 +14,7 @@ mod slider;
 mod switch;
 mod text_input;
 
-pub use button::Button;
+pub use button::{Button, ButtonVariant};
 pub use checkbox::Checkbox;
 pub use container::{Align, Container};
 pub use image::ImageView;

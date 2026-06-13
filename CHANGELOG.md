@@ -49,6 +49,11 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
   of waiting for the ~1 s poll (which stays as a backstop). Best-effort: if the
   netlink socket can't open (a sandbox without it), the poll still covers hotplug.
   Closes the "wire a udev/uevent monitor" gap from 0.1.0.
+- **`Button` variants**: `ButtonVariant::{Primary, Secondary, Danger}` with
+  `Button::secondary()` / `danger()` shorthands, each pulling its fill from the
+  theme — including a new `Palette::danger` color, so a destructive action (an
+  "Erase" button) reads as dangerous. Runtime theme switching already worked via
+  `Ui::set_theme`.
 - **`ProgressBar` widget**: a read-only fraction indicator (`[0, 1]`) for
   long-running work — the missing complement to the interactive `Slider`. Drive
   it from `App::update` via `Ui::with` (e.g. from progress a worker posts through
