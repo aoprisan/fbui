@@ -42,3 +42,7 @@ required-features = ["platform"]
 [[example]]
 name = "progress"
 required-features = ["platform"]
+
+[[example]]
+name = "custom_widget"
+required-features = ["platform"]

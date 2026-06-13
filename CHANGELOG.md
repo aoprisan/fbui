@@ -19,6 +19,14 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Added
 
+- **Custom-widget extension surface**: the `fbui` umbrella now re-exports the
+  `widget`, `anim`, and `style` modules plus `Anim`, so a downstream crate can
+  implement `Widget<Msg>` for its own type without reaching into the sub-crates.
+  Documented with a compiler-checked doctest on the `Widget` trait, a new
+  "Writing a custom widget" section in `fbui-widgets/DESIGN.md`, and a
+  `custom_widget` example (a tappable, pulsing `Dot`) exercising `measure`,
+  `paint`, `event`, `animate`, and `focusable` end to end.
+
 - **Animation API** (`fbui-widgets::anim`): `Easing` curves, a `Lerp` trait
   (`f32`, `Color`), and a `Tween<T>` advanced by the frame `dt` — pure and
   damage-aware. A new animated `Switch` widget is the worked example.

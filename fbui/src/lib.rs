@@ -47,10 +47,13 @@ macro_rules! span {
 #[cfg(feature = "platform")]
 pub(crate) use span;
 
-// Flatten the most-used names to the crate root.
+// Flatten the most-used names to the crate root. The `anim`, `style`, and
+// `widget` modules are surfaced so downstream crates can implement the
+// [`Widget`] trait — and size/animate their own widgets — without reaching past
+// the umbrella into `fbui_widgets`.
 pub use fbui_widgets::{
-    ctx, event, theme, tree, widgets, Event, Key, Modifiers, PaintCtx, PointerButton, Style, Theme,
-    Ui, Widget, WidgetId,
+    anim, ctx, event, style, theme, tree, widget, widgets, Anim, Event, Key, Modifiers, PaintCtx,
+    PointerButton, Style, Theme, Ui, Widget, WidgetId,
 };
 
 #[cfg(feature = "platform")]
