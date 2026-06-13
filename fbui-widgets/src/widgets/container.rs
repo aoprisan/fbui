@@ -31,6 +31,8 @@ pub struct Container {
     background: Option<Color>,
     radius: f32,
     fill: bool,
+    width: Option<f32>,
+    height: Option<f32>,
 }
 
 impl Container {
@@ -44,6 +46,8 @@ impl Container {
             background: None,
             radius: 0.0,
             fill: false,
+            width: None,
+            height: None,
         }
     }
 
@@ -86,6 +90,21 @@ impl Container {
         self
     }
 
+    /// Fix the container's width, in logical pixels (overridden by
+    /// [`fill`](Self::fill)). Gives an `auto`-sized child a definite length to
+    /// lay out within.
+    pub fn width(mut self, width: f32) -> Self {
+        self.width = Some(width);
+        self
+    }
+
+    /// Fix the container's height, in logical pixels (overridden by
+    /// [`fill`](Self::fill)).
+    pub fn height(mut self, height: f32) -> Self {
+        self.height = Some(height);
+        self
+    }
+
     /// Paint a rounded background behind the children.
     pub fn background(mut self, color: Color, radius: f32) -> Self {
         self.background = Some(color);
@@ -109,8 +128,8 @@ impl<Msg: 'static> Widget<Msg> for Container {
             }
         } else {
             taffy::Size {
-                width: style::auto(),
-                height: style::auto(),
+                width: self.width.map(style::length).unwrap_or_else(style::auto),
+                height: self.height.map(style::length).unwrap_or_else(style::auto),
             }
         };
         Style {

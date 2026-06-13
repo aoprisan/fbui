@@ -43,6 +43,12 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
   new "Small builds & fast boot" section in the device guide documents the profile,
   the pure-Rust default features (no libinput/seatd/dbus/mesa in the image), and
   font bundling.
+- **`ProgressBar` widget**: a read-only fraction indicator (`[0, 1]`) for
+  long-running work — the missing complement to the interactive `Slider`. Drive
+  it from `App::update` via `Ui::with` (e.g. from progress a worker posts through
+  a `Proxy`); it reuses the theme's track/accent colors. `Container` also gained
+  `width`/`height` builders to give an `auto`-sized child a definite length. The
+  `progress` example now shows a real bar.
 - **Cross-thread wakeup primitive**: a generic way to drive the UI from a
   background thread. `fbui_platform::Waker` (a clonable, `Send` handle backed by a
   `calloop` ping) wakes the event loop; new `PlatformHandler::on_start(waker)` /

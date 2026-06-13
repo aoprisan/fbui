@@ -15,7 +15,7 @@
 use std::thread;
 use std::time::Duration;
 
-use fbui::widgets::{Align, Container, Label};
+use fbui::widgets::{Align, Container, Label, ProgressBar};
 use fbui::{App, Proxy, Ui, WidgetId};
 
 #[derive(Clone)]
@@ -27,6 +27,7 @@ enum Msg {
 #[derive(Default)]
 struct Work {
     label: Option<WidgetId>,
+    bar: Option<WidgetId>,
 }
 
 impl App for Work {
@@ -42,6 +43,9 @@ impl App for Work {
         );
         ui.add_child(root, Label::new("Working…").size(28.0).bold());
         self.label = Some(ui.add_child(root, Label::new("0%").size(48.0)));
+        // A fixed-width row so the bar has a definite length to fill.
+        let row = ui.add_child(root, Container::row().width(320.0));
+        self.bar = Some(ui.add_child(row, ProgressBar::new(0.0)));
     }
 
     fn on_start(&mut self, proxy: Proxy<Msg>) {
@@ -60,12 +64,15 @@ impl App for Work {
     }
 
     fn update(&mut self, msg: Msg, ui: &mut Ui<Msg>) {
-        let text = match msg {
-            Msg::Progress(p) => format!("{p}%"),
-            Msg::Done => "Done".to_string(),
+        let (text, fraction) = match msg {
+            Msg::Progress(p) => (format!("{p}%"), p as f32 / 100.0),
+            Msg::Done => ("Done".to_string(), 1.0),
         };
         if let Some(id) = self.label {
             ui.with::<Label, _>(id, |l| l.set_text(text));
+        }
+        if let Some(id) = self.bar {
+            ui.with::<ProgressBar, _>(id, |b| b.set_fraction(fraction));
         }
     }
 }
