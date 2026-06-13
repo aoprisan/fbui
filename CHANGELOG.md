@@ -35,6 +35,15 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
   guide in [`docs/profiling.md`](docs/profiling.md). Zero-cost when off.
 - A `scroll` benchmark (`fbui-widgets`) and CI gates for it and the `profile`
   feature.
+- **Host-independent / bundled fonts**: `FontContext::with_fonts(bytes)` builds a
+  text context from caller-supplied TTF/OTF with **no** dependence on the host's
+  installed fonts (the first face becomes the default family, so a plain
+  `TextStyle` resolves to it) — what a reproducible, fast-booting target needs.
+  `App::fonts()` and `Ui::with_fonts` plumb a font set through the runner. An
+  optional `bundled-font` feature compiles in a default font (Inter Regular, OFL;
+  `FontContext::with_default_font`) for turnkey text with no asset files, off by
+  default (~300 KB). A deterministic text test backs it. (Note: with cosmic-text
+  0.19, `FontContext::new()` no longer scans system fonts — it starts empty.)
 - **Visible mouse cursor in the runner**: the `fbui` app runner now composites a
   software arrow over each frame (its position mirrors the pointer), so a mouse
   is actually drawn — clicking already worked, the pointer just wasn't shown. The

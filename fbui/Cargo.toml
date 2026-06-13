@@ -13,6 +13,10 @@ publish = false
 # feature pulls in fbui-platform and the on-device runner.
 default = []
 platform = ["dep:fbui-platform", "fbui-render/platform"]
+# Compile in a default font so an app that returns no fonts from `App::fonts`
+# still renders text on a target with no installed fonts. Off by default; adds
+# ~300 KB. See `fbui_render::FontContext`.
+bundled-font = ["fbui-render/bundled-font"]
 # Emit `tracing` spans through input → update → layout → paint → present so an
 # app can capture a per-frame flamegraph. Off by default, zero-cost when off.
 profile = ["dep:tracing", "fbui-widgets/profile"]

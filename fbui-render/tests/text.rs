@@ -9,7 +9,9 @@
 //! surface when a covering font exists.
 //!
 //! A test that needs glyph coverage is skipped (not failed) when no font on the
-//! host can render the sample.
+//! host can render the sample — except `bundled_font_renders_without_host_fonts`
+//! (feature `bundled-font`), which is a hard assertion precisely because the
+//! compiled-in font makes rendering host-independent.
 
 use fbui_render::geom::{Point, Rect};
 use fbui_render::{Color, FontContext, Scale, Surface, TextStyle};
@@ -138,4 +140,29 @@ fn repeated_draw_is_cache_warm() {
     let mut surface = Surface::new(200, 40, Scale::ONE);
     surface.paint(|p| fonts.draw_text(p, "cache me", &style, Point::new(4.0, 4.0), None));
     surface.paint(|p| fonts.draw_text(p, "cache me", &style, Point::new(4.0, 4.0), None));
+}
+
+#[cfg(feature = "bundled-font")]
+#[test]
+fn bundled_font_renders_without_host_fonts() {
+    // The point of `bundled-font`: text measures and inks deterministically with
+    // no dependence on the host's installed fonts — so this is a hard assertion,
+    // not a skip-if-absent like the CJK/RTL cases above. A default `TextStyle`
+    // (SansSerif) must resolve to the compiled-in face.
+    let bg = Color::rgb(0, 0, 0);
+    let mut fonts = FontContext::with_default_font();
+    let style = TextStyle::new(18.0, Color::WHITE);
+
+    let size = fonts.layout("Hello, fbui", &style, None).size();
+    assert!(
+        size.w > 0.0 && size.h >= 18.0,
+        "bundled font must measure a box"
+    );
+
+    let mut surface = Surface::with_base(320, 80, Scale::ONE, bg);
+    surface.paint(|p| fonts.draw_text(p, "Hello, fbui", &style, Point::new(8.0, 8.0), None));
+    assert!(
+        ink_pixels(&surface, bg) > 0,
+        "bundled font must put ink on the surface"
+    );
 }

@@ -15,7 +15,7 @@ use fbui_platform::{
     PlatformConfig, PlatformHandler, Point as PPoint, Rect as PRect,
 };
 use fbui_render::geom::{IRect, Point, Size};
-use fbui_render::{Scale, Surface};
+use fbui_render::{FontContext, Scale, Surface};
 use fbui_widgets::event::{Event, Key, Modifiers, PointerButton};
 use fbui_widgets::gesture::{Gesture, GestureRecognizer};
 use fbui_widgets::{Theme, Ui};
@@ -40,6 +40,28 @@ pub trait App: 'static {
     fn theme(&self) -> Theme {
         Theme::dark()
     }
+
+    /// Fonts to render text with, as TTF/OTF bytes — typically
+    /// `vec![include_bytes!("MyFont.ttf").to_vec()]`. Bundling your font here
+    /// keeps text host-independent, which a boot image or kiosk needs.
+    ///
+    /// Default: empty. When empty, the runner uses the compiled-in default font
+    /// if the `bundled-font` feature is on, and otherwise loads no fonts (text
+    /// won't render until you supply some).
+    fn fonts(&self) -> Vec<Vec<u8>> {
+        Vec::new()
+    }
+}
+
+/// The font context for an app that returned no fonts: the compiled-in default
+/// under `bundled-font`, or an empty database otherwise.
+#[cfg(feature = "bundled-font")]
+fn default_font_context() -> FontContext {
+    FontContext::with_default_font()
+}
+#[cfg(not(feature = "bundled-font"))]
+fn default_font_context() -> FontContext {
+    FontContext::new()
 }
 
 /// Bring up the platform and run `app` until it exits (Esc, or a fatal error).
@@ -57,7 +79,13 @@ pub fn run<A: App>(mut app: A) -> fbui_platform::Result<()> {
     if platform.info().format == fbui_platform::PixelFormat::Rgb565 {
         surface.set_dither(true);
     }
-    let mut ui = Ui::<A::Message>::new(logical, scale, app.theme());
+    let fonts = app.fonts();
+    let font_ctx = if fonts.is_empty() {
+        default_font_context()
+    } else {
+        FontContext::with_fonts(fonts)
+    };
+    let mut ui = Ui::<A::Message>::with_fonts(logical, scale, app.theme(), font_ctx);
     app.build(&mut ui);
 
     let now = Instant::now();
