@@ -41,6 +41,8 @@ pub mod vt;
 
 #[cfg(feature = "event-loop")]
 pub mod event_loop;
+#[cfg(feature = "event-loop")]
+pub(crate) mod uevent;
 
 use std::path::PathBuf;
 
@@ -103,6 +105,9 @@ pub struct Platform {
     seat: Box<dyn Seat>,
     vt: VtGuard,
     info: DisplayInfo,
+    /// Kernel uevent monitor for immediate hotplug; `None` falls back to polling.
+    #[cfg(feature = "event-loop")]
+    uevent: Option<crate::uevent::UeventMonitor>,
 }
 
 impl Platform {
@@ -145,12 +150,24 @@ impl Platform {
         let inputs = open_inputs(config, info.size)?;
         eprintln!("[platform] input: {} source(s)", inputs.len());
 
+        // Best-effort hotplug trigger; the loop still polls as a backstop.
+        #[cfg(feature = "event-loop")]
+        let uevent = match crate::uevent::UeventMonitor::open() {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("[platform] uevent monitor unavailable ({e}); polling for hotplug");
+                None
+            }
+        };
+
         Ok(Platform {
             display,
             inputs,
             seat,
             vt,
             info,
+            #[cfg(feature = "event-loop")]
+            uevent,
         })
     }
 
@@ -163,7 +180,14 @@ impl Platform {
     /// drops at the end, restoring the console.
     #[cfg(feature = "event-loop")]
     pub fn run(self, handler: &mut dyn PlatformHandler) -> Result<()> {
-        crate::event_loop::run_loop(self.display, self.inputs, self.seat, self.vt, handler)
+        crate::event_loop::run_loop(
+            self.display,
+            self.inputs,
+            self.seat,
+            self.vt,
+            self.uevent,
+            handler,
+        )
     }
 }
 

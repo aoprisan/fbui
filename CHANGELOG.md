@@ -43,6 +43,12 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
   new "Small builds & fast boot" section in the device guide documents the profile,
   the pure-Rust default features (no libinput/seatd/dbus/mesa in the image), and
   font bundling.
+- **uevent hotplug trigger**: a pure-libc `NETLINK_KOBJECT_UEVENT` monitor
+  (`fbui-platform`, no libudev) watches for `SUBSYSTEM=drm` events and makes the
+  event loop reconfigure *immediately* on connect/disconnect/mode change, instead
+  of waiting for the ~1 s poll (which stays as a backstop). Best-effort: if the
+  netlink socket can't open (a sandbox without it), the poll still covers hotplug.
+  Closes the "wire a udev/uevent monitor" gap from 0.1.0.
 - **`ProgressBar` widget**: a read-only fraction indicator (`[0, 1]`) for
   long-running work — the missing complement to the interactive `Slider`. Drive
   it from `App::update` via `Ui::with` (e.g. from progress a worker posts through

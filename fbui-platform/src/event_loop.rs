@@ -134,6 +134,8 @@ struct LoopState<'h> {
     seat: Box<dyn Seat>,
     vt: VtGuard,
     handler: &'h mut dyn PlatformHandler,
+    /// Kernel uevent monitor (DRM hotplug trigger); `None` when unavailable.
+    uevent: Option<crate::uevent::UeventMonitor>,
     /// Session/VT currently ours? When false we neither render nor hold master.
     active: bool,
     /// A repaint is owed.
@@ -237,6 +239,18 @@ impl LoopState<'_> {
         Ok(())
     }
 
+    /// A DRM uevent arrived: reconfigure now (the periodic poll is the backstop).
+    fn on_uevent_ready(&mut self) -> Result<()> {
+        let is_drm = match &self.uevent {
+            Some(m) => m.drain_is_drm()?,
+            None => false,
+        };
+        if is_drm {
+            self.poll_display_change()?;
+        }
+        Ok(())
+    }
+
     /// A background thread pinged the [`Waker`]: let the handler drain its queue.
     fn on_wake_ready(&mut self) -> Result<()> {
         match self.handler.on_wake() {
@@ -280,6 +294,7 @@ pub(crate) fn run_loop(
     inputs: Vec<Box<dyn InputSource>>,
     seat: Box<dyn Seat>,
     vt: VtGuard,
+    uevent: Option<crate::uevent::UeventMonitor>,
     handler: &mut dyn PlatformHandler,
 ) -> Result<()> {
     // Snapshot the fds before the devices move into `LoopState` (fd numbers are
@@ -288,6 +303,7 @@ pub(crate) fn run_loop(
     let input_fds: Vec<RawFd> = inputs.iter().flat_map(|s| s.fds()).collect();
     let vt_fd: Option<RawFd> = vt.switch_fd();
     let seat_fd: Option<RawFd> = seat.session_fd();
+    let uevent_fd: Option<RawFd> = uevent.as_ref().map(|m| m.fd());
     // fbdev has no flip fd, so pace it with a timer instead.
     let needs_timer = display_fd.is_none();
 
@@ -301,6 +317,7 @@ pub(crate) fn run_loop(
         seat,
         vt,
         handler,
+        uevent,
         active: true,
         needs_redraw: true, // force the first frame
         exit: false,
@@ -360,6 +377,18 @@ pub(crate) fn run_loop(
             let _ = st.on_wake_ready();
         })
         .map_err(|e| Error::io("insert ping source", std::io::Error::other(e.error)))?;
+
+    if let Some(fd) = uevent_fd {
+        handle
+            .insert_source(
+                Generic::new(PollFd(fd), Interest::READ, Mode::Level),
+                |_, _, st: &mut LoopState| {
+                    st.on_uevent_ready().map_err(into_io)?;
+                    Ok(PostAction::Continue)
+                },
+            )
+            .map_err(|e| Error::io("insert uevent source", std::io::Error::other(e.error)))?;
+    }
 
     if needs_timer {
         let refresh = Duration::from_micros(16_666); // ~60 Hz pacing for fbdev
