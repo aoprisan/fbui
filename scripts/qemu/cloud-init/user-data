@@ -1,0 +1,115 @@
+#cloud-config
+# NoCloud seed for the fbui visual echo demo. No toolchain is installed — the
+# echo binary is built on the host (in Docker) and shared in read-only over 9p.
+# See scripts/qemu/launch-demo.sh and fbui-platform/docs/qemu.md.
+
+hostname: fbui-demo
+
+# Console login fallback (autologin below usually makes this unnecessary).
+# Root password is "fbui"; this is a throwaway local demo VM.
+chpasswd:
+  expire: false
+  users:
+    - name: root
+      password: fbui
+      type: text
+
+write_files:
+  # Autologin root on tty1 — the graphical VT shown in the QEMU cocoa window
+  # (virtio-gpu framebuffer console). The echo demo needs a real VT for KD_GRAPHICS.
+  - path: /etc/systemd/system/getty@tty1.service.d/autologin.conf
+    content: |
+      [Service]
+      ExecStart=
+      ExecStart=-/sbin/agetty --autologin root --noclear %I $TERM
+
+  - path: /root/run-demo.sh
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      # The fbui echo demo: software cursor + keystroke echo. Esc to quit.
+      BIN=/mnt/fbui/target/linux-arm64/release/examples/echo
+      if [ ! -x "$BIN" ]; then
+        echo "echo binary not found at $BIN"
+        echo "build it on the host first (see fbui-platform/docs/qemu.md)."
+        exit 1
+      fi
+      exec "$BIN"
+
+  # Banner on every login shell so the demo command is obvious in the window.
+  - path: /etc/profile.d/zz-fbui-demo.sh
+    content: |
+      echo
+      echo "================ fbui echo demo ================"
+      echo "  run:   ./run-demo.sh"
+      echo "  then:  move the mouse (cursor follows), type"
+      echo "         (colored cells), press Esc to quit."
+      echo "================================================"
+      echo
+
+  # Load the 9p virtio transport at early boot (systemd-modules-load), so the
+  # device is probed and its channel registered well before userspace mounts —
+  # avoids "9pnet_virtio: no channels available" probe races.
+  - path: /etc/modules-load.d/9p.conf
+    content: |
+      9pnet_virtio
+      9p
+
+  # Mount the 9p share with a retry loop that tolerates the virtio probe race.
+  # This runs on EVERY boot (not just first provision), which a plain /etc/fstab
+  # entry can't do reliably: the fstab-generated mount unit fires once, races the
+  # virtio-9p channel coming up, and with nofail gives up silently — leaving
+  # /mnt/fbui empty after a reboot. A oneshot service that loops fixes that.
+  - path: /usr/local/sbin/fbui-mount-9p.sh
+    permissions: '0755'
+    content: |
+      #!/bin/sh
+      modprobe 9pnet_virtio 9p 2>/dev/null || true
+      mkdir -p /mnt/fbui
+      mountpoint -q /mnt/fbui && exit 0
+      ok=0
+      for i in $(seq 1 30); do
+        if mount -t 9p -o trans=virtio,version=9p2000.L,ro,access=any fbui /mnt/fbui 2>/tmp/9p.err; then ok=1; break; fi
+        sleep 1
+      done
+      {
+        echo "=== FBUI 9P DIAG ==="
+        echo "mount ok=$ok"
+        echo "-- mount --"; mount | grep fbui || echo "(not mounted)"
+        echo "-- last mount err --"; cat /tmp/9p.err 2>/dev/null || true
+        echo "-- echo binary --"; ls -l /mnt/fbui/target/linux-arm64/release/examples/echo 2>&1
+        echo "=== END DIAG ==="
+      } > /dev/console 2>&1
+      exit 0
+
+  - path: /etc/systemd/system/fbui-9p.service
+    content: |
+      [Unit]
+      Description=Mount the fbui 9p share (retries past the virtio probe race)
+      After=systemd-modules-load.service
+      Before=getty@tty1.service
+      ConditionPathIsMountPoint=!/mnt/fbui
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/local/sbin/fbui-mount-9p.sh
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - [ systemctl, daemon-reload ]
+  # restart (not just enable --now): getty@tty1 is already running from boot with
+  # the stock ExecStart, so it must be restarted to pick up the autologin drop-in.
+  - [ systemctl, enable, "getty@tty1.service" ]
+  - [ systemctl, restart, "getty@tty1.service" ]
+  - [ sh, -c, "modprobe uinput 2>/dev/null || true" ]
+  # Enable for future boots and run it now for this first boot.
+  - [ systemctl, enable, "fbui-9p.service" ]
+  - [ systemctl, start, "fbui-9p.service" ]
+  - [ touch, /root/.provisioned ]
+  # Marker the host watches for on the serial log to know provisioning finished.
+  - [ sh, -c, "echo '=== FBUI-DEMO PROVISIONED ===' > /dev/console 2>&1 || true" ]
+
+final_message: "=== FBUI-DEMO PROVISIONED === (uptime $UPTIME)"
