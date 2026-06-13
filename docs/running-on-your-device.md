@@ -128,7 +128,50 @@ fn main() -> fbui_platform::Result<()> {
 16-bit (RGB565) panels get ordered dithering on the copy-out automatically, to
 suppress gradient banding.
 
-## 6. Troubleshooting
+## 6. Small builds & fast boot
+
+fbui is meant to ship in a boot image — a kiosk, a live/recovery/wipe ISO — where
+binary size and start-up time matter. Three things keep a release build small,
+fast to start, and self-contained:
+
+**A size-tuned release profile.** The workspace ships one (root `Cargo.toml`);
+use the same in your app:
+
+```toml
+[profile.release]
+opt-level = 3        # keep the CPU renderer fast; use "s"/"z" to trade speed for size
+lto = true
+codegen-units = 1
+panic = "abort"      # drops unwind tables
+strip = true
+```
+
+`panic = "abort"` is safe even though fbui must restore the console on a crash:
+the restore runs from a **panic hook** (and from the signal handlers), both of
+which fire *before* the process aborts — it never relied on unwinding `Drop`. A
+fully-featured release binary (DRM + evdev + text shaping + the bundled font) is
+about 3.4 MB.
+
+**No system libraries by default.** The default feature set is pure Rust — DRM
+dumb buffers, raw evdev, direct device access (`noseat`). You do **not** need
+libinput, libseat/seatd, logind, dbus, or mesa in the image, which keeps the
+initramfs small and the boot path short. The `libinput`/`libseat`/`xkbcommon`
+features link those C libraries only if you opt in.
+
+**A bundled font, no font scan.** `FontContext::new()` does not scan the host's
+fonts — text renders only from what you load, so it looks the same on every
+machine. Bundle your own through the `App::fonts` hook:
+
+```rust
+fn fonts(&self) -> Vec<Vec<u8>> {
+    vec![include_bytes!("../assets/MyFont.ttf").to_vec()]
+}
+```
+
+Or enable the `bundled-font` feature for a compiled-in default (Inter Regular,
+~300 KB) and return nothing from `fonts()`.
+
+## 7. Troubleshooting
 
 - **"no connected connector"** — no output is `connected`. Check
   `/sys/class/drm/card*/status`; plug in HDMI before launching, or use
@@ -149,7 +192,7 @@ suppress gradient banding.
   DRM (master is dropped/reacquired with a full redraw); on fbdev the fallback is
   best-effort. File a report with your driver name.
 
-## 7. Testing without hardware
+## 8. Testing without hardware
 
 - The renderer and widgets are **headless** — `cargo test` covers them with no
   device.

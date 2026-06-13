@@ -35,6 +35,14 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
   guide in [`docs/profiling.md`](docs/profiling.md). Zero-cost when off.
 - A `scroll` benchmark (`fbui-widgets`) and CI gates for it and the `profile`
   feature.
+- **Size-tuned release profile**: the workspace `[profile.release]` now builds for
+  shipping (LTO, one codegen unit, `panic = "abort"`, `strip`) instead of carrying
+  debug info. `panic = "abort"` is safe because the console restore is a panic
+  *hook* + signal handlers, which run before abort — not unwinding `Drop`. A
+  fully-featured release binary (DRM + evdev + text + bundled font) is ~3.4 MB. A
+  new "Small builds & fast boot" section in the device guide documents the profile,
+  the pure-Rust default features (no libinput/seatd/dbus/mesa in the image), and
+  font bundling.
 - **Cross-thread wakeup primitive**: a generic way to drive the UI from a
   background thread. `fbui_platform::Waker` (a clonable, `Send` handle backed by a
   `calloop` ping) wakes the event loop; new `PlatformHandler::on_start(waker)` /
