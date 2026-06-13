@@ -46,3 +46,11 @@ required-features = ["platform"]
 [[example]]
 name = "custom_widget"
 required-features = ["platform"]
+
+[[example]]
+name = "showcase"
+required-features = ["platform"]
+
+[dev-dependencies]
+# Used by the `showcase` example to build a procedural bitmap for ImageView.
+image = { version = "0.25", default-features = false, features = ["png"] }
