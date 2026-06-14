@@ -5,7 +5,7 @@
 use fbui_render::geom::{Point, Size};
 use fbui_render::Scale;
 use fbui_widgets::event::{Event, Key, Modifiers, PointerButton};
-use fbui_widgets::widgets::{Button, Checkbox, Container, List, Switch};
+use fbui_widgets::widgets::{Button, Checkbox, Container, List, RadioGroup, Stack, Switch};
 use fbui_widgets::{Theme, Ui, WidgetId};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -14,6 +14,7 @@ enum Msg {
     Toggled(bool),
     Picked(usize),
     Switched(bool),
+    Chose(usize),
 }
 
 fn ui() -> Ui<Msg> {
@@ -269,6 +270,105 @@ fn switch_toggles_and_animates_then_settles() {
     }
     assert!(!ui.is_animating(), "animation settled");
     assert!(frames > 1, "took more than one frame to animate");
+}
+
+#[test]
+fn stack_overlaps_children_at_the_same_origin() {
+    let mut ui = ui();
+    // A full-screen stack with two children: both fill the same box.
+    let root = ui.set_root(Stack::new());
+    let back = ui.add_child(root, Container::column().fill());
+    let front = ui.add_child(root, Container::column().fill());
+    ui.layout_now();
+
+    let rb = ui.bounds(back).unwrap();
+    let rf = ui.bounds(front).unwrap();
+    // Stacked, not flowed: identical rects, each the size of the surface.
+    assert_eq!(rb, rf, "children overlap exactly");
+    assert!(
+        (rb.w - 400.0).abs() < 0.5 && (rb.h - 300.0).abs() < 0.5,
+        "each child fills the stack: {rb:?}"
+    );
+}
+
+#[test]
+fn stack_hit_tests_topmost_child_first() {
+    let mut ui = ui();
+    let root = ui.set_root(Stack::new());
+    // Both children are pinned to the stack's origin and overlap there. They emit
+    // distinct messages so we can tell which one received the click.
+    let back = ui.add_child(root, Button::new("xxxx").on_press(|| Msg::Pressed));
+    // Added last → on top.
+    let front = ui.add_child(root, Button::new("xxxx").on_press(|| Msg::Switched(true)));
+    ui.layout_now();
+
+    // They occupy the same rect (overlap), anchored at the stack's top-left.
+    assert_eq!(ui.bounds(back), ui.bounds(front), "layers overlap");
+    let b = ui.bounds(front).unwrap();
+
+    // A click inside that shared rect goes to the topmost (last-added) child.
+    click(&mut ui, Point::new(b.x + b.w / 2.0, b.y + b.h / 2.0));
+    assert_eq!(
+        ui.take_messages(),
+        vec![Msg::Switched(true)],
+        "the topmost (last-added) child receives the click, not the one beneath"
+    );
+}
+
+#[test]
+fn radio_group_selects_on_click_and_reports_state() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().padding(10.0));
+    let rg = ui.add_child(
+        root,
+        RadioGroup::new(["Low", "Medium", "High"]).on_change(Msg::Chose),
+    );
+    ui.layout_now();
+
+    let b = ui.bounds(rg).unwrap();
+    // Click the third row (rows are DISC=20 tall on a 26px pitch).
+    click(&mut ui, Point::new(b.x + 10.0, b.y + 2.0 * 26.0 + 4.0));
+    assert_eq!(ui.take_messages(), vec![Msg::Chose(2)]);
+    let sel = ui
+        .with::<RadioGroup<Msg>, _>(rg, |r| r.selection())
+        .unwrap();
+    assert_eq!(sel, 2, "state flipped to the clicked row");
+}
+
+#[test]
+fn radio_group_arrow_keys_move_selection() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().padding(10.0));
+    let rg = ui.add_child(root, RadioGroup::new(["A", "B", "C"]).on_change(Msg::Chose));
+    ui.layout_now();
+
+    // Focus the group, then arrow down twice and back up once.
+    ui.event(Event::Key {
+        key: Key::Tab,
+        pressed: true,
+        mods: Modifiers::default(),
+    });
+    assert_eq!(ui.focused(), Some(rg));
+
+    let key = |ui: &mut Ui<Msg>, k: Key| {
+        ui.event(Event::Key {
+            key: k,
+            pressed: true,
+            mods: Modifiers::default(),
+        });
+    };
+    key(&mut ui, Key::Down);
+    key(&mut ui, Key::Down);
+    key(&mut ui, Key::Up);
+    assert_eq!(
+        ui.take_messages(),
+        vec![Msg::Chose(1), Msg::Chose(2), Msg::Chose(1)]
+    );
+
+    // Already at the top: Up clamps and emits nothing.
+    key(&mut ui, Key::Up);
+    key(&mut ui, Key::Up);
+    assert_eq!(ui.take_messages(), vec![Msg::Chose(0)]);
 }
 
 #[test]

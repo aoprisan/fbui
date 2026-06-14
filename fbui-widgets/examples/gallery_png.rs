@@ -8,7 +8,9 @@
 use fbui_render::geom::Size;
 use fbui_render::Scale;
 use fbui_render::Surface;
-use fbui_widgets::widgets::{Align, Button, Checkbox, Container, Label, List, Slider, TextInput};
+use fbui_widgets::widgets::{
+    Align, Button, Checkbox, Container, Label, List, RadioGroup, Slider, TextInput,
+};
 use fbui_widgets::{Theme, Ui};
 
 #[derive(Clone)]
@@ -18,7 +20,7 @@ fn main() {
     let path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "gallery.png".into());
-    let (w, h) = (520u32, 440u32);
+    let (w, h) = (520u32, 540u32);
 
     let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
     let root = ui.set_root(Container::column().fill().padding(20.0).gap(14.0));
@@ -37,6 +39,16 @@ fn main() {
 
     ui.add_child(root, Label::new("Volume:").color(ui.theme().palette.muted));
     ui.add_child(root, Slider::new(0.0, 100.0, 65.0));
+
+    let choices = ui.add_child(root, Container::row().gap(16.0).align(Align::Start));
+    ui.add_child(
+        choices,
+        Label::new("Quality:").color(ui.theme().palette.muted),
+    );
+    ui.add_child(
+        choices,
+        RadioGroup::new(["Low", "Medium", "High"]).selected(1),
+    );
 
     let buttons = ui.add_child(root, Container::row().gap(10.0));
     ui.add_child(buttons, Button::new("Cancel"));

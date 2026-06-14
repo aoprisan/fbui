@@ -1,7 +1,7 @@
 //! [`Container`] — a flexbox row or column. Its children are managed by the
 //! [`Ui`](crate::Ui) tree, so the widget itself is pure layout configuration.
 //!
-//! `Stack` (overlapping children) is deferred from v1 — see `DESIGN.md` §7.
+//! For *overlapping* (z-stacked) children, see [`Stack`](super::Stack).
 
 use std::any::Any;
 

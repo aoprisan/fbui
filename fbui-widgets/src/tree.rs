@@ -21,6 +21,7 @@ use taffy::{AvailableSpace, TaffyTree};
 
 use crate::ctx::{CaptureOp, EventCtx, FocusOp, Outputs, PaintCtx};
 use crate::event::{Event, Key, Modifiers};
+use crate::style::Style;
 use crate::theme::Theme;
 use crate::widget::Widget;
 
@@ -117,8 +118,44 @@ impl<Msg: 'static> Ui<Msg> {
         let (parent_taffy, child_taffy) = (self.nodes[parent].taffy, self.nodes[id].taffy);
         let _ = self.taffy.add_child(parent_taffy, child_taffy);
         self.nodes[parent].children.push(id);
+        // Now that the parent link exists, re-resolve the child's style: a child
+        // of a stacking container ([`Stack`]) is positioned to fill it.
+        self.apply_style(id);
         self.mark_full();
         id
+    }
+
+    /// Recompute and install a node's taffy style from its widget (and parent).
+    fn apply_style(&mut self, id: WidgetId) {
+        let style = self.resolved_style(id);
+        let taffy = self.nodes[id].taffy;
+        let _ = self.taffy.set_style(taffy, style);
+    }
+
+    /// The taffy style a node contributes, augmented by its parent: a child of a
+    /// container that [`stacks_children`](Widget::stacks_children) is positioned
+    /// `absolute` filling that container, so a [`Stack`](crate::widgets::Stack)'s
+    /// children overlap instead of flowing.
+    fn resolved_style(&self, id: WidgetId) -> Style {
+        let node = &self.nodes[id];
+        let mut style = node.widget.layout_style(&self.theme);
+        if let Some(parent) = node.parent {
+            if self
+                .nodes
+                .get(parent)
+                .is_some_and(|p| p.widget.stacks_children())
+            {
+                style.position = taffy::Position::Absolute;
+                let zero = taffy::LengthPercentageAuto::length(0.0);
+                style.inset = taffy::Rect {
+                    left: zero,
+                    right: zero,
+                    top: zero,
+                    bottom: zero,
+                };
+            }
+        }
+        style
     }
 
     fn insert(&mut self, widget: Box<dyn Widget<Msg>>, parent: Option<WidgetId>) -> WidgetId {
@@ -152,10 +189,11 @@ impl<Msg: 'static> Ui<Msg> {
         let node = self.nodes.get_mut(id)?;
         let w = node.widget.as_any_mut().downcast_mut::<W>()?;
         let r = f(w);
+        let layout = node.layout;
         // The widget may have changed size or appearance; refresh style + damage.
-        let style = node.widget.layout_style(&self.theme);
-        let _ = self.taffy.set_style(node.taffy, style);
-        self.damage.push(node.layout);
+        // `resolved_style` re-applies any parent-imposed positioning (stacks).
+        self.apply_style(id);
+        self.damage.push(layout);
         self.needs_layout = true;
         // A programmatic mutation may have started an animation (e.g. retargeting
         // a tween). Tick once; `animate` clears this again if nothing is running.
@@ -182,9 +220,7 @@ impl<Msg: 'static> Ui<Msg> {
         // Styles can be theme-derived; refresh them all, then full-repaint.
         let ids: Vec<WidgetId> = self.nodes.keys().collect();
         for id in ids {
-            let style = self.nodes[id].widget.layout_style(&self.theme);
-            let taffy = self.nodes[id].taffy;
-            let _ = self.taffy.set_style(taffy, style);
+            self.apply_style(id);
         }
         self.mark_full();
     }

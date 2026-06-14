@@ -19,6 +19,17 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Added
 
+- **`Stack` container**: a layout that *overlays* its children instead of flowing
+  them. A new `Widget::stacks_children` hook lets the `Ui` give each child of a
+  stack `position: absolute` filling the stack, so children share a box and
+  z-order by insertion (last on top, hit-tested first). This is the overlay
+  primitive for future modal scrims, toasts, and popovers. Covered by behavior
+  tests (overlap geometry, topmost-child hit order) and a text-free snapshot.
+- **`RadioGroup` widget**: a single-choice list of options as one widget and one
+  tab stop, with arrow-key navigation within the group and click-to-select; emits
+  `on_change(index)`, mirroring `Checkbox`'s `on_toggle`. Shown in the
+  `gallery_png` example.
+
 - **Custom-widget extension surface**: the `fbui` umbrella now re-exports the
   `widget`, `anim`, and `style` modules plus `Anim`, so a downstream crate can
   implement `Widget<Msg>` for its own type without reaching into the sub-crates.

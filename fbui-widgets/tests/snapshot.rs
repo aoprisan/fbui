@@ -9,7 +9,7 @@
 use fbui_render::geom::Size;
 use fbui_render::{Color, Scale, Surface};
 use fbui_testkit::{assert_snapshot_in, Tolerance};
-use fbui_widgets::widgets::{Container, Slider};
+use fbui_widgets::widgets::{Container, Slider, Stack};
 use fbui_widgets::{Theme, Ui};
 
 #[derive(Clone)]
@@ -38,6 +38,51 @@ fn sliders_in_panels() {
     assert_snapshot_in(
         "tests/snapshots",
         "sliders_in_panels",
+        surface.pixmap(),
+        Tolerance::FUZZY,
+    );
+}
+
+/// A `Stack` overlays three differently-sized, opaque panels at the same origin;
+/// each later one is smaller, so the result is a set of nested rectangles —
+/// proving children share a box and z-order by insertion (last on top). Text-free
+/// for host determinism.
+#[test]
+fn stacked_panels_overlap_back_to_front() {
+    let (w, h) = (240u32, 180u32);
+    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+
+    let stack = ui.set_root(Stack::new());
+    // Back: fills the whole stack.
+    ui.add_child(
+        stack,
+        Container::column()
+            .fill()
+            .background(Color::rgb(0x30, 0x36, 0x46), 0.0),
+    );
+    // Middle: a smaller centered-ish panel (sized, so it pins to the origin).
+    ui.add_child(
+        stack,
+        Container::column()
+            .width(160.0)
+            .height(120.0)
+            .background(Color::rgb(0x4c, 0x8d, 0xff), 12.0),
+    );
+    // Front: smaller still, drawn on top of the other two.
+    ui.add_child(
+        stack,
+        Container::column()
+            .width(80.0)
+            .height(60.0)
+            .background(Color::rgb(0xe5, 0x4b, 0x4b), 8.0),
+    );
+
+    let mut surface = Surface::new(w, h, Scale::ONE);
+    ui.paint(&mut surface);
+
+    assert_snapshot_in(
+        "tests/snapshots",
+        "stacked_panels",
         surface.pixmap(),
         Tolerance::FUZZY,
     );

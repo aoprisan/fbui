@@ -184,6 +184,16 @@ pub trait Widget<Msg>: Any {
         false
     }
 
+    /// Whether this widget *overlays* its children: each child is positioned to
+    /// fill this widget's box, so children overlap and z-order by insertion (the
+    /// last child added paints on top and is hit-tested first). This is what a
+    /// [`Stack`](crate::widgets::Stack) reports; the [`Ui`](crate::Ui) reads it
+    /// when resolving each child's layout style. Default: children flow per their
+    /// own layout style.
+    fn stacks_children(&self) -> bool {
+        false
+    }
+
     /// A translation applied to this widget's children's positions (scroll
     /// offset). Default: none.
     fn content_offset(&self) -> Point {
