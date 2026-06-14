@@ -162,13 +162,29 @@ No global mutable state — the theme lives in the `Ui`.
 | `Checkbox` | bool state, toggles on click/Space, emits `on_toggle(bool)` |
 | `Slider` | min/max/value, drag thumb + arrow keys, emits `on_change(f32)` |
 | `TextInput` | single line, cursor + selection, basic editing; **no IME** |
-| `Container` | `Row` / `Column` / `Stack` via flex direction; gap, padding, align |
+| `Container` | `Row` / `Column` via flex direction; gap, padding, align |
+| `Stack` | overlapping children, z-ordered by insertion — the overlay primitive |
 | `ScrollView` | clips content, vertical offset via wheel/drag; kinetic = Phase 4 |
 | `List` | windowed: only visible rows are laid out/painted (10k-row target) |
 | `Image` | blits a decoded `fbui_render::Image`, object-fit contain |
 
 Editing niceties (clipboard, multi-line, kinetic fling) are explicitly out of v1
 per PLAN; the structure leaves room for them.
+
+### Beyond the v1 set
+
+The set above is not closed (§10). Widgets added since:
+
+* **`Stack`** — a container that overlays its children instead of flowing them.
+  The [`Ui`](crate::Ui) gives each child of a stacking container (one that
+  reports `Widget::stacks_children`) `position: absolute` filling the stack, so
+  children share a box and z-order by insertion (last on top, hit-tested first).
+  This is the primitive overlays — modal scrims, toasts, popovers — build on. It
+  does **not** by itself contain keyboard focus or grab input; a true *modal*
+  layered on top needs focus containment, deferred to its own change.
+* **`RadioGroup`** — a single-choice list of options as one widget and one tab
+  stop, with arrow-key navigation within the group (Tab moves *between* groups).
+  Emits `on_change(index)`, mirroring `Checkbox`'s `on_toggle`.
 
 ## 8. The `fbui` umbrella
 
