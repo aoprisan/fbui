@@ -2,12 +2,12 @@
 //! the retained update loop. These are font-independent (they assert structure
 //! and messages, not pixels), so they're robust across hosts.
 
-use fbui_render::geom::{Point, Size};
+use fbui_render::geom::{Point, Rect, Size};
 use fbui_render::Scale;
 use fbui_widgets::event::{Event, Key, Modifiers, PointerButton};
 use fbui_widgets::widgets::{
-    Button, Checkbox, Container, Dialog, List, RadioGroup, ScrollView, Select, Stack, Switch,
-    ToastKind, Toasts,
+    Button, Checkbox, Container, Dialog, Keyboard, List, RadioGroup, ScrollView, Select, Stack,
+    Switch, TextInput, ToastKind, Toasts,
 };
 use fbui_widgets::{Theme, Ui, WidgetId};
 
@@ -19,6 +19,7 @@ enum Msg {
     Switched(bool),
     Chose(usize),
     Dismissed,
+    Kbd(Key),
 }
 
 fn ui() -> Ui<Msg> {
@@ -54,6 +55,96 @@ fn layout_places_children_in_a_column() {
     assert!(ra.x >= 10.0 && ra.y >= 10.0, "padding applied: {ra:?}");
     assert!(rb.y >= ra.bottom(), "B is below A: {ra:?} {rb:?}");
     assert!((rb.y - ra.bottom() - 8.0).abs() < 1.0, "gap respected");
+}
+
+/// Y of the center of keyboard row `ri` (default 4-row layout). Mirrors the
+/// widget's `PAD`/`GAP` constants so the tests can hit a specific key.
+fn kb_row_center_y(b: Rect, ri: usize) -> f32 {
+    const PAD: f32 = 8.0;
+    const GAP: f32 = 6.0;
+    let n = 4.0;
+    let row_h = ((b.h - 2.0 * PAD) - (n - 1.0) * GAP) / n;
+    b.y + PAD + ri as f32 * (row_h + GAP) + row_h / 2.0
+}
+
+#[test]
+fn keyboard_tap_emits_key_without_stealing_focus() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let field = ui.add_child(root, TextInput::new());
+    let kb = ui.add_child(root, Keyboard::new().on_key(Msg::Kbd));
+    ui.layout_now();
+
+    // Focus the field, then type on the keyboard.
+    let fc = center(&ui, field);
+    click(&mut ui, fc);
+    assert_eq!(ui.focused(), Some(field));
+    let _ = ui.take_messages();
+
+    let b = ui.bounds(kb).unwrap();
+    // First key of the top row is 'q'.
+    click(&mut ui, Point::new(b.x + 14.0, kb_row_center_y(b, 0)));
+    assert_eq!(ui.take_messages(), vec![Msg::Kbd(Key::Char('q'))]);
+    // The key must NOT have taken focus off the field it types into.
+    assert_eq!(ui.focused(), Some(field), "keyboard keys never steal focus");
+}
+
+#[test]
+fn keyboard_shift_toggles_upper_case() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let kb = ui.add_child(root, Keyboard::new().on_key(Msg::Kbd));
+    ui.layout_now();
+    let b = ui.bounds(kb).unwrap();
+
+    // Shift is the first key of the third row; it toggles a layer, emits nothing.
+    click(&mut ui, Point::new(b.x + 14.0, kb_row_center_y(b, 2)));
+    assert!(ui.take_messages().is_empty(), "Shift emits no key");
+
+    // Now the top-row 'q' comes through upper-cased.
+    click(&mut ui, Point::new(b.x + 14.0, kb_row_center_y(b, 0)));
+    assert_eq!(ui.take_messages(), vec![Msg::Kbd(Key::Char('Q'))]);
+}
+
+#[test]
+fn keyboard_symbols_layer_types_digits() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let kb = ui.add_child(root, Keyboard::new().on_key(Msg::Kbd));
+    ui.layout_now();
+    let b = ui.bounds(kb).unwrap();
+
+    // '?123' is the first key of the bottom row; it switches to the symbols layer.
+    click(&mut ui, Point::new(b.x + 14.0, kb_row_center_y(b, 3)));
+    assert!(ui.take_messages().is_empty(), "layer toggle emits no key");
+
+    // The top row is now digits — its first key is '1'.
+    click(&mut ui, Point::new(b.x + 14.0, kb_row_center_y(b, 0)));
+    assert_eq!(ui.take_messages(), vec![Msg::Kbd(Key::Char('1'))]);
+}
+
+#[test]
+fn text_input_apply_key_edits_at_the_caret() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let field = ui.add_child(root, TextInput::new());
+    ui.layout_now();
+
+    // apply_key is the entry point the on-screen keyboard drives through the app.
+    ui.with::<TextInput<Msg>, _>(field, |t| {
+        assert!(t.apply_key(Key::Char('h')));
+        assert!(t.apply_key(Key::Char('i')));
+    });
+    assert_eq!(
+        ui.with::<TextInput<Msg>, _>(field, |t| t.text().to_string()),
+        Some("hi".to_string())
+    );
+
+    ui.with::<TextInput<Msg>, _>(field, |t| assert!(t.apply_key(Key::Backspace)));
+    assert_eq!(
+        ui.with::<TextInput<Msg>, _>(field, |t| t.text().to_string()),
+        Some("h".to_string())
+    );
 }
 
 #[test]

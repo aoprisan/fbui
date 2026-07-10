@@ -185,6 +185,13 @@ The set above is not closed (§10). Widgets added since:
 * **`RadioGroup`** — a single-choice list of options as one widget and one tab
   stop, with arrow-key navigation within the group (Tab moves *between* groups).
   Emits `on_change(index)`, mirroring `Checkbox`'s `on_toggle`.
+* **`Keyboard`** — an on-screen keyboard for touch kiosks: a docked,
+  non-focusable key grid that paints its keys and hit-tests taps itself (one
+  node, like `List`/`Select`), with QWERTY / Shift / `?123` symbols layers.
+  Two constraints shape it: it **never takes focus** (so the edited `TextInput`
+  keeps it), and — since a widget can only emit a `Msg`, not inject a key event
+  — it emits each tapped `Key` via `on_key`, which the app applies to the focused
+  field with **`TextInput::apply_key`** (shared with the hardware-key path).
 
 ## 8. The `fbui` umbrella
 

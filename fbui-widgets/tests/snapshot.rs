@@ -9,7 +9,7 @@
 use fbui_render::geom::Size;
 use fbui_render::{Color, Scale, Surface};
 use fbui_testkit::{assert_snapshot_in, Tolerance};
-use fbui_widgets::widgets::{Container, Slider, Stack};
+use fbui_widgets::widgets::{Container, Keyboard, Slider, Stack};
 use fbui_widgets::{Theme, Ui};
 
 #[derive(Clone)]
@@ -83,6 +83,28 @@ fn stacked_panels_overlap_back_to_front() {
     assert_snapshot_in(
         "tests/snapshots",
         "stacked_panels",
+        surface.pixmap(),
+        Tolerance::FUZZY,
+    );
+}
+
+/// The on-screen keyboard's key grid, docked to fill a filled column. Text-free
+/// (the default `Ui` loads no font, so key labels don't render) — this pins the
+/// per-key geometry and the theme-derived key colors across the layers' rows.
+#[test]
+fn keyboard_key_grid() {
+    let (w, h) = (360u32, 232u32);
+    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+
+    let root = ui.set_root(Container::column().fill());
+    ui.add_child(root, Keyboard::new().height(h as f32));
+
+    let mut surface = Surface::new(w, h, Scale::ONE);
+    ui.paint(&mut surface);
+
+    assert_snapshot_in(
+        "tests/snapshots",
+        "keyboard_key_grid",
         surface.pixmap(),
         Tolerance::FUZZY,
     );

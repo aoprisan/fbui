@@ -127,6 +127,70 @@ impl<Msg> TextInput<Msg> {
         }
     }
 
+    /// Apply an editing/navigation key at the caret. `extend` grows the
+    /// selection on cursor moves (Shift held). Returns whether the text changed
+    /// (navigation returns `false`). Shared by hardware-key events and
+    /// [`apply_key`](Self::apply_key) so the two paths can never diverge.
+    fn edit(&mut self, key: Key, extend: bool) -> bool {
+        match key {
+            Key::Char(c) => {
+                self.insert(&c.to_string());
+                true
+            }
+            Key::Space => {
+                self.insert(" ");
+                true
+            }
+            Key::Backspace => {
+                if !self.delete_selection() && self.cursor > 0 {
+                    let prev = self.prev_boundary(self.cursor);
+                    self.text.replace_range(prev..self.cursor, "");
+                    self.cursor = prev;
+                    self.anchor = prev;
+                }
+                true
+            }
+            Key::Delete => {
+                if !self.delete_selection() && self.cursor < self.text.len() {
+                    let next = self.next_boundary(self.cursor);
+                    self.text.replace_range(self.cursor..next, "");
+                }
+                true
+            }
+            Key::Left => {
+                let to = self.prev_boundary(self.cursor);
+                self.move_cursor(to, extend);
+                false
+            }
+            Key::Right => {
+                let to = self.next_boundary(self.cursor);
+                self.move_cursor(to, extend);
+                false
+            }
+            Key::Home => {
+                self.move_cursor(0, extend);
+                false
+            }
+            Key::End => {
+                self.move_cursor(self.text.len(), extend);
+                false
+            }
+            _ => false,
+        }
+    }
+
+    /// Apply a key as if it were typed into this field — the entry point for an
+    /// on-screen [`Keyboard`](crate::widgets::Keyboard), which cannot inject a
+    /// real key event. Insert/backspace/delete/cursor semantics match hardware
+    /// typing (no Shift-extend). Returns whether the text changed.
+    ///
+    /// Call it via [`Ui::with`](crate::Ui::with) from `App::update`. It does not
+    /// fire `on_change` (the app already holds the message that drove the edit);
+    /// read [`text`](Self::text) afterwards if you need the new value.
+    pub fn apply_key(&mut self, key: Key) -> bool {
+        self.edit(key, false)
+    }
+
     /// Logical x of the caret/byte boundary `idx`, measured from the text origin.
     fn x_of(&self, fonts: &mut FontContext, style: &TextStyle, idx: usize) -> f32 {
         if idx == 0 {
@@ -255,45 +319,7 @@ impl<Msg: 'static> Widget<Msg> for TextInput<Msg> {
                 pressed: true,
                 mods,
             } if ctx.is_focused() => {
-                let mut changed = true;
-                match key {
-                    Key::Char(c) => self.insert(&c.to_string()),
-                    Key::Space => self.insert(" "),
-                    Key::Backspace => {
-                        if !self.delete_selection() && self.cursor > 0 {
-                            let prev = self.prev_boundary(self.cursor);
-                            self.text.replace_range(prev..self.cursor, "");
-                            self.cursor = prev;
-                            self.anchor = prev;
-                        }
-                    }
-                    Key::Delete => {
-                        if !self.delete_selection() && self.cursor < self.text.len() {
-                            let next = self.next_boundary(self.cursor);
-                            self.text.replace_range(self.cursor..next, "");
-                        }
-                    }
-                    Key::Left => {
-                        let to = self.prev_boundary(self.cursor);
-                        self.move_cursor(to, mods.shift);
-                        changed = false;
-                    }
-                    Key::Right => {
-                        let to = self.next_boundary(self.cursor);
-                        self.move_cursor(to, mods.shift);
-                        changed = false;
-                    }
-                    Key::Home => {
-                        self.move_cursor(0, mods.shift);
-                        changed = false;
-                    }
-                    Key::End => {
-                        self.move_cursor(self.text.len(), mods.shift);
-                        changed = false;
-                    }
-                    _ => changed = false,
-                }
-                if changed {
+                if self.edit(key, mods.shift) {
                     self.fire(ctx);
                 }
                 ctx.request_paint();
