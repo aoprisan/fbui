@@ -30,6 +30,24 @@ example:
 
 ![Widget gallery](docs/assets/gallery.png)
 
+## The overlay layer
+
+Everything that floats above the page builds on [`Stack`](src/widgets/stack.rs)
+(z-ordered overlap) and the floating-overlay hooks (`Widget::overlay_rect` /
+`paint_overlay`), rendered by the [`overlay_png`](examples/overlay_png.rs)
+example:
+
+![Overlay layer: dropdown, dialog, toasts](docs/assets/overlay.png)
+
+- **Select** — a dropdown whose open menu floats over whatever is below the
+  field (flipping above it when out of room), with keyboard navigation and
+  click-away dismissal.
+- **Dialog** — a modal scrim that centers its card, blocks input to the page,
+  traps Tab focus inside its subtree, and dismisses on Esc / scrim click. Open
+  it by adding it to a `Stack`; close it with `Ui::remove`.
+- **Toasts** — a zero-size host that stacks transient notifications
+  bottom-center; each fades out on the frame clock and disappears by itself.
+
 ## Regenerating the images
 
 Both examples are pure-CPU and need no devices, so they run on any host:
@@ -40,6 +58,9 @@ cargo run -p fbui-widgets --example all_widgets -- fbui-widgets/docs/assets/all_
 
 # the curated gallery
 cargo run -p fbui-widgets --example gallery_png  -- fbui-widgets/docs/assets/gallery.png
+
+# the overlay layer (dialog / select / toasts)
+cargo run -p fbui-widgets --example overlay_png  -- fbui-widgets/docs/assets/overlay.png
 ```
 
 Each takes an optional output path (defaulting to `all_widgets.png` /

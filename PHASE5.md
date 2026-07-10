@@ -87,9 +87,15 @@ the two.
 - **Pi-class absolute numbers**: the *ratio* (blit ≪ full) is gated in CI; the
   on-device refresh-rate and CPU-budget figures need ARM hardware, the same
   caveat the perf gates carried since Phase 2.
-- **Scroll-blit scope**: wired into `List` (the windowed, self-painting case).
+- ~~**Scroll-blit scope**: wired into `List` (the windowed, self-painting case).
   `ScrollView` (which re-places child widgets) still does a full damaged-region
-  repaint; extending the blit to it is future work.
+  repaint; extending the blit to it is future work.~~ **Closed post-Phase-5**:
+  `ScrollView` now rides the same path via `EventCtx::request_scroll_layout`
+  (relayout without the implicit full-surface damage — children re-place, only
+  the exposed strip repaints), benchmarked as `scrollview_full_repaint` vs
+  `scrollview_blit` and pinned byte-for-byte like the `List` path. The `Ui`
+  also gained an overlap guard: a blit under a `Stack` overlay falls back to a
+  full repaint so the overlay's pixels are never dragged along.
 
 ## What later phases build on this
 

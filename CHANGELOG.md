@@ -15,9 +15,65 @@ built against. The MSRV is part of the contract: `fbui-platform` builds on Rust
 **1.76**; the render/widget stack tracks its heavier dependencies (cosmic-text,
 image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
-## [Unreleased] — Phase 5: performance & animation
+## [Unreleased]
+
+Nothing yet.
+
+## [0.2.0] — 2026-07-10 — Phase 5: performance & animation, and the overlay layer
 
 ### Added
+
+- **The overlay layer** — everything that floats above the page, built on
+  `Stack` and a new pair of `Widget` hooks (`overlay_rect`/`paint_overlay`:
+  a floating rect painted after the whole tree, treated as damage whenever the
+  widget changes):
+  - **`Dialog`**: a modal scrim that centers its children (the app adds the
+    card as its subtree), swallows input to the page beneath, traps Tab focus
+    inside itself (`Widget::traps_focus`), and emits `on_dismiss` on Esc or a
+    scrim click. Opened by adding it to a `Stack`; closed with the new
+    **`Ui::remove`** (subtree removal, clearing focus/hover/capture into it).
+  - **`Select`**: a dropdown. The open menu floats above everything (flipping
+    upward when out of room), the pointer is captured while open (click-away
+    dismisses without activating what's underneath), and Up/Down/Enter/Esc
+    navigate from the keyboard.
+  - **`Toasts`**: a zero-size host for transient notifications, stacked
+    bottom-center with kind-colored edges (`ToastKind::{Info, Success,
+    Error}`), pushed via `Ui::with`, fading out on the frame clock (idle when
+    empty).
+  - Supporting engine work: **key-event bubbling** (unhandled keys climb from
+    the focused widget up the ancestor chain — how Esc reaches a `Dialog`),
+    **`Ui::focus_first`** (move focus into a subtree, e.g. a just-opened
+    modal), `EventCtx::surface_size`, and the scroll-blit overlap guard
+    understands floating overlays. Shown headlessly in the `overlay_png`
+    example (see the widgets README) and interactively in the new `overlay`
+    example (`cargo run -p fbui --example overlay --features platform`).
+- **Incremental repaints are now pixel-exact**: the repaint region is snapped
+  outward to whole device pixels before painting, so a region-edge pixel is
+  fully owned by whichever repaint drew it last. Previously a fractional
+  region edge anti-aliased against the prior frame and repeated partial
+  repaints could drift a hair from what a full repaint produces (caught by the
+  overlay equivalence tests).
+
+- **Scroll-blit for `ScrollView`** (closing the gap 0.1.0 shipped with): a
+  wheel/drag/kinetic scroll now shifts the viewport's pixels in place and
+  repaints only the exposed strip, via a new
+  `EventCtx::request_scroll_layout` — a relayout *without* the implicit
+  full-surface repaint, for widgets that account for every changed pixel
+  themselves. Children still re-place at the new offset; only those touching
+  the strip re-rasterize. Benchmarked (`scrollview_blit` vs
+  `scrollview_full_repaint`, ~40% cheaper on the dev host) and pinned
+  byte-for-byte against a full repaint, like the `List` path.
+- **Overlay-safety guard for the blit fast path**: the `Ui` now detects when
+  something later in z-order (e.g. a `Stack` overlay) overlaps a scrolling
+  widget and falls back to a full repaint — an in-place pixel shift would have
+  dragged the overlay's pixels along. Covered by an equivalence test.
+- **Wheel-scroll bubbling**: an unhandled `Event::Scroll` now bubbles from the
+  deepest widget under the pointer up its ancestor chain, so a wheel over a
+  `Label` *inside* a `ScrollView` scrolls the view (previously the event died
+  at the leaf).
+- **`Container::width`/`height` now pin the min size** so an explicitly-sized
+  container can't be flex-shrunk below it — fixed-height rows in a
+  `ScrollView` overflow (and scroll) instead of silently compressing.
 
 - **`Stack` container**: a layout that *overlays* its children instead of flowing
   them. A new `Widget::stacks_children` hook lets the `Ui` give each child of a
@@ -179,5 +235,6 @@ real devices.
 - libinput's `set_surface` rescale-on-hotplug override is left to the
   feature-gated backend (not in the default/CI build).
 
-[Unreleased]: https://github.com/aoprisan/fbui/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/aoprisan/fbui/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/aoprisan/fbui/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/aoprisan/fbui/releases/tag/v0.1.0

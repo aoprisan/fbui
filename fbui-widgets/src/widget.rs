@@ -179,6 +179,33 @@ pub trait Widget<Msg>: Any {
         false
     }
 
+    /// Whether this widget is a **focus trap**: while focus is inside its
+    /// subtree, Tab/Shift-Tab cycle only within it. This is what a modal
+    /// [`Dialog`](crate::widgets::Dialog) reports so the page underneath drops
+    /// out of the tab order. Default: no trap.
+    fn traps_focus(&self) -> bool {
+        false
+    }
+
+    /// A floating **overlay** this widget wants painted on top of the whole
+    /// tree (an open dropdown menu, a toast), or `None`. `bounds` is the
+    /// widget's own laid-out box and `surface` the full logical surface, so the
+    /// overlay can be placed near the widget yet clamped on-screen. The
+    /// [`Ui`](crate::Ui) paints all overlays after the normal tree walk (in
+    /// tree order) via [`paint_overlay`](Widget::paint_overlay), and treats the
+    /// rect as damage whenever the widget changes.
+    ///
+    /// Overlays are paint-only: they are not hit-tested, so an interactive
+    /// overlay (a dropdown) should capture the pointer while it is open and
+    /// route events itself. Default: none.
+    fn overlay_rect(&self, _bounds: Rect, _surface: Size) -> Option<Rect> {
+        None
+    }
+
+    /// Paint the overlay reported by [`overlay_rect`](Widget::overlay_rect).
+    /// `ctx.bounds()` is the overlay rect. Default: nothing.
+    fn paint_overlay(&self, _ctx: &mut PaintCtx) {}
+
     /// Whether this widget clips its children to its bounds (scroll viewports).
     fn clips(&self) -> bool {
         false

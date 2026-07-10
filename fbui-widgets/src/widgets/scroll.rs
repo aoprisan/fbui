@@ -4,6 +4,14 @@
 //! its content vs. viewport extents after layout (via `set_scroll_metrics`), so it
 //! can clamp scrolling without reaching into the tree. A [`Fling`](Event::Fling)
 //! (Phase 4) starts a kinetic coast that decays in [`animate`](Widget::animate).
+//!
+//! Scrolling rides the **scroll-blit** fast path (Phase 5, extended here from
+//! [`List`](super::List)): the already-drawn viewport pixels are shifted in
+//! place via [`scroll_blit`](Widget::scroll_blit) and only the exposed strip is
+//! damaged. Unlike `List` (whose rows are data), the children are real widgets,
+//! so a scroll still requests a relayout to re-place them at the new offset —
+//! the saving is in *paint*: only the children intersecting the strip
+//! re-rasterize instead of the whole viewport.
 
 use std::any::Any;
 
@@ -14,6 +22,7 @@ use crate::event::{Event, PointerButton};
 use crate::kinetic::Kinetic;
 use crate::style::{self, Style};
 use crate::theme::Theme;
+use crate::util::union;
 use crate::widget::{Anim, Widget};
 
 /// A vertically scrolling container.
@@ -24,6 +33,11 @@ pub struct ScrollView {
     drag: Option<f32>,
     /// Momentum after a fling, in offset-pixels per second; 0 when at rest.
     kinetic: Kinetic,
+    /// Last bounds seen, so kinetic [`animate`](Widget::animate) can compute
+    /// thumb damage without a layout context.
+    bounds: Rect,
+    /// Pending content shift (logical px) for the next [`scroll_blit`](Widget::scroll_blit).
+    blit_dy: f32,
 }
 
 impl ScrollView {
@@ -34,6 +48,8 @@ impl ScrollView {
             viewport_h: 0.0,
             drag: None,
             kinetic: Kinetic::new(),
+            bounds: Rect::new(0.0, 0.0, 0.0, 0.0),
+            blit_dy: 0.0,
         }
     }
 
@@ -41,22 +57,54 @@ impl ScrollView {
         (self.content_h - self.viewport_h).max(0.0)
     }
 
-    /// Apply a scroll delta, clamped. Returns whether the offset actually moved.
-    fn apply_scroll(&mut self, dy: f32) -> bool {
-        let new = (self.offset + dy).clamp(0.0, self.max_offset());
-        if (new - self.offset).abs() > f32::EPSILON {
-            self.offset = new;
-            true
-        } else {
-            false
+    /// The scrollbar thumb rect at a given offset (padded for clean damage), or
+    /// `None` when there's no overflow.
+    fn thumb_rect(&self, offset: f32, b: Rect) -> Option<Rect> {
+        let max_off = self.max_offset();
+        if max_off <= 0.0 {
+            return None;
+        }
+        let frac_visible = (self.viewport_h / self.content_h).clamp(0.0, 1.0);
+        let thumb_h = (b.h * frac_visible).max(24.0);
+        let t = (offset / max_off).clamp(0.0, 1.0);
+        let thumb_y = b.y + t * (b.h - thumb_h);
+        // A hair wider/taller than the 4px bar so the moved thumb is fully covered.
+        Some(Rect::new(
+            b.right() - 7.0,
+            thumb_y - 1.0,
+            7.0,
+            thumb_h + 2.0,
+        ))
+    }
+
+    /// Scroll by `dy` offset-pixels using the blit fast path: move the offset,
+    /// record the content shift for `scroll_blit`, and return the rect to damage
+    /// (the moved thumb), or `None` if nothing moved.
+    fn scroll_blit_by(&mut self, dy: f32, b: Rect) -> Option<Rect> {
+        let old = self.offset;
+        let new = (old + dy).clamp(0.0, self.max_offset());
+        if (new - old).abs() <= f32::EPSILON {
+            return None;
+        }
+        self.offset = new;
+        // Content shifts opposite the offset change (offset up ⇒ content up).
+        self.blit_dy += -(new - old);
+        let old_thumb = self.thumb_rect(old, b);
+        let new_thumb = self.thumb_rect(new, b);
+        match (old_thumb, new_thumb) {
+            (Some(a), Some(c)) => Some(union(a, c)),
+            (a, c) => a.or(c),
         }
     }
 
     fn scroll_by<Msg>(&mut self, dy: f32, ctx: &mut EventCtx<Msg>) {
-        if self.apply_scroll(dy) {
-            // Children must be re-placed at the new offset.
-            ctx.request_layout();
-            ctx.request_paint();
+        if let Some(dmg) = self.scroll_blit_by(dy, ctx.bounds()) {
+            // Children must be re-placed at the new offset; the pixels
+            // themselves are shifted by the blit, so only the thumb needs
+            // explicit damage (the exposed strip is damaged when the `Ui`
+            // applies the blit).
+            ctx.request_scroll_layout();
+            ctx.request_paint_rect(dmg);
         }
     }
 }
@@ -115,6 +163,7 @@ impl<Msg: 'static> Widget<Msg> for ScrollView {
     }
 
     fn event(&mut self, ctx: &mut EventCtx<Msg>) {
+        self.bounds = ctx.bounds();
         let ev = ctx.event().clone();
         match ev {
             Event::Scroll { delta_y, .. } => {
@@ -149,7 +198,6 @@ impl<Msg: 'static> Widget<Msg> for ScrollView {
                 // i.e. a positive offset velocity — matching the drag mapping.
                 if self.max_offset() > 0.0 {
                     self.kinetic.start(-velocity_y);
-                    ctx.request_paint();
                     ctx.request_anim();
                     ctx.set_handled();
                 }
@@ -163,20 +211,28 @@ impl<Msg: 'static> Widget<Msg> for ScrollView {
             return Anim::IDLE;
         }
         let dy = self.kinetic.step(dt);
-        let moved = self.apply_scroll(dy);
-        if !moved {
-            // Hit a bound: nothing left to coast into.
-            self.kinetic.stop();
-        }
-        if moved {
-            Anim {
-                repaint: true,
+        match self.scroll_blit_by(dy, self.bounds) {
+            Some(dmg) => Anim {
+                repaint: false,
+                // Children still re-place at the new offset; the strip is
+                // damaged when the blit is applied.
                 relayout: true,
                 running: self.kinetic.is_running(),
-                damage: None,
+                damage: Some(dmg),
+            },
+            None => {
+                // Hit a bound: nothing left to coast into.
+                self.kinetic.stop();
+                Anim::IDLE
             }
+        }
+    }
+
+    fn scroll_blit(&mut self) -> Option<f32> {
+        if self.blit_dy.abs() < f32::EPSILON {
+            None
         } else {
-            Anim::IDLE
+            Some(std::mem::take(&mut self.blit_dy))
         }
     }
 

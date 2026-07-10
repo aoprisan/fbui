@@ -17,7 +17,7 @@ use crate::event::{Event, Key, PointerButton};
 use crate::kinetic::Kinetic;
 use crate::style::{self, Style};
 use crate::theme::Theme;
-use crate::util::text_style;
+use crate::util::{text_style, union};
 use crate::widget::{Anim, Widget};
 
 const ROW_H: f32 = 40.0;
@@ -357,19 +357,4 @@ impl<Msg: 'static> Widget<Msg> for List<Msg> {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
-}
-
-/// Bounding box of two logical rects (empty is the identity).
-fn union(a: Rect, b: Rect) -> Rect {
-    if a.is_empty() {
-        return b;
-    }
-    if b.is_empty() {
-        return a;
-    }
-    let x = a.x.min(b.x);
-    let y = a.y.min(b.y);
-    let right = a.right().max(b.right());
-    let bottom = a.bottom().max(b.bottom());
-    Rect::new(x, y, right - x, bottom - y)
 }

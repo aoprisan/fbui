@@ -7,7 +7,7 @@
 //! those requests after the widget returns. This keeps the borrow graph simple
 //! and the data-flow one-directional (see `DESIGN.md` §3).
 
-use fbui_render::geom::{Point, Rect};
+use fbui_render::geom::{Point, Rect, Size};
 use fbui_render::{FontContext, Painter};
 
 use crate::event::Event;
@@ -39,6 +39,9 @@ pub(crate) struct Outputs<Msg> {
     pub messages: Vec<Msg>,
     pub damage: Vec<Rect>,
     pub relayout: bool,
+    /// A relayout whose pixel changes the widget fully accounts for itself
+    /// (scroll-blit), so no implicit full-surface damage is added.
+    pub scroll_layout: bool,
     pub focus: Option<FocusOp>,
     pub capture: Option<CaptureOp>,
     pub handled: bool,
@@ -53,6 +56,7 @@ impl<Msg> Default for Outputs<Msg> {
             messages: Vec::new(),
             damage: Vec::new(),
             relayout: false,
+            scroll_layout: false,
             focus: None,
             capture: None,
             handled: false,
@@ -74,6 +78,7 @@ impl<Msg> Outputs<Msg> {
 pub struct EventCtx<'a, Msg> {
     pub(crate) event: &'a Event,
     pub(crate) bounds: Rect,
+    pub(crate) surface: Size,
     pub(crate) theme: &'a Theme,
     pub(crate) fonts: &'a mut FontContext,
     pub(crate) hovered: bool,
@@ -91,6 +96,13 @@ impl<'a, Msg> EventCtx<'a, Msg> {
     /// This widget's absolute logical bounds.
     pub fn bounds(&self) -> Rect {
         self.bounds
+    }
+
+    /// The full logical surface size — for widgets that place a floating
+    /// overlay ([`Widget::overlay_rect`](crate::Widget::overlay_rect)) and need
+    /// to damage or clamp it during event handling.
+    pub fn surface_size(&self) -> Size {
+        self.surface
     }
 
     pub fn theme(&self) -> &Theme {
@@ -131,6 +143,17 @@ impl<'a, Msg> EventCtx<'a, Msg> {
     /// Ask for a layout recompute (geometry may have changed).
     pub fn request_layout(&mut self) {
         self.out.relayout = true;
+    }
+
+    /// Request a relayout **without** the implicit full-surface repaint that
+    /// [`request_layout`](Self::request_layout) carries — for the scroll-blit
+    /// fast path, where the widget accounts for every changed pixel itself
+    /// (the shifted region, the exposed strip, and explicitly damaged rects
+    /// like a moved scrollbar thumb). Only valid when the layout change is
+    /// confined to re-placing this widget's own children (a scroll offset):
+    /// nothing outside its bounds may move.
+    pub fn request_scroll_layout(&mut self) {
+        self.out.scroll_layout = true;
     }
 
     /// Take keyboard focus.

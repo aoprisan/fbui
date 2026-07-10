@@ -121,16 +121,26 @@ impl<Msg: 'static> Widget<Msg> for Container {
             Align::End => taffy::AlignItems::END,
             Align::Stretch => taffy::AlignItems::STRETCH,
         };
-        let size = if self.fill {
-            taffy::Size {
-                width: style::percent(1.0),
-                height: style::percent(1.0),
-            }
+        let (size, min_size) = if self.fill {
+            (
+                taffy::Size {
+                    width: style::percent(1.0),
+                    height: style::percent(1.0),
+                },
+                taffy::Size {
+                    width: style::auto(),
+                    height: style::auto(),
+                },
+            )
         } else {
-            taffy::Size {
+            let size = taffy::Size {
                 width: self.width.map(style::length).unwrap_or_else(style::auto),
                 height: self.height.map(style::length).unwrap_or_else(style::auto),
-            }
+            };
+            // An explicit dimension is a *fixed* one: pin the min size too, so
+            // the container can't be flex-shrunk below it (e.g. fixed-height
+            // rows inside a ScrollView must overflow, not compress).
+            (size, size)
         };
         Style {
             display: taffy::Display::Flex,
@@ -147,6 +157,7 @@ impl<Msg: 'static> Widget<Msg> for Container {
             align_items: Some(align),
             flex_grow: self.grow,
             size,
+            min_size,
             ..Style::default()
         }
     }
