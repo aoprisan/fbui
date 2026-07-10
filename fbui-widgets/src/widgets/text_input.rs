@@ -179,14 +179,17 @@ impl<Msg> TextInput<Msg> {
         }
     }
 
-    /// Apply a key as if it were typed into this field — the entry point for an
-    /// on-screen [`Keyboard`](crate::widgets::Keyboard), which cannot inject a
-    /// real key event. Insert/backspace/delete/cursor semantics match hardware
-    /// typing (no Shift-extend). Returns whether the text changed.
+    /// Apply a key directly to this field, bypassing the event system —
+    /// insert/backspace/delete/cursor semantics match hardware typing (no
+    /// Shift-extend). Returns whether the text changed.
     ///
-    /// Call it via [`Ui::with`](crate::Ui::with) from `App::update`. It does not
-    /// fire `on_change` (the app already holds the message that drove the edit);
-    /// read [`text`](Self::text) afterwards if you need the new value.
+    /// **This does *not* fire `on_change`** — it is a plain state mutation for
+    /// programmatic edits (call it via [`Ui::with`](crate::Ui::with); read
+    /// [`text`](Self::text) afterwards). To route an on-screen
+    /// [`Keyboard`](crate::widgets::Keyboard)'s taps to the focused field, use
+    /// [`Ui::send_key`](crate::Ui::send_key) instead: it replays the key
+    /// through the real event path, so `on_change` fires and repaint is
+    /// requested exactly as if the key had been typed on hardware.
     pub fn apply_key(&mut self, key: Key) -> bool {
         self.edit(key, false)
     }

@@ -187,11 +187,15 @@ The set above is not closed (§10). Widgets added since:
   Emits `on_change(index)`, mirroring `Checkbox`'s `on_toggle`.
 * **`Keyboard`** — an on-screen keyboard for touch kiosks: a docked,
   non-focusable key grid that paints its keys and hit-tests taps itself (one
-  node, like `List`/`Select`), with QWERTY / Shift / `?123` symbols layers.
-  Two constraints shape it: it **never takes focus** (so the edited `TextInput`
-  keeps it), and — since a widget can only emit a `Msg`, not inject a key event
-  — it emits each tapped `Key` via `on_key`, which the app applies to the focused
-  field with **`TextInput::apply_key`** (shared with the hardware-key path).
+  node, like `List`/`Select`), with QWERTY / Shift / `?123` symbols layers
+  (Shift is one-shot; Backspace auto-repeats off the frame `dt` via
+  `Widget::animate_with`). Two constraints shape it: it **never takes focus**
+  (so the edited `TextInput` keeps it), and — since a widget can only emit a
+  `Msg`, not inject a key event — it emits each tapped `Key` via `on_key`,
+  which the app replays to the focused widget with **`Ui::send_key`**: the
+  same event path as hardware input, so `on_change` and repaint behave
+  identically. (`TextInput::apply_key` remains for direct programmatic edits;
+  it shares the hardware path's implementation but fires no `on_change`.)
 
 ## 8. The `fbui` umbrella
 

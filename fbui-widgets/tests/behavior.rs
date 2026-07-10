@@ -2,7 +2,7 @@
 //! the retained update loop. These are font-independent (they assert structure
 //! and messages, not pixels), so they're robust across hosts.
 
-use fbui_render::geom::{Point, Rect, Size};
+use fbui_render::geom::{Point, Size};
 use fbui_render::Scale;
 use fbui_widgets::event::{Event, Key, Modifiers, PointerButton};
 use fbui_widgets::widgets::{
@@ -20,6 +20,7 @@ enum Msg {
     Chose(usize),
     Dismissed,
     Kbd(Key),
+    Changed(String),
 }
 
 fn ui() -> Ui<Msg> {
@@ -57,14 +58,16 @@ fn layout_places_children_in_a_column() {
     assert!((rb.y - ra.bottom() - 8.0).abs() < 1.0, "gap respected");
 }
 
-/// Y of the center of keyboard row `ri` (default 4-row layout). Mirrors the
-/// widget's `PAD`/`GAP` constants so the tests can hit a specific key.
-fn kb_row_center_y(b: Rect, ri: usize) -> f32 {
-    const PAD: f32 = 8.0;
-    const GAP: f32 = 6.0;
-    let n = 4.0;
-    let row_h = ((b.h - 2.0 * PAD) - (n - 1.0) * GAP) / n;
-    b.y + PAD + ri as f32 * (row_h + GAP) + row_h / 2.0
+/// Center of the key at `(row, col)` of the keyboard's current layer, located
+/// through the widget's own [`Keyboard::key_rect`] — the same geometry paint
+/// and hit-testing use, so the tests don't duplicate its layout constants.
+fn key_center(ui: &mut Ui<Msg>, kb: WidgetId, row: usize, col: usize) -> Point {
+    let b = ui.bounds(kb).expect("laid out");
+    let r = ui
+        .with::<Keyboard<Msg>, _>(kb, |k| k.key_rect(b, row, col))
+        .flatten()
+        .expect("key exists");
+    Point::new(r.x + r.w / 2.0, r.y + r.h / 2.0)
 }
 
 #[test]
@@ -81,29 +84,34 @@ fn keyboard_tap_emits_key_without_stealing_focus() {
     assert_eq!(ui.focused(), Some(field));
     let _ = ui.take_messages();
 
-    let b = ui.bounds(kb).unwrap();
     // First key of the top row is 'q'.
-    click(&mut ui, Point::new(b.x + 14.0, kb_row_center_y(b, 0)));
+    let q = key_center(&mut ui, kb, 0, 0);
+    click(&mut ui, q);
     assert_eq!(ui.take_messages(), vec![Msg::Kbd(Key::Char('q'))]);
     // The key must NOT have taken focus off the field it types into.
     assert_eq!(ui.focused(), Some(field), "keyboard keys never steal focus");
 }
 
 #[test]
-fn keyboard_shift_toggles_upper_case() {
+fn keyboard_shift_is_one_shot() {
     let mut ui = ui();
     let root = ui.set_root(Container::column().fill());
     let kb = ui.add_child(root, Keyboard::new().on_key(Msg::Kbd));
     ui.layout_now();
-    let b = ui.bounds(kb).unwrap();
 
     // Shift is the first key of the third row; it toggles a layer, emits nothing.
-    click(&mut ui, Point::new(b.x + 14.0, kb_row_center_y(b, 2)));
+    let shift = key_center(&mut ui, kb, 2, 0);
+    click(&mut ui, shift);
     assert!(ui.take_messages().is_empty(), "Shift emits no key");
 
-    // Now the top-row 'q' comes through upper-cased.
-    click(&mut ui, Point::new(b.x + 14.0, kb_row_center_y(b, 0)));
+    // The next letter comes through upper-cased...
+    let q = key_center(&mut ui, kb, 0, 0);
+    click(&mut ui, q);
     assert_eq!(ui.take_messages(), vec![Msg::Kbd(Key::Char('Q'))]);
+
+    // ...and Shift has already dropped back to lower-case (one-shot).
+    click(&mut ui, q);
+    assert_eq!(ui.take_messages(), vec![Msg::Kbd(Key::Char('q'))]);
 }
 
 #[test]
@@ -112,15 +120,138 @@ fn keyboard_symbols_layer_types_digits() {
     let root = ui.set_root(Container::column().fill());
     let kb = ui.add_child(root, Keyboard::new().on_key(Msg::Kbd));
     ui.layout_now();
-    let b = ui.bounds(kb).unwrap();
 
     // '?123' is the first key of the bottom row; it switches to the symbols layer.
-    click(&mut ui, Point::new(b.x + 14.0, kb_row_center_y(b, 3)));
+    let toggle = key_center(&mut ui, kb, 3, 0);
+    click(&mut ui, toggle);
     assert!(ui.take_messages().is_empty(), "layer toggle emits no key");
 
     // The top row is now digits — its first key is '1'.
-    click(&mut ui, Point::new(b.x + 14.0, kb_row_center_y(b, 0)));
+    let one = key_center(&mut ui, kb, 0, 0);
+    click(&mut ui, one);
     assert_eq!(ui.take_messages(), vec![Msg::Kbd(Key::Char('1'))]);
+}
+
+#[test]
+fn keyboard_release_on_a_different_key_emits_nothing() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let kb = ui.add_child(root, Keyboard::new().on_key(Msg::Kbd));
+    ui.layout_now();
+
+    // Press 'q' but release over 'e': the tap is abandoned, like Button.
+    let q = key_center(&mut ui, kb, 0, 0);
+    let e = key_center(&mut ui, kb, 0, 2);
+    ui.event(Event::PointerDown {
+        pos: q,
+        button: PointerButton::Left,
+    });
+    ui.event(Event::PointerUp {
+        pos: e,
+        button: PointerButton::Left,
+    });
+    assert!(
+        ui.take_messages().is_empty(),
+        "slide-off release emits nothing"
+    );
+}
+
+#[test]
+fn keyboard_backspace_auto_repeats_while_held() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let kb = ui.add_child(root, Keyboard::new().on_key(Msg::Kbd));
+    ui.layout_now();
+
+    // Bksp is the last key of the third row. Holding it arms the repeat clock.
+    let bksp = key_center(&mut ui, kb, 2, 8);
+    // (`Ui::with` in key_center conservatively marks the tree animating; tick
+    // once so the flag below genuinely comes from the held key.)
+    ui.animate(0.0);
+    ui.event(Event::PointerDown {
+        pos: bksp,
+        button: PointerButton::Left,
+    });
+    assert!(ui.take_messages().is_empty(), "nothing fires on press");
+    assert!(ui.is_animating(), "holding Backspace arms the repeat clock");
+
+    // Cross the hold delay (0.45s): the first repeat fires.
+    ui.animate(0.5);
+    assert_eq!(ui.take_messages(), vec![Msg::Kbd(Key::Backspace)]);
+
+    // Two more repeat intervals (0.06s each) elapse.
+    ui.animate(0.12);
+    assert_eq!(
+        ui.take_messages(),
+        vec![Msg::Kbd(Key::Backspace), Msg::Kbd(Key::Backspace)]
+    );
+
+    // The hold already repeated, so the release itself is spent.
+    ui.event(Event::PointerUp {
+        pos: bksp,
+        button: PointerButton::Left,
+    });
+    assert!(
+        ui.take_messages().is_empty(),
+        "release after auto-repeat emits nothing"
+    );
+}
+
+#[test]
+fn keyboard_slide_off_aborts_backspace_repeat() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let kb = ui.add_child(root, Keyboard::new().on_key(Msg::Kbd));
+    ui.layout_now();
+
+    let bksp = key_center(&mut ui, kb, 2, 8);
+    ui.event(Event::PointerDown {
+        pos: bksp,
+        button: PointerButton::Left,
+    });
+    ui.animate(0.5);
+    assert_eq!(ui.take_messages(), vec![Msg::Kbd(Key::Backspace)]);
+
+    // Sliding off the key aborts the repeat (and disarms the key entirely).
+    ui.event(Event::PointerMove {
+        pos: Point::new(bksp.x, bksp.y - 200.0),
+    });
+    ui.animate(0.5);
+    ui.event(Event::PointerUp {
+        pos: bksp,
+        button: PointerButton::Left,
+    });
+    assert!(
+        ui.take_messages().is_empty(),
+        "slide-off stops the repeat and spends the tap"
+    );
+}
+
+/// `Ui::send_key` is the on-screen keyboard's routing: it replays a tapped key
+/// through the real event path, so the focused field edits AND `on_change`
+/// fires — full parity with hardware typing.
+#[test]
+fn send_key_edits_the_focused_field_and_fires_on_change() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let field = ui.add_child(root, TextInput::new().on_change(Msg::Changed));
+    ui.layout_now();
+
+    let fc = center(&ui, field);
+    click(&mut ui, fc);
+    assert_eq!(ui.focused(), Some(field));
+    let _ = ui.take_messages();
+
+    ui.send_key(Key::Char('h'));
+    ui.send_key(Key::Char('i'));
+    assert_eq!(
+        ui.take_messages(),
+        vec![Msg::Changed("h".into()), Msg::Changed("hi".into())]
+    );
+    assert_eq!(
+        ui.with::<TextInput<Msg>, _>(field, |t| t.text().to_string()),
+        Some("hi".to_string())
+    );
 }
 
 #[test]

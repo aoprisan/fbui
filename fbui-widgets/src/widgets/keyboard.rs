@@ -15,30 +15,33 @@
 //!    `request_focus` — the field you tapped keeps focus while you type.
 //! 2. **Keys travel as an application message.** A widget can only
 //!    [`emit`](crate::ctx::EventCtx::emit) a `Msg`; it cannot inject a synthetic
-//!    key event. Each key tap emits `on_key(Key)`, and the app applies it to the
-//!    focused field with [`TextInput::apply_key`](crate::widgets::TextInput::apply_key):
+//!    key event. Each key tap emits `on_key(Key)`, and the app routes it to the
+//!    focused field with [`Ui::send_key`](crate::Ui::send_key), which replays it
+//!    through the same event path as hardware input (so `on_change` fires too):
 //!
 //! ```ignore
 //! let kb = ui.add_child(root, Keyboard::new().on_key(Msg::Kbd));
 //! // in App::update:
-//! Msg::Kbd(k) => {
-//!     if let Some(id) = ui.focused() {
-//!         ui.with::<TextInput<Msg>, _>(id, |t| t.apply_key(k));
-//!     }
-//! }
+//! Msg::Kbd(k) => ui.send_key(k),
 //! ```
+//!
+//! Typing behaves like a phone keyboard: **Shift is one-shot** (it reverts to
+//! lower-case after the next character), and **Backspace auto-repeats** while
+//! held — driven by the frame `dt` through
+//! [`Widget::animate_with`](crate::Widget::animate_with), never a wall clock,
+//! so it stays deterministic and testable.
 
 use std::any::Any;
 
 use fbui_render::geom::{Point, Rect};
 use fbui_render::Color;
 
-use crate::ctx::{EventCtx, PaintCtx};
+use crate::ctx::{AnimCtx, EventCtx, PaintCtx};
 use crate::event::{Event, Key, PointerButton};
 use crate::style::{self, Style};
 use crate::theme::Theme;
 use crate::util::{darken, text_style};
-use crate::widget::Widget;
+use crate::widget::{Anim, Widget};
 
 /// Default keyboard height, logical px (four rows plus padding).
 const DEFAULT_HEIGHT: f32 = 232.0;
@@ -46,6 +49,10 @@ const DEFAULT_HEIGHT: f32 = 232.0;
 const PAD: f32 = 8.0;
 /// Gap between adjacent keys.
 const GAP: f32 = 6.0;
+/// Hold time before Backspace starts auto-repeating, seconds.
+const REPEAT_DELAY: f32 = 0.45;
+/// Interval between auto-repeated Backspaces once repeating, seconds.
+const REPEAT_INTERVAL: f32 = 0.06;
 
 /// Which glyph set the keyboard is showing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -109,12 +116,24 @@ impl KeyDef {
     }
 }
 
+/// Auto-repeat state for a held Backspace key: time since press, and how many
+/// repeats have fired (the release tap is suppressed once any have).
+struct Repeat {
+    t: f32,
+    fired: u32,
+}
+
 /// An on-screen keyboard. Emits `on_key(Key)` on each key tap; toggles its
 /// Shift / symbols layers internally.
 pub struct Keyboard<Msg> {
     layer: Layer,
+    /// The current layer's keys, rebuilt only on layer switch (not per event
+    /// or paint — key labels are owned `String`s).
+    rows: Vec<Vec<KeyDef>>,
     /// The `(row, col)` of the key under the finger, for pressed feedback.
     pressed: Option<(usize, usize)>,
+    /// Armed while a Backspace is held; drives auto-repeat from `animate_with`.
+    repeat: Option<Repeat>,
     height: f32,
     on_key: Option<Box<dyn Fn(Key) -> Msg>>,
 }
@@ -123,7 +142,9 @@ impl<Msg> Keyboard<Msg> {
     pub fn new() -> Self {
         Keyboard {
             layer: Layer::Lower,
+            rows: build_rows(Layer::Lower),
             pressed: None,
+            repeat: None,
             height: DEFAULT_HEIGHT,
             on_key: None,
         }
@@ -141,13 +162,21 @@ impl<Msg> Keyboard<Msg> {
         self
     }
 
-    /// The keys of the current layer, as rows.
-    fn rows(&self) -> Vec<Vec<KeyDef>> {
-        match self.layer {
-            Layer::Lower => letter_rows(false),
-            Layer::Upper => letter_rows(true),
-            Layer::Symbols => symbol_rows(),
-        }
+    /// The rect of the key at `(row, col)` of the current layer, laid out to
+    /// fill `bounds` (this widget's bounds) — the exact geometry `paint` and
+    /// hit-testing use. Lets tests, and apps that highlight keys, locate a key
+    /// without duplicating the layout constants.
+    pub fn key_rect(&self, bounds: Rect, row: usize, col: usize) -> Option<Rect> {
+        self.geometry(bounds, &self.rows)
+            .get(row)?
+            .get(col)
+            .copied()
+    }
+
+    /// Switch layers, rebuilding the cached key rows.
+    fn set_layer(&mut self, layer: Layer) {
+        self.layer = layer;
+        self.rows = build_rows(layer);
     }
 
     /// Absolute rects for every key in `rows`, laid out to fill `b`. Shared by
@@ -232,8 +261,8 @@ impl<Msg: 'static> Widget<Msg> for Keyboard<Msg> {
         let base_style = text_style(theme, font_size, theme.palette.text);
         let pressed = self.pressed;
 
-        let rows = self.rows();
-        let geom = self.geometry(b, &rows);
+        let rows = &self.rows;
+        let geom = self.geometry(b, rows);
         // Resolve every key's colors up front, so the theme borrow is dropped
         // before we take the painter (which borrows `ctx` mutably).
         let styled: Vec<Vec<(Color, Color)>> = rows
@@ -284,10 +313,15 @@ impl<Msg: 'static> Widget<Msg> for Keyboard<Msg> {
                 button: PointerButton::Left,
                 pos,
             } => {
-                let rows = self.rows();
-                let geom = self.geometry(b, &rows);
+                let geom = self.geometry(b, &self.rows);
                 if let Some(hit) = self.key_at(pos, &geom) {
                     self.pressed = Some(hit);
+                    // Backspace auto-repeats while held: arm the timer and ask
+                    // for animation ticks (walked only while something animates).
+                    if matches!(self.rows[hit.0][hit.1].action, Action::Emit(Key::Backspace)) {
+                        self.repeat = Some(Repeat { t: 0.0, fired: 0 });
+                        ctx.request_anim();
+                    }
                     // Capture (not focus) so a slight finger slide keeps the key
                     // armed — this does NOT move focus off the text field.
                     ctx.capture_pointer();
@@ -295,34 +329,58 @@ impl<Msg: 'static> Widget<Msg> for Keyboard<Msg> {
                     ctx.set_handled();
                 }
             }
+            Event::PointerMove { pos } => {
+                // Sliding off a repeating Backspace aborts it — holding a
+                // repeat must be cancellable without lifting onto another key.
+                if self.repeat.is_some() {
+                    if let Some(down) = self.pressed {
+                        let geom = self.geometry(b, &self.rows);
+                        if self.key_at(pos, &geom) != Some(down) {
+                            self.repeat = None;
+                            self.pressed = None;
+                            ctx.request_paint();
+                        }
+                    }
+                }
+            }
             Event::PointerUp {
                 button: PointerButton::Left,
                 pos,
             } => {
+                // If the hold already auto-repeated, the release is spent.
+                let repeated = self.repeat.take().is_some_and(|r| r.fired > 0);
                 if let Some(down) = self.pressed.take() {
-                    let rows = self.rows();
-                    let geom = self.geometry(b, &rows);
+                    let geom = self.geometry(b, &self.rows);
                     // Fire only if the release lands on the same key (like Button).
                     if self.key_at(pos, &geom) == Some(down) {
-                        match rows[down.0][down.1].action {
+                        // Copy the action out so the arms can mutate `self`.
+                        let action = self.rows[down.0][down.1].action;
+                        match action {
                             Action::Emit(key) => {
-                                if let Some(f) = &self.on_key {
-                                    ctx.emit(f(key));
+                                if !repeated {
+                                    if let Some(f) = &self.on_key {
+                                        ctx.emit(f(key));
+                                    }
+                                }
+                                // Shift is one-shot: typing a character drops
+                                // back to lower-case, like a phone keyboard.
+                                if self.layer == Layer::Upper && matches!(key, Key::Char(_)) {
+                                    self.set_layer(Layer::Lower);
                                 }
                             }
                             Action::Shift => {
-                                self.layer = if self.layer == Layer::Upper {
+                                self.set_layer(if self.layer == Layer::Upper {
                                     Layer::Lower
                                 } else {
                                     Layer::Upper
-                                };
+                                });
                             }
                             Action::Symbols => {
-                                self.layer = if self.layer == Layer::Symbols {
+                                self.set_layer(if self.layer == Layer::Symbols {
                                     Layer::Lower
                                 } else {
                                     Layer::Symbols
-                                };
+                                });
                             }
                         }
                     }
@@ -335,8 +393,38 @@ impl<Msg: 'static> Widget<Msg> for Keyboard<Msg> {
         }
     }
 
+    fn animate_with(&mut self, ctx: &mut AnimCtx<'_, Msg>) -> Anim {
+        let Some(rep) = &mut self.repeat else {
+            return Anim::IDLE;
+        };
+        rep.t += ctx.dt();
+        // Emit one Backspace per elapsed interval past the hold delay, however
+        // the frame `dt` happens to slice the time.
+        while rep.t >= REPEAT_DELAY + rep.fired as f32 * REPEAT_INTERVAL {
+            rep.fired += 1;
+            if let Some(f) = &self.on_key {
+                ctx.emit(f(Key::Backspace));
+            }
+        }
+        // Nothing repaints while held (the key already shows pressed); just
+        // keep the clock running until release or slide-off clears `repeat`.
+        Anim {
+            running: true,
+            ..Anim::IDLE
+        }
+    }
+
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
+    }
+}
+
+/// The key rows of `layer`, built once per layer switch (see `Keyboard::rows`).
+fn build_rows(layer: Layer) -> Vec<Vec<KeyDef>> {
+    match layer {
+        Layer::Lower => letter_rows(false),
+        Layer::Upper => letter_rows(true),
+        Layer::Symbols => symbol_rows(),
     }
 }
 

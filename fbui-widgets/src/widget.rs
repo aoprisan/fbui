@@ -12,7 +12,7 @@ use std::any::Any;
 use fbui_render::geom::{Point, Rect, Size};
 use fbui_render::FontContext;
 
-use crate::ctx::{EventCtx, PaintCtx};
+use crate::ctx::{AnimCtx, EventCtx, PaintCtx};
 use crate::style::Style;
 use crate::theme::Theme;
 
@@ -163,6 +163,15 @@ pub trait Widget<Msg>: Any {
     /// animates. Kinetic scrolling lives here.
     fn animate(&mut self, _dt: f32) -> Anim {
         Anim::IDLE
+    }
+
+    /// Like [`animate`](Self::animate), but able to emit application messages —
+    /// for the rare time-driven behavior that must speak to the app, such as the
+    /// on-screen [`Keyboard`](crate::widgets::Keyboard)'s key auto-repeat. This
+    /// is what the [`Ui`](crate::Ui) actually calls each tick; the default
+    /// forwards to `animate`, so a widget overrides exactly one of the two.
+    fn animate_with(&mut self, ctx: &mut AnimCtx<'_, Msg>) -> Anim {
+        self.animate(ctx.dt())
     }
 
     /// A pending vertical scroll-blit (logical px) to apply before repaint,

@@ -209,6 +209,28 @@ impl<'a, Msg> EventCtx<'a, Msg> {
     }
 }
 
+/// Context for [`Widget::animate_with`](crate::Widget::animate_with): the frame
+/// `dt` plus the message sink, for the rare animation that must speak to the
+/// app (the on-screen [`Keyboard`](crate::widgets::Keyboard)'s key auto-repeat).
+/// Most animations only change pixels and should use the plain
+/// [`animate`](crate::Widget::animate) instead.
+pub struct AnimCtx<'a, Msg> {
+    pub(crate) dt: f32,
+    pub(crate) messages: &'a mut Vec<Msg>,
+}
+
+impl<'a, Msg> AnimCtx<'a, Msg> {
+    /// Seconds elapsed since the previous animation tick.
+    pub fn dt(&self) -> f32 {
+        self.dt
+    }
+
+    /// Emit an application message from this tick.
+    pub fn emit(&mut self, msg: Msg) {
+        self.messages.push(msg);
+    }
+}
+
 /// Context for [`Widget::paint`](crate::Widget::paint).
 pub struct PaintCtx<'a, 'p> {
     pub(crate) painter: &'a mut Painter<'p>,
