@@ -15,7 +15,11 @@ built against. The MSRV is part of the contract: `fbui-platform` builds on Rust
 **1.76**; the render/widget stack tracks its heavier dependencies (cosmic-text,
 image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
-## [Unreleased] — Phase 5: performance & animation
+## [Unreleased]
+
+Nothing yet.
+
+## [0.2.0] — 2026-07-10 — Phase 5: performance & animation, and the overlay layer
 
 ### Added
 
@@ -231,5 +235,6 @@ real devices.
 - libinput's `set_surface` rescale-on-hotplug override is left to the
   feature-gated backend (not in the default/CI build).
 
-[Unreleased]: https://github.com/aoprisan/fbui/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/aoprisan/fbui/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/aoprisan/fbui/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/aoprisan/fbui/releases/tag/v0.1.0
