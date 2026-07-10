@@ -17,6 +17,10 @@ platform = ["dep:fbui-platform", "fbui-render/platform"]
 # still renders text on a target with no installed fonts. Off by default; adds
 # ~300 KB. See `fbui_render::FontContext`.
 bundled-font = ["fbui-render/bundled-font"]
+# SVG icon support: `Image::from_svg`/`from_svg_file` rasterize a vector icon
+# at any device-pixel size (one asset for every scale). Off by default; pulls
+# in resvg. Text and embedded raster images inside SVGs are not enabled.
+svg = ["fbui-render/svg"]
 # Emit `tracing` spans through input → update → layout → paint → present so an
 # app can capture a per-frame flamegraph. Off by default, zero-cost when off.
 profile = ["dep:tracing", "fbui-widgets/profile"]

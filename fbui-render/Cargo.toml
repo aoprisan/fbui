@@ -27,12 +27,22 @@ platform = ["dep:fbui-platform"]
 # pay for it. The font + its license live in `fonts/`.
 bundled-font = []
 
+# SVG icon support: `Image::from_svg`/`from_svg_file` rasterize an SVG at a
+# caller-chosen pixel size through resvg (which rasterizes with tiny-skia, the
+# same CPU rasterizer the painter uses). Off by default; text-in-SVG and
+# raster-images-in-SVG are deliberately not enabled — icons are pure vectors.
+svg = ["dep:resvg"]
+
 [dependencies]
 # tiny-skia is the CPU rasterizer; cosmic-text shapes/lays out text and re-exports
 # the swash rasterizer + fontdb font loading; image decodes PNG/JPEG for blits.
 tiny-skia = "0.12"
 cosmic-text = "0.19"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+# Only linked when the `svg` feature is enabled. Minimal feature set: no text,
+# no raster images inside SVGs, no system fonts — vector icons only.
+resvg = { version = "0.47", optional = true, default-features = false }
 
 # Only linked when the `platform` glue is enabled.
 fbui-platform = { path = "../fbui-platform", optional = true }
