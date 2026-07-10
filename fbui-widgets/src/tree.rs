@@ -38,6 +38,10 @@ struct Node<Msg> {
     children: Vec<WidgetId>,
     /// Absolute logical bounds after the last layout (scroll offsets folded in).
     layout: Rect,
+    /// The overlay rect this widget last painted (see
+    /// [`Widget::overlay_rect`]), so a vanished overlay's pixels can be
+    /// damaged even after the widget stops reporting it.
+    last_overlay: Option<Rect>,
 }
 
 /// The widget tree plus its layout, input, and paint machinery.
@@ -123,6 +127,60 @@ impl<Msg: 'static> Ui<Msg> {
         id
     }
 
+    /// Remove a widget and its whole subtree from the tree, damaging whatever
+    /// it (and any overlay it painted) occupied. Focus, hover, and pointer
+    /// capture pointing into the removed subtree are cleared. Stale ids into
+    /// the subtree simply stop resolving — slotmap keys are generational.
+    ///
+    /// This is how transient structure comes down: a dismissed
+    /// [`Dialog`](crate::widgets::Dialog), a closed popover. (Removing it —
+    /// rather than leaving an invisible full-size node — also keeps dormant
+    /// overlays from disabling the scroll-blit fast path underneath.)
+    pub fn remove(&mut self, id: WidgetId) {
+        if !self.nodes.contains_key(id) {
+            return;
+        }
+        // Collect the subtree, damaging as we go.
+        let mut ids = Vec::new();
+        let mut stack = vec![id];
+        while let Some(n) = stack.pop() {
+            let Some(node) = self.nodes.get(n) else {
+                continue;
+            };
+            ids.push(n);
+            self.damage.push(node.layout);
+            if let Some(o) = node.last_overlay {
+                self.damage.push(o.inset(-1.0));
+            }
+            stack.extend(node.children.iter().copied());
+        }
+
+        // Detach from the parent (tree + taffy handle their own sides).
+        if let Some(p) = self.nodes[id].parent {
+            if let Some(pn) = self.nodes.get_mut(p) {
+                pn.children.retain(|&c| c != id);
+            }
+        }
+        if self.root == Some(id) {
+            self.root = None;
+        }
+        for &n in &ids {
+            let t = self.nodes[n].taffy;
+            let _ = self.taffy.remove(t);
+            self.nodes.remove(n);
+            if self.focus == Some(n) {
+                self.focus = None;
+            }
+            if self.hover == Some(n) {
+                self.hover = None;
+            }
+            if self.capture == Some(n) {
+                self.capture = None;
+            }
+        }
+        self.needs_layout = true;
+    }
+
     /// Recompute and install a node's taffy style from its widget (and parent).
     fn apply_style(&mut self, id: WidgetId) {
         let style = self.resolved_style(id);
@@ -165,6 +223,7 @@ impl<Msg: 'static> Ui<Msg> {
             parent,
             children: Vec::new(),
             layout: Rect::new(0.0, 0.0, 0.0, 0.0),
+            last_overlay: None,
         });
         // The node context lets the measure callback find the widget by id.
         let _ = self.taffy.set_node_context(taffy_node, Some(id));
@@ -192,6 +251,7 @@ impl<Msg: 'static> Ui<Msg> {
         // `resolved_style` re-applies any parent-imposed positioning (stacks).
         self.apply_style(id);
         self.damage.push(layout);
+        self.damage_overlay(id);
         self.needs_layout = true;
         // A programmatic mutation may have started an animation (e.g. retargeting
         // a tween). Tick once; `animate` clears this again if nothing is running.
@@ -203,6 +263,25 @@ impl<Msg: 'static> Ui<Msg> {
     pub fn request_paint(&mut self, id: WidgetId) {
         if let Some(node) = self.nodes.get(id) {
             self.damage.push(node.layout);
+        }
+    }
+
+    /// Damage a widget's floating overlay — both where it is now and where it
+    /// was last painted — so overlay appearance/disappearance/movement always
+    /// repaints cleanly. The rects are padded by one logical pixel because
+    /// overlay ink can straddle the rect edge (a centered 1px border stroke
+    /// leaves an anti-aliased halo just outside it).
+    fn damage_overlay(&mut self, id: WidgetId) {
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+        let now = node.widget.overlay_rect(node.layout, self.size);
+        let last = node.last_overlay;
+        if let Some(o) = now {
+            self.damage.push(o.inset(-1.0));
+        }
+        if let Some(o) = last {
+            self.damage.push(o.inset(-1.0));
         }
     }
 
@@ -293,6 +372,11 @@ impl<Msg: 'static> Ui<Msg> {
             } else if anim.repaint || anim.relayout {
                 let b = self.nodes[id].layout;
                 self.damage.push(b);
+            }
+            if anim.repaint || anim.relayout || anim.damage.is_some() {
+                // An animating widget with a floating overlay (fading toasts)
+                // changed it too; the overlay rect is its real footprint.
+                self.damage_overlay(id);
             }
             running |= anim.running;
         }
@@ -421,10 +505,11 @@ impl<Msg: 'static> Ui<Msg> {
 
         let target = self.target_for(&event);
         if let Some(id) = target {
-            if matches!(event, Event::Scroll { .. }) {
-                // Wheel scrolls bubble: the deepest widget under the pointer
-                // gets first refusal, then its ancestors — so a wheel over a
-                // label *inside* a ScrollView still scrolls the view.
+            if matches!(event, Event::Scroll { .. } | Event::Key { .. }) {
+                // Scrolls and keys bubble: the target (deepest widget under
+                // the pointer / the focused widget) gets first refusal, then
+                // its ancestors — so a wheel over a label inside a ScrollView
+                // scrolls the view, and Esc inside a Dialog dismisses it.
                 let mut cur = Some(id);
                 while let Some(c) = cur {
                     if self.dispatch_to(c, &event) {
@@ -498,6 +583,7 @@ impl<Msg: 'static> Ui<Msg> {
     /// the widget marked the event handled (for bubbling).
     fn dispatch_to(&mut self, id: WidgetId, event: &Event) -> bool {
         let (hovered, focused) = (self.hover == Some(id), self.focus == Some(id));
+        let surface = self.size;
         self.out.reset_for_event();
 
         let Self {
@@ -513,6 +599,7 @@ impl<Msg: 'static> Ui<Msg> {
         let mut ctx = EventCtx {
             event,
             bounds: node.layout,
+            surface,
             theme,
             fonts,
             hovered,
@@ -590,12 +677,43 @@ impl<Msg: 'static> Ui<Msg> {
         }
     }
 
-    /// Tab order = pre-order DFS over focusable widgets. Returns the focusable
-    /// after (or before) the current focus, wrapping around.
-    fn adjacent_focus(&self, forward: bool) -> Option<WidgetId> {
+    /// Focus the first focusable widget inside `id`'s subtree (pre-order),
+    /// returning whether one was found. Call it after adding a modal
+    /// [`Dialog`](crate::widgets::Dialog) so keys (Esc, Tab) land inside it.
+    pub fn focus_first(&mut self, id: WidgetId) -> bool {
         let mut order = Vec::new();
-        if let Some(root) = self.root {
-            self.collect_focusable(root, &mut order);
+        self.collect_focusable(id, &mut order);
+        match order.first() {
+            Some(&f) => {
+                self.set_focus(Some(f));
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The nearest ancestor of `id` (inclusive) that traps focus, if any.
+    fn trap_ancestor(&self, id: WidgetId) -> Option<WidgetId> {
+        let mut cur = Some(id);
+        while let Some(c) = cur {
+            let n = self.nodes.get(c)?;
+            if n.widget.traps_focus() {
+                return Some(c);
+            }
+            cur = n.parent;
+        }
+        None
+    }
+
+    /// Tab order = pre-order DFS over focusable widgets. Returns the focusable
+    /// after (or before) the current focus, wrapping around. When the current
+    /// focus sits inside a focus trap (a modal dialog), the cycle is confined
+    /// to that trap's subtree.
+    fn adjacent_focus(&self, forward: bool) -> Option<WidgetId> {
+        let scope = self.focus.and_then(|f| self.trap_ancestor(f)).or(self.root);
+        let mut order = Vec::new();
+        if let Some(scope) = scope {
+            self.collect_focusable(scope, &mut order);
         }
         if order.is_empty() {
             return None;
@@ -642,6 +760,7 @@ impl<Msg: 'static> Ui<Msg> {
         for id in ids {
             if let Some(dy) = self.nodes[id].widget.scroll_blit() {
                 let bounds = self.nodes[id].layout;
+                eprintln!("BLIT dy={dy} overlaid={}", self.overlaid(id, bounds));
                 // The shift moves whatever pixels occupy the bounds — including
                 // anything painted *over* the widget (a Stack overlay). In that
                 // case reusing them would drag the overlay along; fall back to
@@ -671,6 +790,27 @@ impl<Msg: 'static> Ui<Msg> {
         if region.is_empty() {
             return;
         }
+        // Snap the region *out* to whole device pixels. The region-sized
+        // background clear (and every draw clipped to it) must fully own its
+        // boundary pixels: a fractional edge anti-aliases against the previous
+        // frame's pixels, and repeated incremental repaints then never converge
+        // to what a full repaint produces.
+        let f = self.scale.factor();
+        let (x0, y0) = ((region.x * f).floor() / f, (region.y * f).floor() / f);
+        let (x1, y1) = (
+            (region.right() * f).ceil() / f,
+            (region.bottom() * f).ceil() / f,
+        );
+        let region = intersect_rect(
+            Rect::new(x0, y0, x1 - x0, y1 - y0),
+            Rect::new(0.0, 0.0, self.size.w, self.size.h),
+        );
+
+        // Floating overlays (open dropdowns, toasts) paint on top of the whole
+        // tree, in tree order. Any overlay intersecting the region must repaint
+        // — the base pass just painted underneath it.
+        let mut overlays: Vec<(WidgetId, Rect)> = Vec::new();
+        self.collect_overlays(root, &mut overlays);
 
         let Self {
             nodes,
@@ -678,16 +818,58 @@ impl<Msg: 'static> Ui<Msg> {
             theme,
             hover,
             focus,
+            size,
             ..
         } = self;
-        let (hover, focus) = (*hover, *focus);
+        let (hover, focus, size) = (*hover, *focus, *size);
         surface.paint(|p| {
             p.push_clip(region);
             // Clear the region to the window background first.
             p.fill_rect(region, theme.palette.bg);
             paint_node(p, fonts, theme, nodes, root, hover, focus, region);
+            for &(id, rect) in &overlays {
+                // The 1px pad matches `damage_overlay`: border ink can sit
+                // just outside the reported rect.
+                if intersect_rect(rect.inset(-1.0), region).is_empty() {
+                    continue;
+                }
+                let Some(node) = nodes.get(id) else { continue };
+                let mut ctx = PaintCtx {
+                    painter: p,
+                    fonts,
+                    theme,
+                    bounds: rect,
+                    region,
+                    hovered: hover == Some(id),
+                    focused: focus == Some(id),
+                };
+                node.widget.paint_overlay(&mut ctx);
+            }
             p.pop_clip();
         });
+
+        // Remember where each overlay painted, so its pixels can be damaged
+        // after it changes or vanishes.
+        let ids: Vec<WidgetId> = self.nodes.keys().collect();
+        for id in ids {
+            let node = &self.nodes[id];
+            let o = node.widget.overlay_rect(node.layout, size);
+            self.nodes[id].last_overlay = o;
+        }
+    }
+
+    /// DFS-collect the widgets currently reporting a floating overlay, in tree
+    /// (paint) order.
+    fn collect_overlays(&self, id: WidgetId, out: &mut Vec<(WidgetId, Rect)>) {
+        let Some(node) = self.nodes.get(id) else {
+            return;
+        };
+        if let Some(rect) = node.widget.overlay_rect(node.layout, self.size) {
+            out.push((id, rect));
+        }
+        for &c in &node.children {
+            self.collect_overlays(c, out);
+        }
     }
 
     /// Whether anything painted *after* `id`'s subtree — a later sibling at any
@@ -697,6 +879,24 @@ impl<Msg: 'static> Ui<Msg> {
     /// nothing, so dormant overlays should be removed from the tree (or sized
     /// empty), not merely skipped in `paint`.
     fn overlaid(&self, id: WidgetId, bounds: Rect) -> bool {
+        // Floating overlays paint on top of everything, wherever their owner
+        // sits in the tree (including where it *last* painted, if it's mid-
+        // dismissal this frame). Padded by the same 1px ink halo as
+        // `damage_overlay`.
+        for (nid, node) in self.nodes.iter() {
+            if nid == id {
+                continue;
+            }
+            let rects = [
+                node.widget.overlay_rect(node.layout, self.size),
+                node.last_overlay,
+            ];
+            for o in rects.into_iter().flatten() {
+                if !intersect_rect(o.inset(-1.0), bounds).is_empty() {
+                    return true;
+                }
+            }
+        }
         let mut cur = id;
         while let Some(parent) = self.nodes.get(cur).and_then(|n| n.parent) {
             let children = &self.nodes[parent].children;

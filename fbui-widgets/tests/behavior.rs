@@ -6,7 +6,8 @@ use fbui_render::geom::{Point, Size};
 use fbui_render::Scale;
 use fbui_widgets::event::{Event, Key, Modifiers, PointerButton};
 use fbui_widgets::widgets::{
-    Button, Checkbox, Container, List, RadioGroup, ScrollView, Stack, Switch,
+    Button, Checkbox, Container, Dialog, List, RadioGroup, ScrollView, Select, Stack, Switch,
+    ToastKind, Toasts,
 };
 use fbui_widgets::{Theme, Ui, WidgetId};
 
@@ -17,6 +18,7 @@ enum Msg {
     Picked(usize),
     Switched(bool),
     Chose(usize),
+    Dismissed,
 }
 
 fn ui() -> Ui<Msg> {
@@ -496,4 +498,259 @@ fn mutation_marks_dirty_paint_clears_it() {
 
     ui.with::<Checkbox<Msg>, _>(cb, |c| c.set_checked(true));
     assert!(ui.needs_paint(), "mutation marks dirty");
+}
+
+// ---- overlay layer: Dialog / Select / Toasts -------------------------------
+
+fn press_key(ui: &mut Ui<Msg>, k: Key) {
+    ui.event(Event::Key {
+        key: k,
+        pressed: true,
+        mods: Modifiers::default(),
+    });
+}
+
+#[test]
+fn dialog_blocks_input_dismisses_and_removes() {
+    let mut ui = ui();
+    let stack = ui.set_root(Stack::new());
+    let page = ui.add_child(stack, Container::column().padding(10.0));
+    let page_btn = ui.add_child(page, Button::new("Page").on_press(|| Msg::Pressed));
+    ui.layout_now();
+
+    // Sanity: the page button works before the dialog opens.
+    let c = center(&ui, page_btn);
+    click(&mut ui, c);
+    assert_eq!(ui.take_messages(), vec![Msg::Pressed]);
+
+    // Open a modal dialog over it.
+    let dialog = ui.add_child(stack, Dialog::new().on_dismiss(|| Msg::Dismissed));
+    let card = ui.add_child(dialog, Container::column().padding(20.0).gap(8.0));
+    let ok = ui.add_child(card, Button::new("OK").on_press(|| Msg::Toggled(true)));
+    ui.layout_now();
+
+    // A click where the page button sits now lands on the scrim: the page
+    // button must NOT fire; the scrim click dismisses instead.
+    click(&mut ui, c);
+    let msgs = ui.take_messages();
+    assert!(
+        !msgs.contains(&Msg::Pressed),
+        "modal blocks the page: {msgs:?}"
+    );
+    assert_eq!(msgs, vec![Msg::Dismissed], "scrim click asks to dismiss");
+
+    // The dialog's own button still works.
+    let ok_c = center(&ui, ok);
+    click(&mut ui, ok_c);
+    assert_eq!(ui.take_messages(), vec![Msg::Toggled(true)]);
+
+    // Esc bubbles from the focused widget inside the card to the dialog.
+    assert!(ui.focus_first(dialog), "dialog has a focusable child");
+    assert_eq!(ui.focused(), Some(ok));
+    press_key(&mut ui, Key::Escape);
+    assert_eq!(ui.take_messages(), vec![Msg::Dismissed]);
+
+    // The app closes it by removing the subtree; the page works again.
+    ui.remove(dialog);
+    assert_eq!(
+        ui.focused(),
+        None,
+        "focus into the removed subtree is cleared"
+    );
+    ui.layout_now();
+    click(&mut ui, c);
+    assert_eq!(ui.take_messages(), vec![Msg::Pressed]);
+}
+
+#[test]
+fn dialog_traps_tab_focus() {
+    let mut ui = ui();
+    let stack = ui.set_root(Stack::new());
+    let page = ui.add_child(stack, Container::column().padding(10.0));
+    let page_btn = ui.add_child(page, Button::new("Page").on_press(|| Msg::Pressed));
+
+    let dialog = ui.add_child(stack, Dialog::new());
+    let card = ui.add_child(dialog, Container::column().padding(20.0).gap(8.0));
+    let a = ui.add_child(card, Button::new("A").on_press(|| Msg::Pressed));
+    let b = ui.add_child(card, Button::new("B").on_press(|| Msg::Pressed));
+    ui.layout_now();
+
+    assert!(ui.focus_first(dialog));
+    assert_eq!(ui.focused(), Some(a));
+    // Tab cycles a -> b -> a ... never reaching the page button.
+    for _ in 0..4 {
+        press_key(&mut ui, Key::Tab);
+        let f = ui.focused();
+        assert!(
+            f == Some(a) || f == Some(b),
+            "focus stayed in the dialog, got {f:?} (page = {page_btn:?})"
+        );
+    }
+}
+
+#[test]
+fn select_opens_commits_and_click_away_closes() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().padding(10.0).gap(10.0));
+    let sel = ui.add_child(
+        root,
+        Select::new(["Alpha", "Beta", "Gamma"]).on_change(Msg::Chose),
+    );
+    let btn = ui.add_child(root, Button::new("Below").on_press(|| Msg::Pressed));
+    ui.layout_now();
+
+    let b = ui.bounds(sel).unwrap();
+    // Menu geometry (matches the widget's constants): below the field.
+    let row_center = |i: usize| {
+        Point::new(
+            b.x + b.w / 2.0,
+            b.bottom() + 2.0 + 4.0 + (i as f32 + 0.5) * 32.0,
+        )
+    };
+
+    // Click the field: opens, captures.
+    let sc = center(&ui, sel);
+    click(&mut ui, sc);
+    assert_eq!(ui.with::<Select<Msg>, _>(sel, |s| s.is_open()), Some(true));
+
+    // Click row 1 (in the floating menu, over where the button would be).
+    click(&mut ui, row_center(1));
+    assert_eq!(ui.take_messages(), vec![Msg::Chose(1)]);
+    assert_eq!(ui.with::<Select<Msg>, _>(sel, |s| s.is_open()), Some(false));
+    assert_eq!(
+        ui.with::<Select<Msg>, _>(sel, |s| s.selected_index()),
+        Some(1)
+    );
+
+    // Reopen, then click away (far from both field and menu): the menu closes
+    // without committing, and the click is consumed.
+    click(&mut ui, sc);
+    assert_eq!(ui.with::<Select<Msg>, _>(sel, |s| s.is_open()), Some(true));
+    click(&mut ui, Point::new(390.0, 290.0));
+    assert_eq!(ui.with::<Select<Msg>, _>(sel, |s| s.is_open()), Some(false));
+    assert!(ui.take_messages().is_empty(), "click-away is consumed");
+
+    // With the menu closed the button below works normally again.
+    let bc = center(&ui, btn);
+    click(&mut ui, bc);
+    assert_eq!(ui.take_messages(), vec![Msg::Pressed]);
+}
+
+#[test]
+fn select_keyboard_navigation() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().padding(10.0));
+    let sel = ui.add_child(
+        root,
+        Select::new(["Alpha", "Beta", "Gamma"]).on_change(Msg::Chose),
+    );
+    ui.layout_now();
+
+    // Focus by clicking, then close with Esc (still focused).
+    let sc = center(&ui, sel);
+    click(&mut ui, sc);
+    press_key(&mut ui, Key::Escape);
+    assert_eq!(ui.with::<Select<Msg>, _>(sel, |s| s.is_open()), Some(false));
+    assert_eq!(ui.focused(), Some(sel));
+
+    // Enter opens with the hover on the current selection; Down moves; Enter
+    // commits.
+    press_key(&mut ui, Key::Enter);
+    assert_eq!(ui.with::<Select<Msg>, _>(sel, |s| s.is_open()), Some(true));
+    press_key(&mut ui, Key::Down);
+    press_key(&mut ui, Key::Enter);
+    assert_eq!(ui.take_messages(), vec![Msg::Chose(1)]);
+    assert_eq!(ui.with::<Select<Msg>, _>(sel, |s| s.is_open()), Some(false));
+}
+
+#[test]
+fn toasts_appear_and_expire_on_the_frame_clock() {
+    use fbui_render::Surface;
+
+    let mut ui = ui();
+    let root = ui.set_root(Stack::new());
+    let _page = ui.add_child(root, Container::column().padding(10.0));
+    let toasts = ui.add_child(root, Toasts::new());
+    ui.layout_now();
+
+    let mut surface = Surface::new(400, 300, Scale::ONE);
+    ui.paint(&mut surface);
+    let baseline = surface.pixmap().data().to_vec();
+
+    // Push a toast: the overlay appears (pixels change), driven by `with`.
+    ui.with::<Toasts, _>(toasts, |t| t.push(ToastKind::Success, "Saved"));
+    assert!(ui.needs_paint());
+    ui.paint(&mut surface);
+    assert_ne!(baseline, surface.pixmap().data(), "toast card is visible");
+    assert!(ui.is_animating(), "toast lifetime rides the frame clock");
+
+    // Let it live out its TTL: the card fades and vanishes, and the surface is
+    // byte-identical to before the toast.
+    let mut guard = 0;
+    while ui.animate(0.25) {
+        ui.paint(&mut surface);
+        guard += 1;
+        assert!(guard < 100, "toast must expire");
+    }
+    ui.paint(&mut surface);
+    assert_eq!(
+        baseline,
+        surface.pixmap().data(),
+        "expired toast fully erased"
+    );
+    assert_eq!(ui.with::<Toasts, _>(toasts, |t| t.len()), Some(0));
+}
+
+#[test]
+fn scroll_blit_under_an_open_select_falls_back() {
+    use fbui_render::Surface;
+
+    // A coasting List keeps blitting while a Select menu floats over it; the
+    // Ui must fall back to a full repaint so the menu isn't dragged along.
+    fn make() -> (Ui<Msg>, WidgetId, WidgetId, Surface) {
+        let mut ui = Ui::<Msg>::new(Size::new(200.0, 300.0), Scale::ONE, Theme::dark());
+        let root = ui.set_root(Container::column().fill().padding(4.0).gap(4.0));
+        let sel = ui.add_child(root, Select::new(["One", "Two", "Three"]));
+        let rows: Vec<String> = (0..500).map(|i| format!("row {i}")).collect();
+        let list = ui.add_child(root, List::new(rows));
+        ui.layout_now();
+        let surface = Surface::new(200, 300, Scale::ONE);
+        (ui, sel, list, surface)
+    }
+
+    let run =
+        |ui: &mut Ui<Msg>, sel: WidgetId, list: WidgetId, surface: &mut Surface, force: bool| {
+            ui.paint(surface);
+            // Fling the list so it coasts...
+            let lb = ui.bounds(list).unwrap();
+            let lp = Point::new(lb.x + 10.0, lb.y + 10.0);
+            ui.event(Event::Fling {
+                pos: lp,
+                velocity_x: 0.0,
+                velocity_y: -600.0,
+            });
+            // ...then open the select; its menu floats over the list.
+            let sc = center(ui, sel);
+            click(ui, sc);
+            ui.paint(surface);
+            // The coast continues under the open menu.
+            for _ in 0..5 {
+                ui.animate(1.0 / 60.0);
+                if force {
+                    ui.set_size(Size::new(200.0, 300.0), Scale::ONE); // ground truth: full repaint
+                }
+                ui.paint(surface);
+            }
+        };
+
+    let (mut ua, sa, la, mut fa) = make();
+    let (mut ub, sb, lb, mut fb) = make();
+    run(&mut ua, sa, la, &mut fa, false);
+    run(&mut ub, sb, lb, &mut fb, true);
+
+    assert_eq!(
+        fa.pixmap().data(),
+        fb.pixmap().data(),
+        "a blit under a floating menu must not corrupt the overlay"
+    );
 }

@@ -7,7 +7,7 @@
 //! those requests after the widget returns. This keeps the borrow graph simple
 //! and the data-flow one-directional (see `DESIGN.md` §3).
 
-use fbui_render::geom::{Point, Rect};
+use fbui_render::geom::{Point, Rect, Size};
 use fbui_render::{FontContext, Painter};
 
 use crate::event::Event;
@@ -78,6 +78,7 @@ impl<Msg> Outputs<Msg> {
 pub struct EventCtx<'a, Msg> {
     pub(crate) event: &'a Event,
     pub(crate) bounds: Rect,
+    pub(crate) surface: Size,
     pub(crate) theme: &'a Theme,
     pub(crate) fonts: &'a mut FontContext,
     pub(crate) hovered: bool,
@@ -95,6 +96,13 @@ impl<'a, Msg> EventCtx<'a, Msg> {
     /// This widget's absolute logical bounds.
     pub fn bounds(&self) -> Rect {
         self.bounds
+    }
+
+    /// The full logical surface size — for widgets that place a floating
+    /// overlay ([`Widget::overlay_rect`](crate::Widget::overlay_rect)) and need
+    /// to damage or clamp it during event handling.
+    pub fn surface_size(&self) -> Size {
+        self.surface
     }
 
     pub fn theme(&self) -> &Theme {
