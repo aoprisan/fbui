@@ -121,11 +121,11 @@ pub const DEFAULT_FONT: &[u8] = include_bytes!("../../fonts/Inter-Regular.ttf");
 /// from an empty database, so on a minimal target (a boot image, a kiosk) text
 /// renders only from fonts you load — deterministic and host-independent, which
 /// is what an embedded/ISO target wants. Use [`with_fonts`] to start from a
-/// bundled set, or [`with_default_font`] for the compiled-in default.
+/// bundled set, or `with_default_font` (behind the `bundled-font` feature) for
+/// the compiled-in default.
 ///
 /// [`new`]: FontContext::new
 /// [`with_fonts`]: FontContext::with_fonts
-/// [`with_default_font`]: FontContext::with_default_font
 pub struct FontContext {
     font_system: FontSystem,
     atlas: GlyphAtlas,
