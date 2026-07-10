@@ -34,8 +34,6 @@ slotmap::new_key_type! {
 struct Node<Msg> {
     widget: Box<dyn Widget<Msg>>,
     taffy: taffy::NodeId,
-    /// Kept for upward damage propagation / reparenting (Phase 4+); set on insert.
-    #[allow(dead_code)]
     parent: Option<WidgetId>,
     children: Vec<WidgetId>,
     /// Absolute logical bounds after the last layout (scroll offsets folded in).
@@ -423,7 +421,20 @@ impl<Msg: 'static> Ui<Msg> {
 
         let target = self.target_for(&event);
         if let Some(id) = target {
-            self.dispatch_to(id, &event);
+            if matches!(event, Event::Scroll { .. }) {
+                // Wheel scrolls bubble: the deepest widget under the pointer
+                // gets first refusal, then its ancestors — so a wheel over a
+                // label *inside* a ScrollView still scrolls the view.
+                let mut cur = Some(id);
+                while let Some(c) = cur {
+                    if self.dispatch_to(c, &event) {
+                        break;
+                    }
+                    cur = self.nodes.get(c).and_then(|n| n.parent);
+                }
+            } else {
+                self.dispatch_to(id, &event);
+            }
         }
     }
 
@@ -483,7 +494,9 @@ impl<Msg: 'static> Ui<Msg> {
         }
     }
 
-    fn dispatch_to(&mut self, id: WidgetId, event: &Event) {
+    /// Deliver `event` to one widget and apply its requests. Returns whether
+    /// the widget marked the event handled (for bubbling).
+    fn dispatch_to(&mut self, id: WidgetId, event: &Event) -> bool {
         let (hovered, focused) = (self.hover == Some(id), self.focus == Some(id));
         self.out.reset_for_event();
 
@@ -495,7 +508,7 @@ impl<Msg: 'static> Ui<Msg> {
             ..
         } = self;
         let Some(node) = nodes.get_mut(id) else {
-            return;
+            return false;
         };
         let mut ctx = EventCtx {
             event,
@@ -509,7 +522,9 @@ impl<Msg: 'static> Ui<Msg> {
         };
         node.widget.event(&mut ctx);
 
+        let handled = self.out.handled;
         self.apply_outputs();
+        handled
     }
 
     fn apply_outputs(&mut self) {
@@ -517,8 +532,10 @@ impl<Msg: 'static> Ui<Msg> {
         self.messages.append(&mut self.out.messages);
         self.damage.append(&mut self.out.damage);
 
-        if self.out.relayout {
+        if self.out.relayout || self.out.scroll_layout {
             self.needs_layout = true;
+        }
+        if self.out.relayout {
             self.damage
                 .push(Rect::new(0.0, 0.0, self.size.w, self.size.h));
         }
@@ -536,6 +553,7 @@ impl<Msg: 'static> Ui<Msg> {
             self.apply_focus(op);
         }
         self.out.relayout = false;
+        self.out.scroll_layout = false;
     }
 
     // ---- focus -----------------------------------------------------------
@@ -624,8 +642,16 @@ impl<Msg: 'static> Ui<Msg> {
         for id in ids {
             if let Some(dy) = self.nodes[id].widget.scroll_blit() {
                 let bounds = self.nodes[id].layout;
-                let strip = surface.scroll_region(bounds, dy);
-                self.damage.push(strip);
+                // The shift moves whatever pixels occupy the bounds — including
+                // anything painted *over* the widget (a Stack overlay). In that
+                // case reusing them would drag the overlay along; fall back to
+                // repainting the widget in full.
+                if self.overlaid(id, bounds) {
+                    self.damage.push(bounds);
+                } else {
+                    let strip = surface.scroll_region(bounds, dy);
+                    self.damage.push(strip);
+                }
             }
         }
         if self.damage.is_empty() {
@@ -662,6 +688,41 @@ impl<Msg: 'static> Ui<Msg> {
             paint_node(p, fonts, theme, nodes, root, hover, focus, region);
             p.pop_clip();
         });
+    }
+
+    /// Whether anything painted *after* `id`'s subtree — a later sibling at any
+    /// ancestor level, i.e. later in z-order — overlaps `bounds`. Those pixels
+    /// sit on top of `id`'s, so an in-place shift of the region would corrupt
+    /// them. Conservative: an overlapping node counts even if it painted
+    /// nothing, so dormant overlays should be removed from the tree (or sized
+    /// empty), not merely skipped in `paint`.
+    fn overlaid(&self, id: WidgetId, bounds: Rect) -> bool {
+        let mut cur = id;
+        while let Some(parent) = self.nodes.get(cur).and_then(|n| n.parent) {
+            let children = &self.nodes[parent].children;
+            if let Some(pos) = children.iter().position(|&c| c == cur) {
+                for &later in &children[pos + 1..] {
+                    if self.subtree_intersects(later, bounds) {
+                        return true;
+                    }
+                }
+            }
+            cur = parent;
+        }
+        false
+    }
+
+    /// Whether any node in `id`'s subtree has bounds overlapping `bounds`.
+    fn subtree_intersects(&self, id: WidgetId, bounds: Rect) -> bool {
+        let Some(node) = self.nodes.get(id) else {
+            return false;
+        };
+        if !intersect_rect(node.layout, bounds).is_empty() {
+            return true;
+        }
+        node.children
+            .iter()
+            .any(|&c| self.subtree_intersects(c, bounds))
     }
 }
 

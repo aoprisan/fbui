@@ -19,6 +19,27 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Added
 
+- **Scroll-blit for `ScrollView`** (closing the gap 0.1.0 shipped with): a
+  wheel/drag/kinetic scroll now shifts the viewport's pixels in place and
+  repaints only the exposed strip, via a new
+  `EventCtx::request_scroll_layout` — a relayout *without* the implicit
+  full-surface repaint, for widgets that account for every changed pixel
+  themselves. Children still re-place at the new offset; only those touching
+  the strip re-rasterize. Benchmarked (`scrollview_blit` vs
+  `scrollview_full_repaint`, ~40% cheaper on the dev host) and pinned
+  byte-for-byte against a full repaint, like the `List` path.
+- **Overlay-safety guard for the blit fast path**: the `Ui` now detects when
+  something later in z-order (e.g. a `Stack` overlay) overlaps a scrolling
+  widget and falls back to a full repaint — an in-place pixel shift would have
+  dragged the overlay's pixels along. Covered by an equivalence test.
+- **Wheel-scroll bubbling**: an unhandled `Event::Scroll` now bubbles from the
+  deepest widget under the pointer up its ancestor chain, so a wheel over a
+  `Label` *inside* a `ScrollView` scrolls the view (previously the event died
+  at the leaf).
+- **`Container::width`/`height` now pin the min size** so an explicitly-sized
+  container can't be flex-shrunk below it — fixed-height rows in a
+  `ScrollView` overflow (and scroll) instead of silently compressing.
+
 - **`Stack` container**: a layout that *overlays* its children instead of flowing
   them. A new `Widget::stacks_children` hook lets the `Ui` give each child of a
   stack `position: absolute` filling the stack, so children share a box and

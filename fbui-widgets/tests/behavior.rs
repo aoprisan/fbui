@@ -5,7 +5,9 @@
 use fbui_render::geom::{Point, Size};
 use fbui_render::Scale;
 use fbui_widgets::event::{Event, Key, Modifiers, PointerButton};
-use fbui_widgets::widgets::{Button, Checkbox, Container, List, RadioGroup, Stack, Switch};
+use fbui_widgets::widgets::{
+    Button, Checkbox, Container, List, RadioGroup, ScrollView, Stack, Switch,
+};
 use fbui_widgets::{Theme, Ui, WidgetId};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -244,6 +246,115 @@ fn scroll_blit_matches_a_full_repaint() {
         sa.pixmap().data(),
         sb.pixmap().data(),
         "scroll-blit output must match a full repaint of the same offset"
+    );
+}
+
+#[test]
+fn scrollview_blit_matches_a_full_repaint() {
+    use fbui_render::{Color, Surface};
+
+    // A ScrollView of colored fixed-height stripes (font-independent pixels).
+    fn make() -> (Ui<Msg>, WidgetId, Surface) {
+        let mut ui = Ui::<Msg>::new(Size::new(200.0, 200.0), Scale::ONE, Theme::dark());
+        let root = ui.set_root(Container::column().fill());
+        let scroll = ui.add_child(root, ScrollView::new());
+        let col = ui.add_child(scroll, Container::column());
+        for i in 0..40 {
+            let c = Color::rgba((i * 6) as u8, 40, (255 - i * 6) as u8, 255);
+            ui.add_child(col, Container::row().height(25.0).background(c, 0.0));
+        }
+        ui.layout_now();
+        let surface = Surface::new(200, 200, Scale::ONE);
+        (ui, scroll, surface)
+    }
+
+    let wheel = |ui: &mut Ui<Msg>, sv: WidgetId, dy: f32| {
+        let b = ui.bounds(sv).unwrap();
+        ui.event(Event::Scroll {
+            pos: Point::new(b.x + 10.0, b.y + 10.0),
+            delta_x: 0.0,
+            delta_y: dy,
+        });
+    };
+
+    let (mut ua, sa_id, mut sa) = make();
+    let (mut ub, sb_id, mut sb) = make();
+    ua.paint(&mut sa);
+    ub.paint(&mut sb);
+    let before = sa.pixmap().data().to_vec();
+
+    // A: scroll with the blit fast path (only the exposed strip re-rasterizes).
+    wheel(&mut ua, sa_id, 24.0);
+    ua.paint(&mut sa);
+
+    // B: same scroll, but force a full repaint over it (mark everything dirty),
+    // so B is the ground-truth render of the scrolled state.
+    wheel(&mut ub, sb_id, 24.0);
+    ub.set_size(Size::new(200.0, 200.0), Scale::ONE); // marks the whole surface dirty
+    ub.paint(&mut sb);
+
+    assert_ne!(
+        before,
+        sa.pixmap().data(),
+        "the scroll must actually move content"
+    );
+    assert_eq!(
+        sa.pixmap().data(),
+        sb.pixmap().data(),
+        "ScrollView blit output must match a full repaint of the same offset"
+    );
+}
+
+#[test]
+fn scroll_blit_under_an_overlay_falls_back_to_a_full_repaint() {
+    use fbui_render::{Color, Surface};
+
+    // A List under a Stack overlay that covers part of it. The blit would drag
+    // the overlay's pixels along; the Ui must detect the overlap and repaint in
+    // full instead — output identical to the ground truth, overlay intact.
+    fn make() -> (Ui<Msg>, WidgetId, Surface) {
+        let mut ui = Ui::<Msg>::new(Size::new(200.0, 200.0), Scale::ONE, Theme::dark());
+        let root = ui.set_root(Stack::new());
+        let rows: Vec<String> = (0..500).map(|i| format!("row {i}")).collect();
+        let list = ui.add_child(root, List::new(rows));
+        // The overlay: a centered opaque card on top of the list.
+        let overlay = ui.add_child(root, Container::column().padding(60.0));
+        ui.add_child(
+            overlay,
+            Container::column()
+                .grow(1.0)
+                .background(Color::rgba(200, 80, 80, 255), 8.0),
+        );
+        ui.layout_now();
+        let surface = Surface::new(200, 200, Scale::ONE);
+        (ui, list, surface)
+    }
+
+    let wheel = |ui: &mut Ui<Msg>, list: WidgetId, dy: f32| {
+        let b = ui.bounds(list).unwrap();
+        ui.event(Event::Scroll {
+            pos: Point::new(b.x + 10.0, b.y + 10.0),
+            delta_x: 0.0,
+            delta_y: dy,
+        });
+    };
+
+    let (mut ua, la, mut sa) = make();
+    let (mut ub, lb, mut sb) = make();
+    ua.paint(&mut sa);
+    ub.paint(&mut sb);
+
+    wheel(&mut ua, la, 24.0);
+    ua.paint(&mut sa);
+
+    wheel(&mut ub, lb, 24.0);
+    ub.set_size(Size::new(200.0, 200.0), Scale::ONE);
+    ub.paint(&mut sb);
+
+    assert_eq!(
+        sa.pixmap().data(),
+        sb.pixmap().data(),
+        "a scroll under an overlay must not corrupt the overlay's pixels"
     );
 }
 

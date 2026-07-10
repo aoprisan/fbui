@@ -16,6 +16,21 @@ pub(crate) fn focus_ring(p: &mut Painter, bounds: Rect, radius: f32, accent: Col
     p.stroke_rounded_rect(bounds.inset(width / 2.0), radius, accent, width);
 }
 
+/// Bounding box of two logical rects (empty is the identity).
+pub(crate) fn union(a: Rect, b: Rect) -> Rect {
+    if a.is_empty() {
+        return b;
+    }
+    if b.is_empty() {
+        return a;
+    }
+    let x = a.x.min(b.x);
+    let y = a.y.min(b.y);
+    let right = a.right().max(b.right());
+    let bottom = a.bottom().max(b.bottom());
+    Rect::new(x, y, right - x, bottom - y)
+}
+
 /// Scale a color's RGB toward black by `f` (0–1).
 pub(crate) fn darken(c: Color, f: f32) -> Color {
     Color::rgba(
