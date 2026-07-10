@@ -79,7 +79,10 @@ fn main() {
     // A procedurally generated image.
     let media = ui.add_child(root, Container::row().gap(12.0).align(Align::Center));
     ui.add_child(media, ImageView::new(gradient(96, 96)));
-    ui.add_child(media, Label::new("ImageView\n(96×96 gradient)").color(muted));
+    ui.add_child(
+        media,
+        Label::new("ImageView\n(96×96 gradient)").color(muted),
+    );
 
     // Bottom: a windowed List beside a ScrollView, each filling half the row.
     let panels = ui.add_child(root, Container::row().gap(12.0).grow(1.0));

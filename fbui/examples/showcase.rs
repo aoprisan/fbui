@@ -65,20 +65,28 @@ impl App for Showcase {
             toggles,
             Checkbox::new("Enabled", true).on_toggle(Msg::Toggle),
         );
-        ui.add_child(toggles, Switch::new("Dark mode", false).on_toggle(Msg::Flip));
+        ui.add_child(
+            toggles,
+            Switch::new("Dark mode", false).on_toggle(Msg::Flip),
+        );
 
         // Text entry.
         ui.add_child(root, Label::new("Name").color(muted));
         ui.add_child(
             root,
-            TextInput::new().placeholder("your name").on_change(Msg::Name),
+            TextInput::new()
+                .placeholder("your name")
+                .on_change(Msg::Name),
         );
 
         // Slider drives the progress bar below it. Each lives in a row so its
         // flex-grow fills horizontally rather than ballooning the column.
         ui.add_child(root, Label::new("Volume").color(muted));
         let slider_row = ui.add_child(root, Container::row());
-        ui.add_child(slider_row, Slider::new(0.0, 100.0, 50.0).on_change(Msg::Volume));
+        ui.add_child(
+            slider_row,
+            Slider::new(0.0, 100.0, 50.0).on_change(Msg::Volume),
+        );
         let bar_row = ui.add_child(root, Container::row().width(320.0));
         self.bar = Some(ui.add_child(bar_row, ProgressBar::new(0.5)));
 
