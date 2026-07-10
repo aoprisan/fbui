@@ -66,6 +66,8 @@ pub struct Ui<Msg> {
     needs_layout: bool,
     /// At least one widget has a running animation; drive [`animate`](Self::animate).
     animating: bool,
+    /// A pending [`request_screenshot`](Self::request_screenshot) destination.
+    screenshot: Option<std::path::PathBuf>,
 }
 
 impl<Msg: 'static> Ui<Msg> {
@@ -95,6 +97,7 @@ impl<Msg: 'static> Ui<Msg> {
             damage: Vec::new(),
             needs_layout: true,
             animating: false,
+            screenshot: None,
         }
     }
 
@@ -227,6 +230,10 @@ impl<Msg: 'static> Ui<Msg> {
         });
         // The node context lets the measure callback find the widget by id.
         let _ = self.taffy.set_node_context(taffy_node, Some(id));
+        // The new widget may animate from birth (a Spinner). Tick once; the
+        // next `animate` clears this again if nothing is actually running —
+        // the same conservative arm `with` uses.
+        self.animating = true;
         id
     }
 
@@ -544,6 +551,28 @@ impl<Msg: 'static> Ui<Msg> {
             pressed: true,
             mods: Modifiers::default(),
         });
+    }
+
+    /// Ask the embedder to save what's on screen as a PNG at `path` — remote
+    /// diagnostics for a device with no second screen. Call it from
+    /// `App::update` (wire a debug gesture or an IPC command to it); the runner
+    /// captures **after the next paint**, so the shot includes whatever the
+    /// triggering update changed, and writes via `Surface::write_png`.
+    ///
+    /// The `Ui` only records the request: it owns no surface. A later request
+    /// before the last one was taken replaces it. Embedders (the `fbui` runner,
+    /// or a custom one) collect it with
+    /// [`take_screenshot_request`](Self::take_screenshot_request).
+    pub fn request_screenshot(&mut self, path: impl Into<std::path::PathBuf>) {
+        self.screenshot = Some(path.into());
+    }
+
+    /// Take the pending screenshot destination, if any — the embedder half of
+    /// [`request_screenshot`](Self::request_screenshot). The `fbui` runner
+    /// calls this after painting each frame (and when idle with nothing to
+    /// paint) and writes the surface out; a custom runner should do the same.
+    pub fn take_screenshot_request(&mut self) -> Option<std::path::PathBuf> {
+        self.screenshot.take()
     }
 
     /// Which widget should receive `event`: the capture holder for pointer

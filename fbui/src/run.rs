@@ -267,6 +267,23 @@ impl<A: App> Runner<A> {
                 self.app.update(m, &mut self.ui);
             }
         }
+        self.fulfill_screenshot();
+    }
+
+    /// Fulfill a pending [`Ui::request_screenshot`] — but only while the shadow
+    /// surface is current. If a repaint is pending, the capture waits for
+    /// `render` (which calls this right after painting), so the shot always
+    /// includes what the requesting update changed.
+    fn fulfill_screenshot(&mut self) {
+        if self.ui.needs_paint() {
+            return;
+        }
+        if let Some(path) = self.ui.take_screenshot_request() {
+            if let Err(e) = self.surface.write_png(&path) {
+                // Diagnostics must not kill the app; stderr is the kiosk log.
+                eprintln!("fbui: screenshot to {} failed: {e}", path.display());
+            }
+        }
     }
 }
 
@@ -376,6 +393,7 @@ impl<A: App> PlatformHandler for Runner<A> {
             .damage_device_rect(IRect::new(d.x, d.y, d.w, d.h));
 
         self.ui.paint(&mut self.surface);
+        self.fulfill_screenshot();
         crate::span!("present");
         let rects = self.surface.copy_into_frame(frame);
         // Composite the arrow on top of the just-copied UI, into the back buffer.

@@ -9,7 +9,7 @@
 use fbui_render::geom::Size;
 use fbui_render::{Color, Scale, Surface};
 use fbui_testkit::{assert_snapshot_in, Tolerance};
-use fbui_widgets::widgets::{Container, Keyboard, Slider, Stack};
+use fbui_widgets::widgets::{Container, Keyboard, Slider, Spinner, Stack, TabBar};
 use fbui_widgets::{Theme, Ui};
 
 #[derive(Clone)]
@@ -105,6 +105,32 @@ fn keyboard_key_grid() {
     assert_snapshot_in(
         "tests/snapshots",
         "keyboard_key_grid",
+        surface.pixmap(),
+        Tolerance::FUZZY,
+    );
+}
+
+/// The Phase-5+ additions side by side: a three-segment `TabBar` with the
+/// middle tab active, and a `Spinner` frozen at phase 0. This pins the segment
+/// geometry, the active-segment fill, and the spinner's dot ring with its
+/// brightness fade. Tab labels render with host fonts under the tolerant
+/// compare, the same footing as `keyboard_key_grid`.
+#[test]
+fn tabbar_and_spinner() {
+    let (w, h) = (260u32, 120u32);
+    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+
+    let root = ui.set_root(Container::column().fill().padding(12.0).gap(12.0));
+    ui.add_child(root, TabBar::new(["one", "two", "three"]).selected(1));
+    let row = ui.add_child(root, Container::row().grow(1.0));
+    ui.add_child(row, Spinner::new().size(48.0));
+
+    let mut surface = Surface::new(w, h, Scale::ONE);
+    ui.paint(&mut surface);
+
+    assert_snapshot_in(
+        "tests/snapshots",
+        "tabbar_and_spinner",
         surface.pixmap(),
         Tolerance::FUZZY,
     );
