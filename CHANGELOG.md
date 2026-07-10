@@ -17,7 +17,17 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ## [Unreleased]
 
-Nothing yet.
+### Added
+
+- **`Keyboard`** — an on-screen (virtual) keyboard for touch kiosks with no
+  physical keyboard. A docked, non-focusable key grid that paints all its keys
+  itself and hit-tests taps internally (one tree node), with QWERTY, a Shift
+  layer, and a `?123` symbols layer. It deliberately never takes focus (so the
+  text field being edited keeps it) and emits each tapped `Key` via `on_key`.
+- **`TextInput::apply_key`** — apply a `Key` at the caret as if typed
+  (insert/backspace/delete/cursor), the entry point an on-screen `Keyboard`
+  drives from `App::update` (a widget cannot inject a real key event). The
+  hardware-key path now shares this same implementation. See the `osk` example.
 
 ## [0.2.0] — 2026-07-10 — Phase 5: performance & animation, and the overlay layer
 

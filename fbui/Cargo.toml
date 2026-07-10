@@ -55,6 +55,10 @@ required-features = ["platform"]
 name = "overlay"
 required-features = ["platform"]
 
+[[example]]
+name = "osk"
+required-features = ["platform"]
+
 [dev-dependencies]
 # Used by the `showcase` example to build a procedural bitmap for ImageView.
 image = { version = "0.25", default-features = false, features = ["png"] }
