@@ -250,9 +250,22 @@ impl<A: App> Runner<A> {
     /// Feed a widget event and run any resulting messages.
     fn dispatch(&mut self, event: Event) {
         self.ui.event(event);
-        let msgs = self.ui.take_messages();
-        for m in msgs {
-            self.app.update(m, &mut self.ui);
+        self.drain_messages();
+    }
+
+    /// Run `App::update` until the message queue is empty. Loops because an
+    /// update can itself queue messages — e.g. routing an on-screen keyboard
+    /// tap via [`Ui::send_key`] makes the edited field emit `on_change` — and
+    /// those must not sit undelivered until the next input event.
+    fn drain_messages(&mut self) {
+        loop {
+            let msgs = self.ui.take_messages();
+            if msgs.is_empty() {
+                break;
+            }
+            for m in msgs {
+                self.app.update(m, &mut self.ui);
+            }
         }
     }
 }
@@ -386,6 +399,8 @@ impl<A: App> PlatformHandler for Runner<A> {
         while let Ok(msg) = self.rx.try_recv() {
             self.app.update(msg, &mut self.ui);
         }
+        // Updates may have queued widget messages (e.g. via `Ui::send_key`).
+        self.drain_messages();
         if self.ui.needs_paint() {
             Flow::Redraw
         } else {
@@ -443,10 +458,7 @@ impl<A: App> PlatformHandler for Runner<A> {
         // the tree walk so an idle UI does no work here.
         if self.ui.is_animating() {
             self.ui.animate(dt.min(0.05));
-            let msgs = self.ui.take_messages();
-            for m in msgs {
-                self.app.update(m, &mut self.ui);
-            }
+            self.drain_messages();
         }
 
         if self.ui.needs_paint() {

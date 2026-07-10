@@ -7,7 +7,8 @@
 //! ```
 //!
 //! Drive it by finger on a touchscreen, or by mouse (touch and left-click share
-//! the same pointer path). Shift toggles caps; `?123` switches to symbols.
+//! the same pointer path). Shift capitalizes the next letter; `?123` switches
+//! to symbols; holding Backspace auto-repeats; Enter jumps to the next field.
 
 use fbui::widgets::{Container, Keyboard, Label, TextInput};
 use fbui::{App, Key, Ui, WidgetId};
@@ -50,13 +51,13 @@ impl App for Kiosk {
 
     fn update(&mut self, msg: Msg, ui: &mut Ui<Msg>) {
         match msg {
-            // Route the tapped key to whichever field currently holds focus.
-            // The downcast is a no-op if the focused widget isn't a TextInput.
-            Msg::Kbd(k) => {
-                if let Some(id) = ui.focused() {
-                    ui.with::<TextInput<Msg>, _>(id, |t| t.apply_key(k));
-                }
-            }
+            // Enter hops to the next field: replayed as Tab, which the Ui
+            // intercepts for focus movement (a TextInput would swallow Enter).
+            Msg::Kbd(Key::Enter) => ui.send_key(Key::Tab),
+            // Route every other tapped key to whichever widget holds focus.
+            // `send_key` replays it through the real event path, so the field
+            // edits, repaints, and fires `on_change` exactly like hardware input.
+            Msg::Kbd(k) => ui.send_key(k),
         }
     }
 }

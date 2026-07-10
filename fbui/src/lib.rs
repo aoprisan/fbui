@@ -52,8 +52,8 @@ pub(crate) use span;
 // [`Widget`] trait — and size/animate their own widgets — without reaching past
 // the umbrella into `fbui_widgets`.
 pub use fbui_widgets::{
-    anim, ctx, event, style, theme, tree, widget, widgets, Anim, Event, Key, Modifiers, PaintCtx,
-    PointerButton, Style, Theme, Ui, Widget, WidgetId,
+    anim, ctx, event, style, theme, tree, widget, widgets, Anim, AnimCtx, Event, Key, Modifiers,
+    PaintCtx, PointerButton, Style, Theme, Ui, Widget, WidgetId,
 };
 
 #[cfg(feature = "platform")]

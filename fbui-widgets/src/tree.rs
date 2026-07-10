@@ -19,7 +19,7 @@ use fbui_render::{FontContext, Scale, Surface};
 use slotmap::SlotMap;
 use taffy::{AvailableSpace, TaffyTree};
 
-use crate::ctx::{CaptureOp, EventCtx, FocusOp, Outputs, PaintCtx};
+use crate::ctx::{AnimCtx, CaptureOp, EventCtx, FocusOp, Outputs, PaintCtx};
 use crate::event::{Event, Key, Modifiers};
 use crate::style::Style;
 use crate::theme::Theme;
@@ -360,8 +360,13 @@ impl<Msg: 'static> Ui<Msg> {
         crate::span!("ui.animate");
         let ids: Vec<WidgetId> = self.nodes.keys().collect();
         let mut running = false;
+        let mut msgs = Vec::new();
         for id in ids {
-            let anim = self.nodes[id].widget.animate(dt);
+            let mut actx = AnimCtx {
+                dt,
+                messages: &mut msgs,
+            };
+            let anim = self.nodes[id].widget.animate_with(&mut actx);
             if anim.relayout {
                 self.needs_layout = true;
             }
@@ -380,6 +385,9 @@ impl<Msg: 'static> Ui<Msg> {
             }
             running |= anim.running;
         }
+        // Messages emitted from a tick (key auto-repeat) join the same queue as
+        // event-emitted ones; the runner drains them right after `animate`.
+        self.messages.append(&mut msgs);
         self.animating = running;
         running
     }
@@ -521,6 +529,21 @@ impl<Msg: 'static> Ui<Msg> {
                 self.dispatch_to(id, &event);
             }
         }
+    }
+
+    /// Deliver `key` to the focused widget as if typed on a hardware keyboard
+    /// (a synthetic pressed [`Event::Key`] with no modifiers). This is how an
+    /// on-screen [`Keyboard`](crate::widgets::Keyboard)'s taps get from
+    /// `App::update` into the focused field: it drives the *same* event path as
+    /// real key input, so `on_change` fires, damage is queued, and `Tab` moves
+    /// focus — none of which the lower-level
+    /// [`TextInput::apply_key`](crate::widgets::TextInput::apply_key) does.
+    pub fn send_key(&mut self, key: Key) {
+        self.event(Event::Key {
+            key,
+            pressed: true,
+            mods: Modifiers::default(),
+        });
     }
 
     /// Which widget should receive `event`: the capture holder for pointer

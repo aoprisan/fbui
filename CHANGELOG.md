@@ -24,10 +24,28 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
   itself and hit-tests taps internally (one tree node), with QWERTY, a Shift
   layer, and a `?123` symbols layer. It deliberately never takes focus (so the
   text field being edited keeps it) and emits each tapped `Key` via `on_key`.
+  Shift is one-shot (reverts after the next character) and Backspace
+  auto-repeats while held, driven by the frame `dt` — never a wall clock.
+  `Keyboard::key_rect` exposes the key geometry paint and hit-testing use.
+- **`Ui::send_key`** — replay a `Key` to the focused widget as a synthetic
+  pressed key event, the routing for an on-screen `Keyboard`'s taps from
+  `App::update`: it drives the same event path as hardware input, so
+  `on_change` fires and `Tab` moves focus. See the `osk` example.
 - **`TextInput::apply_key`** — apply a `Key` at the caret as if typed
-  (insert/backspace/delete/cursor), the entry point an on-screen `Keyboard`
-  drives from `App::update` (a widget cannot inject a real key event). The
-  hardware-key path now shares this same implementation. See the `osk` example.
+  (insert/backspace/delete/cursor), for direct programmatic edits. The
+  hardware-key path shares this same implementation. It does **not** fire
+  `on_change`; use `Ui::send_key` when it should.
+- **`Widget::animate_with` + `AnimCtx`** — a defaulted variant of
+  `Widget::animate` that can emit application messages from an animation tick
+  (what `Ui::animate` now calls); `Keyboard`'s Backspace auto-repeat rides on
+  it. Existing `animate` implementations are unaffected.
+
+### Fixed
+
+- The runner now drains widget messages **until the queue is empty** after
+  events, animation ticks, and `Proxy` wakes — a message queued from inside
+  `App::update` itself (e.g. an `on_change` triggered via `Ui::send_key`) was
+  previously stranded until the next input event arrived.
 
 ## [0.2.0] — 2026-07-10 — Phase 5: performance & animation, and the overlay layer
 
