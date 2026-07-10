@@ -349,6 +349,11 @@ impl<Msg: 'static> Widget<Msg> for Keyboard<Msg> {
             } => {
                 // If the hold already auto-repeated, the release is spent.
                 let repeated = self.repeat.take().is_some_and(|r| r.fired > 0);
+                // Release capture unconditionally, not just when a key is still
+                // armed: a slide-off may have cleared `pressed` already, but the
+                // capture taken on press must still be dropped, or every later
+                // pointer event keeps routing here.
+                ctx.release_pointer();
                 if let Some(down) = self.pressed.take() {
                     let geom = self.geometry(b, &self.rows);
                     // Fire only if the release lands on the same key (like Button).
@@ -384,7 +389,6 @@ impl<Msg: 'static> Widget<Msg> for Keyboard<Msg> {
                             }
                         }
                     }
-                    ctx.release_pointer();
                     ctx.request_paint();
                     ctx.set_handled();
                 }

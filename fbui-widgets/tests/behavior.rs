@@ -227,6 +227,45 @@ fn keyboard_slide_off_aborts_backspace_repeat() {
     );
 }
 
+/// Regression: aborting a repeating Backspace by sliding off cleared `pressed`
+/// before `PointerUp` ran, and the release of the pointer capture taken on
+/// press was gated on `pressed` — so the keyboard kept capture and swallowed
+/// every later pointer event on screen until a key tap completed on it.
+#[test]
+fn keyboard_slide_off_releases_pointer_capture() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let button = ui.add_child(root, Button::new("ok").on_press(|| Msg::Pressed));
+    let kb = ui.add_child(root, Keyboard::new().on_key(Msg::Kbd));
+    ui.layout_now();
+
+    // Hold Backspace until it repeats, slide off, release.
+    let bksp = key_center(&mut ui, kb, 2, 8);
+    ui.event(Event::PointerDown {
+        pos: bksp,
+        button: PointerButton::Left,
+    });
+    ui.animate(0.5);
+    ui.event(Event::PointerMove {
+        pos: Point::new(bksp.x, bksp.y - 200.0),
+    });
+    ui.event(Event::PointerUp {
+        pos: bksp,
+        button: PointerButton::Left,
+    });
+    let _ = ui.take_messages();
+
+    // The keyboard must not still hold pointer capture: a click elsewhere
+    // has to reach its target.
+    let bc = center(&ui, button);
+    click(&mut ui, bc);
+    assert_eq!(
+        ui.take_messages(),
+        vec![Msg::Pressed],
+        "button still clickable after a Backspace slide-off"
+    );
+}
+
 /// `Ui::send_key` is the on-screen keyboard's routing: it replays a tapped key
 /// through the real event path, so the focused field edits AND `on_change`
 /// fires — full parity with hardware typing.

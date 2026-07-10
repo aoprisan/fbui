@@ -42,6 +42,12 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Fixed
 
+- `Keyboard` no longer leaks pointer capture when a held (auto-repeating)
+  Backspace is cancelled by sliding off the key: the slide-off cleared the
+  pressed state, and the release of the capture taken on press was gated on
+  it, so the keyboard kept routing **all** later pointer input to itself —
+  buttons and fields elsewhere on screen stopped responding until a key tap
+  completed on the keyboard. The capture is now released on every pointer-up.
 - The runner now drains widget messages **until the queue is empty** after
   events, animation ticks, and `Proxy` wakes — a message queued from inside
   `App::update` itself (e.g. an `on_change` triggered via `Ui::send_key`) was
