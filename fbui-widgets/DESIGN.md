@@ -196,6 +196,18 @@ The set above is not closed (§10). Widgets added since:
   same event path as hardware input, so `on_change` and repaint behave
   identically. (`TextInput::apply_key` remains for direct programmatic edits;
   it shares the hardware path's implementation but fires no `on_change`.)
+* **`TabBar`** — a segmented tab strip; exactly one tab is active. One node
+  that paints equal-width segments and hit-tests taps itself (the
+  `Keyboard`/`Select` pattern), a single tab stop with Left/Right/Home/End
+  moving the selection. Emits `on_select(index)` only when the selection
+  *changes*; the app swaps the content below in `update`. Equal widths keep
+  the geometry independent of label text and host fonts.
+* **`Spinner`** — an indeterminate activity indicator: a dot ring with a
+  rotating brightness head. Runs from birth (inserting a widget arms one
+  conservative animation tick, the same arm `Ui::with` uses) and is stopped /
+  restarted via `set_running`. The head is quantized to whole dots, so it
+  repaints only when a step actually changes pixels, and a stopped spinner
+  costs nothing — the idle-burns-0% rule.
 
 ## 8. The `fbui` umbrella
 

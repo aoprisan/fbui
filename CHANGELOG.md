@@ -19,6 +19,30 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Added
 
+- **`TabBar`** — a segmented tab strip for switching between views: equal-width
+  segments in one tree node (self-painted, self-hit-tested), a single tab stop
+  with Left/Right/Home/End moving the selection while focused. Emits
+  `on_select(index)` only when the selection changes; `TabBar::tab_rect`
+  exposes the segment geometry paint and hit-testing use.
+- **`Spinner`** — an indeterminate activity indicator: a ring of dots with a
+  rotating brightness head, spinning from the moment it's added and stopped /
+  restarted via `set_running`. Driven by the frame `dt` (never a wall clock),
+  damage-quantized to head steps, and free when stopped — the idle-burns-0%
+  rule. To let a widget animate from birth, `Ui` now arms one conservative
+  animation tick when a widget is inserted (cleared on the next `animate` if
+  nothing is actually running), the same arm `Ui::with` already used.
+- **SVG icons** (feature `svg`, off by default) — `Image::from_svg` /
+  `Image::from_svg_file` rasterize a vector icon at any device-pixel size
+  through resvg (which draws with the same tiny-skia the painter uses):
+  one asset serves every scale, displayed via the existing `ImageView`.
+  The drawing is fit to the requested box, aspect preserved, centered.
+  Text and embedded raster images inside SVGs are deliberately not enabled.
+- **Screenshot API** — `Surface::to_rgba` (straight-alpha RGBA8 rows),
+  `Surface::encode_png`, and `Surface::write_png` export what's on screen;
+  `Ui::request_screenshot(path)` + `Ui::take_screenshot_request` let an app
+  ask for a capture from `App::update` (remote diagnostics for a device with
+  no second screen). The runner fulfills a request after the next paint — the
+  shot always includes what the requesting update changed.
 - **`Keyboard`** — an on-screen (virtual) keyboard for touch kiosks with no
   physical keyboard. A docked, non-focusable key grid that paints all its keys
   itself and hit-tests taps internally (one tree node), with QWERTY, a Shift
@@ -42,6 +66,12 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Fixed
 
+- `Keyboard` no longer leaks pointer capture when a held (auto-repeating)
+  Backspace is cancelled by sliding off the key: the slide-off cleared the
+  pressed state, and the release of the capture taken on press was gated on
+  it, so the keyboard kept routing **all** later pointer input to itself —
+  buttons and fields elsewhere on screen stopped responding until a key tap
+  completed on the keyboard. The capture is now released on every pointer-up.
 - The runner now drains widget messages **until the queue is empty** after
   events, animation ticks, and `Proxy` wakes — a message queued from inside
   `App::update` itself (e.g. an `on_change` triggered via `Ui::send_key`) was

@@ -42,6 +42,10 @@ jobs:
           cargo check -p fbui-platform --no-default-features --features "fbdev evdev event-loop noseat"
           # The render layer headless (default) and with the platform glue.
           cargo clippy -p fbui-render --all-targets --features platform
+          # SVG icon support (resvg): lint plus its unit tests.
+          cargo clippy -p fbui-render --all-targets --features svg
+          cargo test -p fbui-render --lib --features svg
+          cargo clippy -p fbui --all-targets --features svg
           # The umbrella + on-device runner and examples (counter/form/big_list).
           cargo clippy -p fbui --all-targets --features platform
           # The Phase 5 tracing instrumentation (zero-cost when off).

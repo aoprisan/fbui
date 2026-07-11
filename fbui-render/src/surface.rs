@@ -108,6 +108,46 @@ impl Surface {
         &self.shadow
     }
 
+    /// The rendered pixels as straight-alpha RGBA8 rows, top-left origin — the
+    /// screenshot form. The shadow is premultiplied internally (and kept
+    /// opaque), so this un-premultiplies into the layout every image tool
+    /// expects. Rows are `width() * 4` bytes, no padding.
+    pub fn to_rgba(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(self.shadow.pixels().len() * 4);
+        for px in self.shadow.pixels() {
+            let c = px.demultiply();
+            out.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+        }
+        out
+    }
+
+    /// Encode the rendered pixels as a PNG — a screenshot of what's on (or
+    /// about to be on) screen. The widget layer's `Ui::request_screenshot`
+    /// pairs with this for capture from a running app; call it directly when
+    /// you hold the surface (tests, tooling, a custom runner).
+    pub fn encode_png(&self) -> Result<Vec<u8>, String> {
+        let rgba = self.to_rgba();
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::write_buffer_with_format(
+            &mut bytes,
+            &rgba,
+            self.width(),
+            self.height(),
+            image::ExtendedColorType::Rgba8,
+            image::ImageFormat::Png,
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(bytes.into_inner())
+    }
+
+    /// Write the rendered pixels to `path` as a PNG. See
+    /// [`encode_png`](Self::encode_png). Blocking file I/O — fine for
+    /// diagnostics; don't call it per frame.
+    pub fn write_png(&self, path: impl AsRef<std::path::Path>) -> Result<(), String> {
+        let png = self.encode_png()?;
+        std::fs::write(path, png).map_err(|e| e.to_string())
+    }
+
     /// Run a paint pass. The closure gets a [`Painter`] bound to this surface's
     /// shadow buffer and scale; whatever it draws accumulates damage.
     pub fn paint(&mut self, f: impl FnOnce(&mut Painter<'_>)) {
@@ -334,5 +374,22 @@ mod tests {
         assert!(!s.is_clean());
         let damage = s.present_to_buffer(&mut [0u8; 8 * 8 * 4], 32, TargetFormat::Xrgb8888, 1);
         assert_eq!(damage, vec![IRect::new(2, 3, 4, 4)]);
+    }
+
+    #[test]
+    fn screenshot_roundtrips_through_png() {
+        // Paint a red square on the black base, export, decode back with the
+        // image crate, and check both a painted and an unpainted pixel.
+        let mut s = Surface::new(8, 8, Scale::ONE);
+        s.paint(|p| p.fill_rect(Rect::new(0.0, 0.0, 4.0, 4.0), Color::rgb(255, 0, 0)));
+
+        let rgba = s.to_rgba();
+        assert_eq!(rgba.len(), 8 * 8 * 4);
+
+        let png = s.encode_png().unwrap();
+        let img = image::load_from_memory(&png).unwrap().to_rgba8();
+        assert_eq!(img.dimensions(), (8, 8));
+        assert_eq!(img.get_pixel(2, 2).0, [255, 0, 0, 255], "painted pixel");
+        assert_eq!(img.get_pixel(6, 6).0, [0, 0, 0, 255], "opaque base pixel");
     }
 }

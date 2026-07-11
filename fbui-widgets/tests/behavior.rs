@@ -6,8 +6,8 @@ use fbui_render::geom::{Point, Size};
 use fbui_render::Scale;
 use fbui_widgets::event::{Event, Key, Modifiers, PointerButton};
 use fbui_widgets::widgets::{
-    Button, Checkbox, Container, Dialog, Keyboard, List, RadioGroup, ScrollView, Select, Stack,
-    Switch, TextInput, ToastKind, Toasts,
+    Button, Checkbox, Container, Dialog, Keyboard, List, RadioGroup, ScrollView, Select, Spinner,
+    Stack, Switch, TabBar, TextInput, ToastKind, Toasts,
 };
 use fbui_widgets::{Theme, Ui, WidgetId};
 
@@ -224,6 +224,45 @@ fn keyboard_slide_off_aborts_backspace_repeat() {
     assert!(
         ui.take_messages().is_empty(),
         "slide-off stops the repeat and spends the tap"
+    );
+}
+
+/// Regression: aborting a repeating Backspace by sliding off cleared `pressed`
+/// before `PointerUp` ran, and the release of the pointer capture taken on
+/// press was gated on `pressed` — so the keyboard kept capture and swallowed
+/// every later pointer event on screen until a key tap completed on it.
+#[test]
+fn keyboard_slide_off_releases_pointer_capture() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let button = ui.add_child(root, Button::new("ok").on_press(|| Msg::Pressed));
+    let kb = ui.add_child(root, Keyboard::new().on_key(Msg::Kbd));
+    ui.layout_now();
+
+    // Hold Backspace until it repeats, slide off, release.
+    let bksp = key_center(&mut ui, kb, 2, 8);
+    ui.event(Event::PointerDown {
+        pos: bksp,
+        button: PointerButton::Left,
+    });
+    ui.animate(0.5);
+    ui.event(Event::PointerMove {
+        pos: Point::new(bksp.x, bksp.y - 200.0),
+    });
+    ui.event(Event::PointerUp {
+        pos: bksp,
+        button: PointerButton::Left,
+    });
+    let _ = ui.take_messages();
+
+    // The keyboard must not still hold pointer capture: a click elsewhere
+    // has to reach its target.
+    let bc = center(&ui, button);
+    click(&mut ui, bc);
+    assert_eq!(
+        ui.take_messages(),
+        vec![Msg::Pressed],
+        "button still clickable after a Backspace slide-off"
     );
 }
 
@@ -588,6 +627,9 @@ fn switch_toggles_and_animates_then_settles() {
     let root = ui.set_root(Container::column().padding(10.0));
     let sw = ui.add_child(root, Switch::new("Wi-Fi", false).on_toggle(Msg::Switched));
     ui.layout_now();
+    // (Adding a widget arms one conservative animation tick, so a Spinner can
+    // spin from birth; run it so the idleness asserted below is the real thing.)
+    ui.animate(0.0);
     assert!(!ui.is_animating(), "idle before interaction");
 
     // Click flips state, emits the message, and starts the slide animation.
@@ -975,4 +1017,142 @@ fn scroll_blit_under_an_open_select_falls_back() {
         fb.pixmap().data(),
         "a blit under a floating menu must not corrupt the overlay"
     );
+}
+
+/// The screenshot flow, headless: `request_screenshot` records a destination,
+/// the embedder takes it exactly once and writes the painted surface out via
+/// `Surface::write_png` — the same halves the `fbui` runner drives on device.
+#[test]
+fn screenshot_request_flows_from_app_to_surface() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    ui.add_child(root, Button::new("ok"));
+
+    // What `App::update` does...
+    ui.request_screenshot(std::env::temp_dir().join("fbui-behavior-screenshot.png"));
+
+    // ...and what the runner does after the next paint.
+    let mut surface = fbui_render::Surface::new(120, 90, Scale::ONE);
+    ui.paint(&mut surface);
+    let path = ui.take_screenshot_request().expect("request pending");
+    surface.write_png(&path).expect("png written");
+    assert!(
+        ui.take_screenshot_request().is_none(),
+        "a request is taken exactly once"
+    );
+
+    let png = std::fs::read(&path).expect("file exists");
+    assert_eq!(&png[1..4], b"PNG");
+    let _ = std::fs::remove_file(&path);
+}
+
+/// Center of tab `index`, located through the widget's own [`TabBar::tab_rect`]
+/// — the same geometry paint and hit-testing use.
+fn tab_center(ui: &mut Ui<Msg>, bar: WidgetId, index: usize) -> Point {
+    let b = ui.bounds(bar).expect("laid out");
+    let r = ui
+        .with::<TabBar<Msg>, _>(bar, |t| t.tab_rect(b, index))
+        .flatten()
+        .expect("tab exists");
+    Point::new(r.x + r.w / 2.0, r.y + r.h / 2.0)
+}
+
+#[test]
+fn tabbar_click_selects_and_emits() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let bar = ui.add_child(
+        root,
+        TabBar::new(["One", "Two", "Three"]).on_select(Msg::Picked),
+    );
+    ui.layout_now();
+
+    let two = tab_center(&mut ui, bar, 1);
+    click(&mut ui, two);
+    assert_eq!(ui.take_messages(), vec![Msg::Picked(1)]);
+    assert_eq!(
+        ui.with::<TabBar<Msg>, _>(bar, |t| t.selected_index()),
+        Some(1)
+    );
+
+    // Clicking the already-active tab is a no-op: the selection didn't change.
+    click(&mut ui, two);
+    assert!(ui.take_messages().is_empty(), "re-click emits nothing");
+}
+
+#[test]
+fn tabbar_arrow_keys_move_selection_and_saturate() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let bar = ui.add_child(root, TabBar::new(["a", "b", "c"]).on_select(Msg::Picked));
+    ui.layout_now();
+
+    // Focus by clicking the active tab (selection stays, focus arrives).
+    let first = tab_center(&mut ui, bar, 0);
+    click(&mut ui, first);
+    assert_eq!(ui.focused(), Some(bar));
+    let _ = ui.take_messages();
+
+    ui.send_key(Key::Right);
+    ui.send_key(Key::Right);
+    assert_eq!(ui.take_messages(), vec![Msg::Picked(1), Msg::Picked(2)]);
+
+    // At the last tab, Right saturates silently; End is likewise a no-op here.
+    ui.send_key(Key::Right);
+    ui.send_key(Key::End);
+    assert!(ui.take_messages().is_empty());
+
+    ui.send_key(Key::Home);
+    assert_eq!(ui.take_messages(), vec![Msg::Picked(0)]);
+}
+
+#[test]
+fn tabbar_release_off_the_pressed_tab_emits_nothing() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let bar = ui.add_child(root, TabBar::new(["a", "b"]).on_select(Msg::Picked));
+    ui.layout_now();
+
+    // Press tab 1 but release over tab 0: abandoned, like Button/Keyboard.
+    let (t1, t0) = (tab_center(&mut ui, bar, 1), tab_center(&mut ui, bar, 0));
+    ui.event(Event::PointerDown {
+        pos: t1,
+        button: PointerButton::Left,
+    });
+    ui.event(Event::PointerUp {
+        pos: t0,
+        button: PointerButton::Left,
+    });
+    assert!(ui.take_messages().is_empty());
+    assert_eq!(
+        ui.with::<TabBar<Msg>, _>(bar, |t| t.selected_index()),
+        Some(0),
+        "selection unchanged"
+    );
+}
+
+#[test]
+fn spinner_animates_from_birth_and_stops_on_demand() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let spin = ui.add_child(root, Spinner::new());
+    ui.layout_now();
+
+    // Adding a widget arms one conservative tick; the spinner keeps it running.
+    assert!(ui.is_animating(), "insert arms the first tick");
+    assert!(ui.animate(0.01), "a running spinner keeps animating");
+
+    // Clear the initial build damage, then check step-quantized repaints: a
+    // sub-step tick changes no pixels, crossing a step damages the spinner.
+    let mut surface = fbui_render::Surface::new(120, 90, Scale::ONE);
+    ui.paint(&mut surface);
+    ui.animate(0.01);
+    assert!(!ui.needs_paint(), "no repaint between head steps");
+    ui.animate(0.1);
+    assert!(ui.needs_paint(), "crossing a head step repaints");
+
+    // Stopping makes the whole tree idle — the idle-burns-0% rule.
+    ui.with::<Spinner, _>(spin, |s| s.set_running(false));
+    assert!(!ui.animate(0.01), "stopped spinner goes idle");
+    assert!(!ui.is_animating());
 }
