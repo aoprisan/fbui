@@ -1258,7 +1258,10 @@ fn popup_routes_inside_events_and_outside_click_dismisses_consumed() {
     let c = center(&ui, btn);
     click(&mut ui, c);
     let msgs = ui.take_messages();
-    assert!(msgs.contains(&Msg::PopupHit(1)), "routed to popup: {msgs:?}");
+    assert!(
+        msgs.contains(&Msg::PopupHit(1)),
+        "routed to popup: {msgs:?}"
+    );
     assert!(!msgs.contains(&Msg::Pressed), "button blocked: {msgs:?}");
 
     // A click outside the popup dismisses it (PopupDismissed reaches the
@@ -1304,8 +1307,14 @@ fn popups_stack_and_route_front_to_back() {
     let mut ui = ui();
     let root = ui.set_root(Container::column().padding(10.0).gap(10.0));
     // A overlaps B's left half; B is opened second, so it's topmost.
-    let a = ui.add_child(root, TestPopup::new(1, Rect::new(100.0, 100.0, 100.0, 50.0)));
-    let b = ui.add_child(root, TestPopup::new(2, Rect::new(150.0, 100.0, 100.0, 50.0)));
+    let a = ui.add_child(
+        root,
+        TestPopup::new(1, Rect::new(100.0, 100.0, 100.0, 50.0)),
+    );
+    let b = ui.add_child(
+        root,
+        TestPopup::new(2, Rect::new(150.0, 100.0, 100.0, 50.0)),
+    );
     ui.layout_now();
 
     open_test_popup(&mut ui, a, PopupOptions::default());
@@ -1433,4 +1442,134 @@ fn popup_swallows_outside_scroll() {
     assert_eq!(ui.popup_owner(), Some(pop));
     ui.remove(pop);
     assert_eq!(ui.popup_owner(), None);
+}
+
+// ---- gesture bubbling ------------------------------------------------------
+
+/// A pass-through wrapper that emits on bubbled gestures its children ignored.
+struct Catcher;
+
+impl Widget<Msg> for Catcher {
+    fn layout_style(&self, _theme: &Theme) -> fbui_widgets::Style {
+        fbui_widgets::Style::default()
+    }
+
+    fn paint(&self, _ctx: &mut PaintCtx) {}
+
+    fn event(&mut self, ctx: &mut EventCtx<Msg>) {
+        match ctx.event() {
+            Event::LongPress { .. } => {
+                ctx.emit(Msg::PopupHit(9));
+                ctx.set_handled();
+            }
+            Event::PointerDown {
+                button: PointerButton::Right,
+                ..
+            } => {
+                ctx.emit(Msg::PopupHit(8));
+                ctx.set_handled();
+            }
+            _ => {}
+        }
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+#[test]
+fn gestures_bubble_from_children_to_ancestors() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().padding(10.0));
+    let catcher = ui.add_child(root, Catcher);
+    // The button ignores LongPress and right-clicks; they must bubble up.
+    let btn = ui.add_child(catcher, Button::new("Child").on_press(|| Msg::Pressed));
+    ui.layout_now();
+    let c = center(&ui, btn);
+
+    ui.event(Event::LongPress { pos: c });
+    assert_eq!(
+        ui.take_messages(),
+        vec![Msg::PopupHit(9)],
+        "LongPress bubbled"
+    );
+
+    ui.event(Event::PointerDown {
+        pos: c,
+        button: PointerButton::Right,
+    });
+    assert_eq!(
+        ui.take_messages(),
+        vec![Msg::PopupHit(8)],
+        "right-click bubbled"
+    );
+
+    // Left-button presses stay direct: the catcher never sees them, the
+    // button still works.
+    click(&mut ui, c);
+    assert_eq!(ui.take_messages(), vec![Msg::Pressed]);
+}
+
+#[test]
+fn fling_on_a_child_reaches_the_enclosing_scrollview() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let sv = ui.add_child(root, ScrollView::new());
+    let col = ui.add_child(sv, Container::column().gap(4.0));
+    // Tall content: many buttons; the fling lands on one of them.
+    let first = ui.add_child(col, Button::new("row 0").on_press(|| Msg::Pressed));
+    for i in 1..40 {
+        ui.add_child(col, Button::new(format!("row {i}")));
+    }
+    ui.layout_now();
+    let b0 = ui.bounds(first).unwrap();
+
+    // Fling upward ON the first button: the button ignores it; it must bubble
+    // to the ScrollView and start a kinetic coast.
+    ui.event(Event::Fling {
+        pos: Point::new(b0.x + b0.w / 2.0, b0.y + b0.h / 2.0),
+        velocity_x: 0.0,
+        velocity_y: -1500.0,
+    });
+    assert!(
+        ui.animate(1.0 / 60.0),
+        "fling bubbled through the button and the view coasts"
+    );
+    for _ in 0..600 {
+        if !ui.animate(1.0 / 60.0) {
+            break;
+        }
+    }
+    ui.layout_now();
+    let after = ui.bounds(first).unwrap();
+    assert!(
+        after.y < b0.y,
+        "content scrolled up: {} -> {}",
+        b0.y,
+        after.y
+    );
+}
+
+#[test]
+fn dialog_still_swallows_bubbled_gestures() {
+    let mut ui = ui();
+    let stack = ui.set_root(Stack::new());
+    let page = ui.add_child(stack, Container::column().padding(10.0));
+    let catcher = ui.add_child(page, Catcher);
+    let btn = ui.add_child(catcher, Button::new("Page").on_press(|| Msg::Pressed));
+    let dialog = ui.add_child(stack, Dialog::new().on_dismiss(|| Msg::Dismissed));
+    let card = ui.add_child(dialog, Container::column().padding(20.0));
+    ui.add_child(card, Button::new("OK"));
+    ui.layout_now();
+
+    // A long-press over the page (through the scrim) must die at the dialog:
+    // the catcher never sees it.
+    let c = center(&ui, btn);
+    ui.event(Event::LongPress { pos: c });
+    let msgs = ui.take_messages();
+    assert!(
+        !msgs.contains(&Msg::PopupHit(9)),
+        "dialog swallows the long-press: {msgs:?}"
+    );
 }

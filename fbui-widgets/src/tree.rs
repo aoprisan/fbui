@@ -20,7 +20,7 @@ use slotmap::SlotMap;
 use taffy::{AvailableSpace, TaffyTree};
 
 use crate::ctx::{AnimCtx, CaptureOp, EventCtx, FocusOp, Outputs, PaintCtx, PopupOp};
-use crate::event::{Event, Key, Modifiers};
+use crate::event::{Event, Key, Modifiers, PointerButton};
 use crate::style::Style;
 use crate::theme::Theme;
 use crate::widget::Widget;
@@ -704,10 +704,7 @@ impl<Msg: 'static> Ui<Msg> {
         }
         if !self.popups.is_empty() {
             let capture_first = self.capture.is_some()
-                && matches!(
-                    event,
-                    Event::PointerMove { .. } | Event::PointerUp { .. }
-                );
+                && matches!(event, Event::PointerMove { .. } | Event::PointerUp { .. });
             if let Some(pos) = event.pointer_pos().filter(|_| !capture_first) {
                 // Hit-test the popup stack top-down.
                 let mut hit: Option<(usize, WidgetId)> = None;
@@ -738,10 +735,7 @@ impl<Msg: 'static> Ui<Msg> {
                     return;
                 }
                 // Outside every popup.
-                let dismissable = self
-                    .popups
-                    .iter()
-                    .any(|e| e.opts.dismiss_on_outside_click);
+                let dismissable = self.popups.iter().any(|e| e.opts.dismiss_on_outside_click);
                 if dismissable && press {
                     // Consumed: a click-away must not activate what's
                     // underneath the popup it dismisses.
@@ -758,11 +752,27 @@ impl<Msg: 'static> Ui<Msg> {
 
         let target = self.target_for(&event);
         if let Some(id) = target {
-            if matches!(event, Event::Scroll { .. } | Event::Key { .. }) {
-                // Scrolls and keys bubble: the target (deepest widget under
-                // the pointer / the focused widget) gets first refusal, then
-                // its ancestors — so a wheel over a label inside a ScrollView
-                // scrolls the view, and Esc inside a Dialog dismisses it.
+            let bubbles = matches!(
+                event,
+                Event::Scroll { .. }
+                    | Event::Key { .. }
+                    | Event::Tap { .. }
+                    | Event::LongPress { .. }
+                    | Event::Fling { .. }
+                    | Event::PointerDown {
+                        button: PointerButton::Right,
+                        ..
+                    }
+            );
+            if bubbles {
+                // Scrolls, keys, recognized gestures, and right-button presses
+                // bubble: the target (deepest widget under the pointer / the
+                // focused widget) gets first refusal, then its ancestors — so
+                // a wheel or fling over a label inside a ScrollView scrolls
+                // the view, Esc inside a Dialog dismisses it, and a
+                // long-press/right-click on any child opens the enclosing
+                // ContextMenu. Left-button presses/releases stay direct: two
+                // widgets arming on one press would double-activate.
                 let mut cur = Some(id);
                 while let Some(c) = cur {
                     if self.dispatch_to(c, &event) {

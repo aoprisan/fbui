@@ -16,9 +16,9 @@ use fbui_render::{FontContext, Painter, PathBuilder};
 use crate::ctx::{EventCtx, PaintCtx};
 use crate::event::{Event, Key, PointerButton};
 use crate::popup::{place_anchored, AnchorSpec, Placement};
-use crate::tree::PopupOptions;
 use crate::style::Style;
 use crate::theme::Theme;
+use crate::tree::PopupOptions;
 use crate::util::{focus_ring, text_style, union};
 use crate::widget::{AvailableSize, KnownDims, Widget};
 

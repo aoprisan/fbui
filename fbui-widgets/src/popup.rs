@@ -140,7 +140,12 @@ mod tests {
     #[test]
     fn fits_below() {
         let anchor = Rect::new(40.0, 20.0, 100.0, 30.0);
-        let r = place_anchored(anchor, Size::new(100.0, 80.0), SURFACE, spec(Placement::Below));
+        let r = place_anchored(
+            anchor,
+            Size::new(100.0, 80.0),
+            SURFACE,
+            spec(Placement::Below),
+        );
         assert_eq!(r, Rect::new(40.0, 52.0, 100.0, 80.0));
     }
 
@@ -148,7 +153,12 @@ mod tests {
     fn flips_above_when_below_is_short_and_above_larger() {
         // Anchor near the bottom: 18 px below, plenty above.
         let anchor = Rect::new(40.0, 190.0, 100.0, 30.0);
-        let r = place_anchored(anchor, Size::new(100.0, 80.0), SURFACE, spec(Placement::Below));
+        let r = place_anchored(
+            anchor,
+            Size::new(100.0, 80.0),
+            SURFACE,
+            spec(Placement::Below),
+        );
         assert_eq!(r, Rect::new(40.0, 190.0 - 2.0 - 80.0, 100.0, 80.0));
     }
 
@@ -156,41 +166,73 @@ mod tests {
     fn stays_below_when_below_has_more_room_even_if_too_small() {
         // 108 px below, 18 px above: stay below, shrunk.
         let anchor = Rect::new(40.0, 20.0, 100.0, 110.0);
-        let r = place_anchored(anchor, Size::new(100.0, 200.0), SURFACE, spec(Placement::Below));
+        let r = place_anchored(
+            anchor,
+            Size::new(100.0, 200.0),
+            SURFACE,
+            spec(Placement::Below),
+        );
         assert_eq!(r, Rect::new(40.0, 132.0, 100.0, 240.0 - 130.0 - 2.0));
     }
 
     #[test]
     fn above_preferred_flips_below_when_no_headroom() {
         let anchor = Rect::new(40.0, 4.0, 100.0, 20.0);
-        let r = place_anchored(anchor, Size::new(60.0, 50.0), SURFACE, spec(Placement::Above));
+        let r = place_anchored(
+            anchor,
+            Size::new(60.0, 50.0),
+            SURFACE,
+            spec(Placement::Above),
+        );
         assert_eq!(r, Rect::new(40.0, 26.0, 60.0, 50.0));
     }
 
     #[test]
     fn right_and_left_mirror_the_vertical_rule() {
         let anchor = Rect::new(20.0, 100.0, 40.0, 30.0);
-        let r = place_anchored(anchor, Size::new(80.0, 60.0), SURFACE, spec(Placement::Right));
+        let r = place_anchored(
+            anchor,
+            Size::new(80.0, 60.0),
+            SURFACE,
+            spec(Placement::Right),
+        );
         assert_eq!(r, Rect::new(62.0, 100.0, 80.0, 60.0));
         // Anchor hugging the right edge: Right flips to Left.
         let anchor = Rect::new(290.0, 100.0, 25.0, 30.0);
-        let r = place_anchored(anchor, Size::new(80.0, 60.0), SURFACE, spec(Placement::Right));
+        let r = place_anchored(
+            anchor,
+            Size::new(80.0, 60.0),
+            SURFACE,
+            spec(Placement::Right),
+        );
         assert_eq!(r, Rect::new(290.0 - 2.0 - 80.0, 100.0, 80.0, 60.0));
     }
 
     #[test]
     fn cross_axis_alignment_and_clamp() {
         let anchor = Rect::new(100.0, 50.0, 40.0, 20.0);
-        let center =
-            place_anchored(anchor, Size::new(80.0, 30.0), SURFACE, spec(Placement::Below).align(Alignment::Center));
+        let center = place_anchored(
+            anchor,
+            Size::new(80.0, 30.0),
+            SURFACE,
+            spec(Placement::Below).align(Alignment::Center),
+        );
         assert_eq!(center.x, 100.0 + (40.0 - 80.0) / 2.0);
-        let end =
-            place_anchored(anchor, Size::new(80.0, 30.0), SURFACE, spec(Placement::Below).align(Alignment::End));
+        let end = place_anchored(
+            anchor,
+            Size::new(80.0, 30.0),
+            SURFACE,
+            spec(Placement::Below).align(Alignment::End),
+        );
         assert_eq!(end.x, 100.0 + 40.0 - 80.0);
         // Anchor at the left edge, centered popup would go negative: clamped to 0.
         let anchor = Rect::new(2.0, 50.0, 10.0, 20.0);
-        let clamped =
-            place_anchored(anchor, Size::new(80.0, 30.0), SURFACE, spec(Placement::Below).align(Alignment::Center));
+        let clamped = place_anchored(
+            anchor,
+            Size::new(80.0, 30.0),
+            SURFACE,
+            spec(Placement::Below).align(Alignment::Center),
+        );
         assert_eq!(clamped.x, 0.0);
     }
 
@@ -198,7 +240,12 @@ mod tests {
     fn tiny_surface_shrinks_both_axes() {
         let surface = Size::new(60.0, 40.0);
         let anchor = Rect::new(10.0, 10.0, 20.0, 10.0);
-        let r = place_anchored(anchor, Size::new(100.0, 100.0), surface, spec(Placement::Below));
+        let r = place_anchored(
+            anchor,
+            Size::new(100.0, 100.0),
+            surface,
+            spec(Placement::Below),
+        );
         assert!(r.w <= surface.w && r.h <= surface.h);
         assert!(r.x >= 0.0 && r.y >= 0.0);
         assert!(r.bottom() <= surface.h && r.right() <= surface.w);
@@ -207,7 +254,12 @@ mod tests {
     #[test]
     fn point_anchor_places_against_a_point() {
         let anchor = Rect::new(150.0, 120.0, 0.0, 0.0);
-        let r = place_anchored(anchor, Size::new(60.0, 40.0), SURFACE, spec(Placement::Below));
+        let r = place_anchored(
+            anchor,
+            Size::new(60.0, 40.0),
+            SURFACE,
+            spec(Placement::Below),
+        );
         assert_eq!(r, Rect::new(150.0, 122.0, 60.0, 40.0));
     }
 
