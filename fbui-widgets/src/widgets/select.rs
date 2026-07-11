@@ -3,10 +3,10 @@
 //!
 //! The menu is a **floating overlay** ([`Widget::overlay_rect`]): it isn't part
 //! of the layout flow, so it can extend over whatever sits below the field
-//! (and flips above it when there's no room). Overlays are paint-only — while
-//! the menu is open the widget holds the **pointer capture**, so every pointer
-//! event routes here and the widget does its own menu hit-testing, including
-//! the click-away dismissal.
+//! (and flips above it when there's no room). While open it is registered as
+//! a **popup** ([`Ui::open_popup`](crate::Ui::open_popup)): the `Ui` routes
+//! pointer events inside the menu here, dismisses on click-away (consumed),
+//! and swallows outside scrolls — the widget only hit-tests its own rows.
 
 use std::any::Any;
 
@@ -16,6 +16,7 @@ use fbui_render::{FontContext, Painter, PathBuilder};
 use crate::ctx::{EventCtx, PaintCtx};
 use crate::event::{Event, Key, PointerButton};
 use crate::popup::{place_anchored, AnchorSpec, Placement};
+use crate::tree::PopupOptions;
 use crate::style::Style;
 use crate::theme::Theme;
 use crate::util::{focus_ring, text_style, union};
@@ -129,7 +130,12 @@ impl<Msg> Select<Msg> {
         }
         self.open = true;
         self.hover = Some(self.selected);
-        ctx.capture_pointer();
+        // The field is the focus target itself, so no focus grab; the Ui's
+        // click-away dismissal replaces the old pointer-capture routing.
+        ctx.open_popup(PopupOptions {
+            dismiss_on_outside_click: true,
+            grab_focus: false,
+        });
         ctx.request_focus();
         self.damage_all(ctx);
         ctx.set_handled();
@@ -138,7 +144,7 @@ impl<Msg> Select<Msg> {
     fn close_menu(&mut self, ctx: &mut EventCtx<Msg>) {
         self.open = false;
         self.hover = None;
-        ctx.release_pointer();
+        ctx.close_popup();
         self.damage_all(ctx);
         ctx.set_handled();
     }
@@ -281,8 +287,9 @@ impl<Msg: 'static> Widget<Msg> for Select<Msg> {
                     }
                     ctx.set_handled();
                 } else {
-                    // Field toggles closed; anywhere else is a click-away
-                    // (consumed — it must not activate what's underneath).
+                    // Inside the menu box but off every row (the padding ring).
+                    // Clicks anywhere else never reach here: the Ui dismisses
+                    // the popup and consumes them.
                     self.close_menu(ctx);
                 }
             }
@@ -307,12 +314,13 @@ impl<Msg: 'static> Widget<Msg> for Select<Msg> {
                     ctx.set_handled();
                 }
             }
-            Event::Scroll { .. } => {
-                if self.open {
-                    // Swallow wheel while open so the page doesn't scroll
-                    // beneath the menu.
-                    ctx.set_handled();
-                }
+            Event::PopupDismissed => {
+                // Click-away (or a popup stacking over us): the Ui already
+                // removed the popup entry and damaged the menu; sync state and
+                // repaint the field (chevron highlight).
+                self.open = false;
+                self.hover = None;
+                ctx.request_paint();
             }
             Event::Key {
                 key, pressed: true, ..

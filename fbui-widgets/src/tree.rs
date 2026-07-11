@@ -405,6 +405,30 @@ impl<Msg: 'static> Ui<Msg> {
         self.popups.last().map(|e| e.owner)
     }
 
+    /// Drop popup entries whose owner vanished or no longer reports an
+    /// overlay — a widget closed by direct mutation
+    /// ([`Select::set_options`](crate::widgets::Select::set_options) while
+    /// open, say) never got to call `close_popup`, and a stale entry would
+    /// keep consuming outside clicks. No [`Event::PopupDismissed`]: the
+    /// widget already knows it's closed.
+    fn prune_popups(&mut self) {
+        for i in (0..self.popups.len()).rev() {
+            let owner = self.popups[i].owner;
+            let alive = self
+                .nodes
+                .get(owner)
+                .is_some_and(|n| n.widget.overlay_rect(n.layout, self.size).is_some());
+            if !alive {
+                let entry = self.popups.remove(i);
+                self.damage_overlay(owner);
+                if entry.opts.grab_focus {
+                    let prev = entry.prev_focus.filter(|p| self.nodes.contains_key(*p));
+                    self.set_focus(prev);
+                }
+            }
+        }
+    }
+
     /// Dismiss every popup at stack index `start` or above that opted into
     /// outside-click dismissal, top-down: each owner gets
     /// [`Event::PopupDismissed`], its overlay is damaged, and grabbed focus is
@@ -675,6 +699,9 @@ impl<Msg: 'static> Ui<Msg> {
         // tree hit-testing (see `open_popup`). A drag in progress keeps
         // motion/release routing to its capture holder even across popup
         // rects, so a slider drag can't be hijacked by an open menu.
+        if !self.popups.is_empty() {
+            self.prune_popups();
+        }
         if !self.popups.is_empty() {
             let capture_first = self.capture.is_some()
                 && matches!(
