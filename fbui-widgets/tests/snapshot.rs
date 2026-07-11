@@ -135,3 +135,119 @@ fn tabbar_and_spinner() {
         Tolerance::FUZZY,
     );
 }
+
+/// An open `Menu` on the popup layer: enabled items, a separator, a disabled
+/// item, and the keyboard-hovered first row. Labels render with host fonts
+/// under the tolerant compare (the `tabbar_and_spinner` footing); the box,
+/// row highlight, separator rule, and dimmed disabled row are pinned.
+#[test]
+fn menu_open() {
+    use fbui_render::geom::Point;
+    use fbui_widgets::event::{Event, Key, Modifiers};
+    use fbui_widgets::widgets::Menu;
+    use fbui_widgets::PopupOptions;
+
+    let (w, h) = (240u32, 200u32);
+    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+
+    let root = ui.set_root(Container::column().fill().padding(12.0));
+    // Entries: 0 "Cut", 1 "Copy", 2 separator, 3 "Paste" (disabled).
+    let menu = ui.add_child(
+        root,
+        Menu::new(["Cut", "Copy"])
+            .separator()
+            .item("Paste")
+            .disable(3),
+    );
+    ui.with::<Menu<Msg>, _>(menu, |m| m.open_at(Point::new(24.0, 20.0)));
+    ui.open_popup(menu, PopupOptions::default());
+    // Arrow down: the first enabled row gets the hover highlight.
+    ui.event(Event::Key {
+        key: Key::Down,
+        pressed: true,
+        mods: Modifiers::default(),
+    });
+
+    let mut surface = Surface::new(w, h, Scale::ONE);
+    ui.paint(&mut surface);
+
+    assert_snapshot_in(
+        "tests/snapshots",
+        "menu_open",
+        surface.pixmap(),
+        Tolerance::FUZZY,
+    );
+}
+
+/// An open `ContextMenu` near the bottom-right corner: the menu flips above
+/// the anchor point and clamps inside the surface, over a filled content
+/// region. Pins the flip/clamp geometry and the shared menu chrome.
+#[test]
+fn context_menu_open() {
+    use fbui_render::geom::Point;
+    use fbui_widgets::widgets::ContextMenu;
+    use fbui_widgets::PopupOptions;
+
+    let (w, h) = (240u32, 160u32);
+    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+
+    let root = ui.set_root(Container::column().fill().padding(8.0));
+    let cm = ui.add_child(root, ContextMenu::new(["Rename", "Delete"]).fill());
+    ui.add_child(
+        cm,
+        Container::column()
+            .fill()
+            .background(Color::rgb(0x2a, 0x30, 0x3e), 8.0),
+    );
+    // Anchor near the bottom-right: two rows don't fit below or to the right,
+    // so the box flips up and clamps left.
+    ui.with::<ContextMenu<Msg>, _>(cm, |m| m.open_at(Point::new(210.0, 140.0)));
+    ui.open_popup(cm, PopupOptions::default());
+
+    let mut surface = Surface::new(w, h, Scale::ONE);
+    ui.paint(&mut surface);
+
+    assert_snapshot_in(
+        "tests/snapshots",
+        "context_menu_open",
+        surface.pixmap(),
+        Tolerance::FUZZY,
+    );
+}
+
+/// A visible tooltip pinned against the top edge: `Above` placement has no
+/// headroom, so the tip flips below its owner and centers on it. Text renders
+/// with host fonts under the tolerant compare; the box, border, and flip
+/// geometry are pinned.
+#[test]
+fn tooltip_shown() {
+    use fbui_render::geom::Point;
+    use fbui_widgets::event::Event;
+    use fbui_widgets::widgets::Button;
+    use fbui_widgets::Tooltip;
+
+    let (w, h) = (240u32, 120u32);
+    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+
+    let root = ui.set_root(Container::column().padding(6.0));
+    let btn = ui.add_child(root, Button::new("Save"));
+    ui.set_tooltip(btn, Tooltip::new("Write to disk"));
+    ui.layout_now();
+
+    // Hover and run out the dwell on the frame clock.
+    let b = ui.bounds(btn).unwrap();
+    ui.event(Event::PointerMove {
+        pos: Point::new(b.x + b.w / 2.0, b.y + b.h / 2.0),
+    });
+    while ui.animate(0.2) {}
+
+    let mut surface = Surface::new(w, h, Scale::ONE);
+    ui.paint(&mut surface);
+
+    assert_snapshot_in(
+        "tests/snapshots",
+        "tooltip_shown",
+        surface.pixmap(),
+        Tolerance::FUZZY,
+    );
+}

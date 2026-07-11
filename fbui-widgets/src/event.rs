@@ -47,6 +47,7 @@ pub enum Key {
 
 /// An input event delivered to a widget.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Event {
     /// A pointer button went down at `pos`.
     PointerDown { pos: Point, button: PointerButton },
@@ -84,6 +85,15 @@ pub enum Event {
     FocusGained,
     /// This widget just lost keyboard focus.
     FocusLost,
+    /// The popup this widget owns (see [`Ui::open_popup`]) was dismissed by
+    /// the [`Ui`] — an outside click/tap, or a popup opening over it — rather
+    /// than closed by the widget itself. Sync internal state (`open = false`)
+    /// and damage; the popup entry is already gone, so calling
+    /// `close_popup` again is a harmless no-op.
+    ///
+    /// [`Ui`]: crate::Ui
+    /// [`Ui::open_popup`]: crate::Ui::open_popup
+    PopupDismissed,
 }
 
 impl Event {

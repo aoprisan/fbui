@@ -62,3 +62,9 @@ mod run;
 pub use fbui_platform::Result;
 #[cfg(feature = "platform")]
 pub use run::{run, App, Proxy};
+
+// The timer queue is std-only and headless (its consumer, `Proxy`, is
+// platform-gated) so its unit tests run everywhere.
+#[cfg_attr(not(feature = "platform"), allow(dead_code))]
+mod timer;
+pub use timer::Timer;

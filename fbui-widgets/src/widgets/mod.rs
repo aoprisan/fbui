@@ -2,18 +2,21 @@
 //! implementation of [`Widget`](crate::Widget); containers get their children
 //! from the [`Ui`](crate::Ui) tree, the rest are leaves that paint themselves.
 //!
-//! The overlay layer builds on [`Stack`] and the floating-overlay hooks:
-//! [`Dialog`] (modal scrim + focus trap), [`Select`] (dropdown menu),
-//! [`Toasts`] (transient notifications).
+//! The overlay layer builds on [`Stack`], the floating-overlay hooks, and the
+//! popup layer ([`Ui::open_popup`](crate::Ui::open_popup)): [`Dialog`] (modal
+//! scrim + focus trap), [`Select`] (dropdown menu), [`Menu`] / [`ContextMenu`]
+//! (floating action menus), [`Toasts`] (transient notifications).
 
 mod button;
 mod checkbox;
 mod container;
+mod context_menu;
 mod dialog;
 mod image;
 mod keyboard;
 mod label;
 mod list;
+mod menu;
 mod progressbar;
 mod radio;
 mod scroll;
@@ -29,11 +32,13 @@ mod toast;
 pub use button::{Button, ButtonVariant};
 pub use checkbox::Checkbox;
 pub use container::{Align, Container};
+pub use context_menu::ContextMenu;
 pub use dialog::Dialog;
 pub use image::ImageView;
 pub use keyboard::Keyboard;
 pub use label::Label;
 pub use list::List;
+pub use menu::{Menu, MenuItem};
 pub use progressbar::ProgressBar;
 pub use radio::RadioGroup;
 pub use scroll::ScrollView;

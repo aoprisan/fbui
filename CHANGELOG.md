@@ -19,6 +19,55 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Added
 
+- **The popup layer** — floating overlays can now be *interactive*.
+  `Ui::open_popup(owner, PopupOptions)` (or `EventCtx::open_popup` from a
+  handler) promotes a widget's overlay into a popup: pointer events inside the
+  overlay rect route to the owner ahead of capture and tree hit-testing,
+  presses outside dismiss it (delivering the new `Event::PopupDismissed`) and
+  are consumed, scrolls outside are swallowed, Tab is confined to the topmost
+  popup owner's subtree, and grabbed focus is restored on close. Popups stack;
+  entries are pruned when the owner vanishes or stops reporting an overlay.
+  The new `Widget::prepare_overlay` hook (defaulted) gives overlay owners font
+  access to measure themselves before first placement. See `DESIGN.md` §5.
+- **`place_anchored`** (`fbui_widgets::popup`) — the shared placement rule for
+  anything floating: preferred side (`Below`/`Above`/`Right`/`Left` +
+  `Start`/`Center`/`End` alignment), flipped to the opposite side when it
+  doesn't fit and the opposite has more room, clamped (and shrunk as a last
+  resort) to the surface. `Select`'s menu flip is now this function.
+- **`Menu`** — a floating action menu on the popup layer: a zero-size host
+  widget (the `Toasts` pattern) armed via `Ui::with` (`open_at`/`open_below`)
+  then registered with `Ui::open_popup`. Items activate on release or Enter;
+  separators and disabled items are skipped by pointer and arrow keys
+  (Up/Down/Home/End); Esc and click-away fire `on_close`. Submenus and
+  scrolling menus are out of scope for v1.
+- **`ContextMenu`** — a transparent wrapper widget: children lay out and paint
+  normally; a right-click or long-press anywhere inside its bounds (bubbled,
+  so gestures on nested interactive children count) opens the shared menu
+  engine at the pointer. `on_select(index)` on activation, `on_close`
+  otherwise.
+- **Tooltips** — `Ui::set_tooltip(id, Tooltip::new("…"))` shows a tip after a
+  hover dwell (default 0.6 s, `delay(..)`) or immediately on a long-press
+  (touch), hidden on hover change, any press/release, or a key. The dwell
+  counts down on the deterministic frame clock and the clock runs *only*
+  during the dwell — a shown tip costs nothing (the idle-burns-0% rule).
+  Placement prefers above (`placement(..)`), flipping at screen edges.
+  (Deliberately *not* built on the app timer API below: tooltips stay inside
+  the deterministic, headless-testable widget layer.)
+- **App timers** — `Proxy::send_after(delay, msg)` delivers a message to
+  `App::update` once after `delay`; `Proxy::send_every(period, msg)` repeats
+  (fixed-delay: a stalled loop catches up with one message, never a burst).
+  Both return a cancellable, `Send` `fbui::Timer` handle (dropping the handle
+  detaches; the delivery still happens) and work from any thread. No threads,
+  no ticking: the event loop sleeps in `poll` until the earliest deadline.
+  See the new `timer` example.
+- **`PlatformHandler::next_timeout`** (fbui-platform, defaulted — existing
+  handlers unaffected) — the handler now bounds the event loop's poll
+  timeout with its next deadline instead of the loop hard-coding 16 ms.
+  Returning `None` lets the loop block until fd activity (bounded by the
+  ~1 s hotplug-poll backstop). The `fbui` runner uses it: 16 ms only while
+  animating or mid-gesture, the next timer deadline otherwise, else no
+  time-based wakeups at all — a truly idle app now sleeps ~1 s per wakeup
+  instead of spinning at 60 Hz.
 - **`TabBar`** — a segmented tab strip for switching between views: equal-width
   segments in one tree node (self-painted, self-hit-tested), a single tab stop
   with Left/Right/Home/End moving the selection while focused. Emits
@@ -64,8 +113,32 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
   (what `Ui::animate` now calls); `Keyboard`'s Backspace auto-repeat rides on
   it. Existing `animate` implementations are unaffected.
 
+### Changed
+
+- **`Event` is now `#[non_exhaustive]`** (breaking): downstream matches need a
+  wildcard arm. Added the `Event::PopupDismissed` variant, delivered to a
+  popup's owner when the `Ui` dismisses it (click-away, or a press landing in
+  a popup stacked below it).
+- **Gesture bubbling** (breaking for custom widgets relying on non-bubbling):
+  `Tap`, `LongPress`, `Fling`, and right-button `PointerDown` now bubble from
+  the hit widget to its ancestors like `Scroll` and `Key` always did.
+  Left-button presses/releases stay direct. In-tree audit: `Dialog` already
+  swallowed the gesture set (pinned by a regression test); a fling landing on
+  a child of a `ScrollView` now correctly coasts the view.
+- **`Select` sits on the popup layer**: the open menu no longer captures the
+  pointer or implements its own click-away/scroll-swallow — the `Ui` routes,
+  dismisses, and consumes. Behavior is unchanged (the existing Select tests
+  pass as-is); Tab while the menu is open now stays on the field instead of
+  leaking to the page behind it.
+- **`App::Message` now requires `Send`** (breaking): the timer queue shares
+  messages across threads, as `Proxy` always did in practice (`Proxy<M>` was
+  only ever `Send` when `M` was). UI message enums are `Send` in any
+  realistic app; the bound just states it.
+
 ### Fixed
 
+- A stray debug `eprintln!` in `Ui::paint` printed a line on every
+  scroll-blit frame; removed.
 - `Keyboard` no longer leaks pointer capture when a held (auto-repeating)
   Backspace is cancelled by sliding off the key: the slide-off cleared the
   pressed state, and the release of the capture taken on press was gated on

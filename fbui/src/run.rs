@@ -7,7 +7,7 @@
 //! for every emitted message, and presents the damaged surface each frame. It is
 //! the only place that knows both halves of the stack.
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use std::sync::mpsc::{self, Receiver, Sender};
 
@@ -22,8 +22,13 @@ use fbui_widgets::event::{Event, Key, Modifiers, PointerButton};
 use fbui_widgets::gesture::{Gesture, GestureRecognizer};
 use fbui_widgets::{Theme, Ui};
 
+use crate::timer::{Timer, TimerQueue};
+
 /// How far one wheel notch scrolls, in logical pixels.
 const WHEEL_STEP: f32 = 48.0;
+
+/// Frame cadence while animating or mid-gesture, and the poll bound then.
+const FRAME: Duration = Duration::from_millis(16);
 
 /// A clonable, `Send` handle for delivering messages into the running app from
 /// another thread — a worker computing results, an IPC reader, a progress feed.
@@ -36,6 +41,7 @@ const WHEEL_STEP: f32 = 48.0;
 pub struct Proxy<M> {
     tx: Sender<M>,
     waker: Waker,
+    timers: TimerQueue<M>,
 }
 
 impl<M> Clone for Proxy<M> {
@@ -43,11 +49,12 @@ impl<M> Clone for Proxy<M> {
         Proxy {
             tx: self.tx.clone(),
             waker: self.waker.clone(),
+            timers: self.timers.clone(),
         }
     }
 }
 
-impl<M> Proxy<M> {
+impl<M: Send + 'static> Proxy<M> {
     /// Queue `msg` for [`App::update`] and wake the loop to process it. Returns
     /// `false` if the app has already exited (the loop is gone).
     pub fn send(&self, msg: M) -> bool {
@@ -57,13 +64,43 @@ impl<M> Proxy<M> {
         self.waker.wake();
         true
     }
+
+    /// Deliver `msg` to [`App::update`] once, `delay` from now — a toast that
+    /// dismisses itself, a debounce, a one-off poll. The loop stays blocked in
+    /// `poll` until the deadline (no ticking); accuracy is poll-timeout
+    /// accuracy (about a millisecond — plenty for UI). The returned [`Timer`]
+    /// cancels it; dropping the handle just detaches (the message still
+    /// arrives). Works from any thread.
+    pub fn send_after(&self, delay: Duration, msg: M) -> Timer {
+        let t = self.timers.schedule(Instant::now() + delay, None, msg);
+        self.waker.wake(); // re-evaluate the loop's sleep with the new deadline
+        t
+    }
+
+    /// Deliver a clone of `msg` to [`App::update`] every `period`, starting one
+    /// `period` from now, until the returned [`Timer`] is cancelled. Repeats
+    /// are **fixed-delay**: each next delivery is scheduled `period` after the
+    /// previous one ran, so a stalled loop catches up with one message, never
+    /// a burst.
+    pub fn send_every(&self, period: Duration, msg: M) -> Timer
+    where
+        M: Clone,
+    {
+        let t = self
+            .timers
+            .schedule(Instant::now() + period, Some(period), msg);
+        self.waker.wake();
+        t
+    }
 }
 
 /// The application a [`run`] call drives. Build the tree once, then handle the
 /// messages widgets emit.
 pub trait App: 'static {
-    /// The message type widgets in this app emit.
-    type Message: Clone + 'static;
+    /// The message type widgets in this app emit. (`Send` so a [`Proxy`] —
+    /// and the timers behind [`Proxy::send_after`] — can carry messages
+    /// across threads.)
+    type Message: Clone + Send + 'static;
 
     /// Populate the tree. Called once, before the first frame.
     fn build(&mut self, ui: &mut Ui<Self::Message>);
@@ -151,6 +188,7 @@ pub fn run<A: App>(mut app: A) -> fbui_platform::Result<()> {
         last_tick: now,
         tx,
         rx,
+        timers: TimerQueue::new(),
     };
     platform.run(&mut runner)
 }
@@ -182,6 +220,10 @@ struct Runner<A: App> {
     tx: Sender<A::Message>,
     /// Drained in [`on_wake`](PlatformHandler::on_wake) for `App::update`.
     rx: Receiver<A::Message>,
+    /// Deadlines armed via [`Proxy::send_after`] / [`Proxy::send_every`];
+    /// serviced in `tick`/`on_wake`, and its earliest deadline bounds the
+    /// loop's sleep via [`next_timeout`](PlatformHandler::next_timeout).
+    timers: TimerQueue<A::Message>,
 }
 
 impl<A: App> Runner<A> {
@@ -250,6 +292,18 @@ impl<A: App> Runner<A> {
     /// Feed a widget event and run any resulting messages.
     fn dispatch(&mut self, event: Event) {
         self.ui.event(event);
+        self.drain_messages();
+    }
+
+    /// Deliver every ripe timer message through `App::update`.
+    fn service_timers(&mut self) {
+        let due = self.timers.take_due(Instant::now());
+        if due.is_empty() {
+            return;
+        }
+        for m in due {
+            self.app.update(m, &mut self.ui);
+        }
         self.drain_messages();
     }
 
@@ -407,6 +461,7 @@ impl<A: App> PlatformHandler for Runner<A> {
         let proxy = Proxy {
             tx: self.tx.clone(),
             waker,
+            timers: self.timers.clone(),
         };
         self.app.on_start(proxy);
     }
@@ -419,6 +474,10 @@ impl<A: App> PlatformHandler for Runner<A> {
         }
         // Updates may have queued widget messages (e.g. via `Ui::send_key`).
         self.drain_messages();
+        // A cross-thread `send_after` wakes the loop with nothing queued: the
+        // wake exists to re-evaluate `next_timeout` — but a ripe deadline is
+        // delivered right away.
+        self.service_timers();
         if self.ui.needs_paint() {
             Flow::Redraw
         } else {
@@ -479,11 +538,29 @@ impl<A: App> PlatformHandler for Runner<A> {
             self.drain_messages();
         }
 
+        // Deliver any timer deadlines that came due while the loop slept.
+        self.service_timers();
+
         if self.ui.needs_paint() {
             Flow::Redraw
         } else {
             Flow::Continue
         }
+    }
+
+    fn next_timeout(&mut self) -> Option<Duration> {
+        // While animating or mid-gesture (a pending long-press needs
+        // `gestures.poll`) the loop must tick at frame cadence; otherwise it
+        // may block until the next timer deadline — or, with none pending,
+        // indefinitely (the platform's hotplug backstop still bounds it).
+        // This is what makes a truly idle app burn ~0% CPU.
+        let frame = self.ui.is_animating() || self.gestures.is_active();
+        let mut t = if frame { Some(FRAME) } else { None };
+        if let Some(due) = self.timers.next_due() {
+            let d = due.saturating_duration_since(Instant::now());
+            t = Some(t.map_or(d, |cur| cur.min(d)));
+        }
+        t
     }
 }
 

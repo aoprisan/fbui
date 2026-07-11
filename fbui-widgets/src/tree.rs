@@ -16,18 +16,103 @@
 
 use fbui_render::geom::{Point, Rect, Size};
 use fbui_render::{FontContext, Scale, Surface};
-use slotmap::SlotMap;
+use slotmap::{SecondaryMap, SlotMap};
 use taffy::{AvailableSpace, TaffyTree};
 
-use crate::ctx::{AnimCtx, CaptureOp, EventCtx, FocusOp, Outputs, PaintCtx};
-use crate::event::{Event, Key, Modifiers};
+use crate::ctx::{AnimCtx, CaptureOp, EventCtx, FocusOp, Outputs, PaintCtx, PopupOp};
+use crate::event::{Event, Key, Modifiers, PointerButton};
+use crate::popup::{place_anchored, Alignment, AnchorSpec, Placement};
 use crate::style::Style;
 use crate::theme::Theme;
+use crate::util::text_style;
 use crate::widget::Widget;
 
 slotmap::new_key_type! {
     /// A stable, generational handle to a widget in the tree.
     pub struct WidgetId;
+}
+
+/// How an interactive popup behaves while open (see [`Ui::open_popup`]).
+#[derive(Debug, Clone, Copy)]
+pub struct PopupOptions {
+    /// A pointer press/tap outside every open popup dismisses this one
+    /// (delivering [`Event::PopupDismissed`] to its owner) and is consumed,
+    /// so it can't activate whatever sits underneath. Default: `true`.
+    pub dismiss_on_outside_click: bool,
+    /// Move keyboard focus to the owner while the popup is open and restore
+    /// the previous focus when it closes. Widgets that are themselves the
+    /// focus target (a [`Select`](crate::widgets::Select) field) leave this
+    /// off and manage focus themselves. Default: `true`.
+    pub grab_focus: bool,
+}
+
+impl Default for PopupOptions {
+    fn default() -> Self {
+        PopupOptions {
+            dismiss_on_outside_click: true,
+            grab_focus: true,
+        }
+    }
+}
+
+/// One open popup: bottom of the stack first, topmost last.
+struct PopupEntry {
+    owner: WidgetId,
+    opts: PopupOptions,
+    /// Focus to restore on close, when `opts.grab_focus` moved it.
+    prev_focus: Option<WidgetId>,
+}
+
+/// Tooltip box padding and anchor gap, logical px.
+const TIP_PAD_X: f32 = 8.0;
+const TIP_PAD_Y: f32 = 5.0;
+const TIP_GAP: f32 = 6.0;
+
+/// A hover tooltip attached to a widget via [`Ui::set_tooltip`].
+///
+/// This is a **`Ui` facility**, not a widget: hover is delivered only to the
+/// deepest hit widget, so a wrapper widget could never see hover over its
+/// children — the `Ui`, which owns hover, runs the show/hide state machine
+/// instead. The dwell delay counts down on the frame clock
+/// ([`Ui::animate`]), so it's deterministic and costs nothing once shown.
+#[derive(Debug, Clone)]
+pub struct Tooltip {
+    /// The tip text.
+    pub text: String,
+    /// Hover dwell before showing, seconds.
+    pub delay: f32,
+    /// Preferred side of the owner (flips when there's no room).
+    pub placement: Placement,
+}
+
+impl Tooltip {
+    /// A tooltip with the standard dwell (0.6 s), preferring above the owner.
+    pub fn new(text: impl Into<String>) -> Self {
+        Tooltip {
+            text: text.into(),
+            delay: 0.6,
+            placement: Placement::Above,
+        }
+    }
+
+    pub fn delay(mut self, seconds: f32) -> Self {
+        self.delay = seconds;
+        self
+    }
+
+    pub fn placement(mut self, placement: Placement) -> Self {
+        self.placement = placement;
+        self
+    }
+}
+
+/// The `Ui`'s tooltip state machine (at most one tip armed or visible).
+#[derive(Default)]
+struct TipState {
+    /// Hover dwell in progress: (owner, seconds remaining).
+    armed: Option<(WidgetId, f32)>,
+    /// The visible tip: (owner, its placed box).
+    shown: Option<(WidgetId, Rect)>,
 }
 
 /// One node: the widget, its taffy peer, tree links, and resolved bounds.
@@ -57,6 +142,11 @@ pub struct Ui<Msg> {
     focus: Option<WidgetId>,
     hover: Option<WidgetId>,
     capture: Option<WidgetId>,
+    /// Open interactive popups, bottom-to-top (see [`open_popup`](Ui::open_popup)).
+    popups: Vec<PopupEntry>,
+    /// Hover tooltips by owner (see [`set_tooltip`](Ui::set_tooltip)).
+    tooltips: SecondaryMap<WidgetId, Tooltip>,
+    tip: TipState,
     /// Scratch sink lent to each `EventCtx`; drained after every dispatch.
     out: Outputs<Msg>,
     /// Messages awaiting `App::update`.
@@ -92,6 +182,9 @@ impl<Msg: 'static> Ui<Msg> {
             focus: None,
             hover: None,
             capture: None,
+            popups: Vec::new(),
+            tooltips: SecondaryMap::new(),
+            tip: TipState::default(),
             out: Outputs::default(),
             messages: Vec::new(),
             damage: Vec::new(),
@@ -111,6 +204,9 @@ impl<Msg: 'static> Ui<Msg> {
         self.focus = None;
         self.hover = None;
         self.capture = None;
+        self.popups.clear();
+        self.tooltips.clear();
+        self.tip = TipState::default();
         let id = self.insert(Box::new(widget), None);
         self.root = Some(id);
         self.mark_full();
@@ -167,10 +263,23 @@ impl<Msg: 'static> Ui<Msg> {
         if self.root == Some(id) {
             self.root = None;
         }
+        // Drop popup entries whose owner is going away, restoring grabbed
+        // focus first (unless the restore target is going away too). The
+        // overlay pixels were already damaged above via `last_overlay`.
+        for i in (0..self.popups.len()).rev() {
+            if ids.contains(&self.popups[i].owner) {
+                let entry = self.popups.remove(i);
+                if entry.opts.grab_focus {
+                    let prev = entry.prev_focus.filter(|p| !ids.contains(p));
+                    self.set_focus(prev);
+                }
+            }
+        }
         for &n in &ids {
             let t = self.nodes[n].taffy;
             let _ = self.taffy.remove(t);
             self.nodes.remove(n);
+            self.tooltips.remove(n);
             if self.focus == Some(n) {
                 self.focus = None;
             }
@@ -180,6 +289,12 @@ impl<Msg: 'static> Ui<Msg> {
             if self.capture == Some(n) {
                 self.capture = None;
             }
+        }
+        if self.tip.armed.is_some_and(|(t, _)| ids.contains(&t)) {
+            self.tip.armed = None;
+        }
+        if self.tip.shown.is_some_and(|(t, _)| ids.contains(&t)) {
+            self.hide_tip();
         }
         self.needs_layout = true;
     }
@@ -292,6 +407,197 @@ impl<Msg: 'static> Ui<Msg> {
         }
     }
 
+    // ---- popups ------------------------------------------------------------
+
+    /// Promote `owner`'s floating overlay ([`Widget::overlay_rect`]) into an
+    /// interactive **popup**: pointer events inside the overlay rect route to
+    /// `owner` ahead of capture and tree hit-testing, presses outside dismiss
+    /// it (per `opts`, delivering [`Event::PopupDismissed`]) and are consumed,
+    /// scrolls outside are swallowed, and Tab is confined to `owner`'s
+    /// subtree. Popups stack: the most recently opened is topmost.
+    ///
+    /// The owner's [`prepare_overlay`](Widget::prepare_overlay) is called
+    /// first (with font access) so the overlay can size itself. No-op for a
+    /// stale id or an already-open popup. Widgets open their own popup from
+    /// an event handler with [`EventCtx::open_popup`](crate::EventCtx::open_popup);
+    /// this method is for opening from `App::update` (after arming the widget
+    /// via [`with`](Ui::with)).
+    pub fn open_popup(&mut self, owner: WidgetId, opts: PopupOptions) {
+        if !self.nodes.contains_key(owner) || self.popups.iter().any(|e| e.owner == owner) {
+            return;
+        }
+        // The overlay is placed against the owner's laid-out bounds; make
+        // sure they're current before the first damage is computed.
+        self.layout_now();
+        {
+            let Self {
+                nodes,
+                fonts,
+                theme,
+                size,
+                ..
+            } = self;
+            if let Some(node) = nodes.get_mut(owner) {
+                node.widget.prepare_overlay(fonts, theme, *size);
+            }
+        }
+        let prev_focus = self.focus;
+        self.popups.push(PopupEntry {
+            owner,
+            opts,
+            prev_focus,
+        });
+        if opts.grab_focus {
+            self.set_focus(Some(owner));
+        }
+        self.damage_overlay(owner);
+    }
+
+    /// Close `owner`'s popup — the reverse of [`open_popup`](Ui::open_popup).
+    /// No [`Event::PopupDismissed`] is delivered: closing explicitly means the
+    /// caller already knows. No-op if `owner` has no open popup.
+    pub fn close_popup(&mut self, owner: WidgetId) {
+        let Some(i) = self.popups.iter().position(|e| e.owner == owner) else {
+            return;
+        };
+        let entry = self.popups.remove(i);
+        self.damage_overlay(owner);
+        if entry.opts.grab_focus {
+            let prev = entry.prev_focus.filter(|p| self.nodes.contains_key(*p));
+            self.set_focus(prev);
+        }
+    }
+
+    /// The owner of the topmost open popup, if any.
+    pub fn popup_owner(&self) -> Option<WidgetId> {
+        self.popups.last().map(|e| e.owner)
+    }
+
+    /// Drop popup entries whose owner vanished or no longer reports an
+    /// overlay — a widget closed by direct mutation
+    /// ([`Select::set_options`](crate::widgets::Select::set_options) while
+    /// open, say) never got to call `close_popup`, and a stale entry would
+    /// keep consuming outside clicks. No [`Event::PopupDismissed`]: the
+    /// widget already knows it's closed.
+    fn prune_popups(&mut self) {
+        for i in (0..self.popups.len()).rev() {
+            let owner = self.popups[i].owner;
+            let alive = self
+                .nodes
+                .get(owner)
+                .is_some_and(|n| n.widget.overlay_rect(n.layout, self.size).is_some());
+            if !alive {
+                let entry = self.popups.remove(i);
+                self.damage_overlay(owner);
+                if entry.opts.grab_focus {
+                    let prev = entry.prev_focus.filter(|p| self.nodes.contains_key(*p));
+                    self.set_focus(prev);
+                }
+            }
+        }
+    }
+
+    /// Dismiss every popup at stack index `start` or above that opted into
+    /// outside-click dismissal, top-down: each owner gets
+    /// [`Event::PopupDismissed`], its overlay is damaged, and grabbed focus is
+    /// restored. Collects the victims first so an owner reacting to the event
+    /// (even re-opening) can't invalidate the walk.
+    fn dismiss_popups_from(&mut self, start: usize) {
+        let victims: Vec<WidgetId> = self.popups[start.min(self.popups.len())..]
+            .iter()
+            .filter(|e| e.opts.dismiss_on_outside_click)
+            .map(|e| e.owner)
+            .collect();
+        for owner in victims.into_iter().rev() {
+            let Some(i) = self.popups.iter().position(|e| e.owner == owner) else {
+                continue;
+            };
+            let entry = self.popups.remove(i);
+            self.dispatch_to(owner, &Event::PopupDismissed);
+            self.damage_overlay(owner);
+            if entry.opts.grab_focus {
+                let prev = entry.prev_focus.filter(|p| self.nodes.contains_key(*p));
+                self.set_focus(prev);
+            }
+        }
+    }
+
+    // ---- tooltips ----------------------------------------------------------
+
+    /// Attach a hover [`Tooltip`] to `id`, replacing any existing one. The tip
+    /// shows after the dwell delay while the pointer rests on `id` (or any
+    /// descendant), immediately on a long-press (touch), and hides on hover
+    /// change, any press/release, or a key.
+    pub fn set_tooltip(&mut self, id: WidgetId, tip: Tooltip) {
+        if self.nodes.contains_key(id) {
+            self.tooltips.insert(id, tip);
+        }
+    }
+
+    /// Remove `id`'s tooltip, hiding it if currently visible.
+    pub fn clear_tooltip(&mut self, id: WidgetId) {
+        self.tooltips.remove(id);
+        if self.tip.armed.is_some_and(|(t, _)| t == id) {
+            self.tip.armed = None;
+        }
+        if self.tip.shown.is_some_and(|(t, _)| t == id) {
+            self.hide_tip();
+        }
+    }
+
+    /// The nearest ancestor of `id` (inclusive) with a tooltip attached.
+    fn tooltip_target(&self, mut cur: Option<WidgetId>) -> Option<WidgetId> {
+        while let Some(c) = cur {
+            if self.tooltips.contains_key(c) {
+                return Some(c);
+            }
+            cur = self.nodes.get(c).and_then(|n| n.parent);
+        }
+        None
+    }
+
+    /// Measure and place `target`'s tooltip, mark it shown, damage its box.
+    fn show_tip(&mut self, target: WidgetId) {
+        self.tip.armed = None;
+        if self.tip.shown.is_some_and(|(t, _)| t == target) {
+            return;
+        }
+        self.hide_tip();
+        let Self {
+            nodes,
+            fonts,
+            theme,
+            tooltips,
+            size,
+            ..
+        } = self;
+        let (Some(tip), Some(node)) = (tooltips.get(target), nodes.get(target)) else {
+            return;
+        };
+        let st = text_style(theme, theme.metrics.font_size, theme.palette.text);
+        let ts = fonts.layout(&tip.text, &st, None).size();
+        let box_size = Size::new(ts.w + 2.0 * TIP_PAD_X, ts.h + 2.0 * TIP_PAD_Y);
+        let rect = place_anchored(
+            node.layout,
+            box_size,
+            *size,
+            AnchorSpec {
+                placement: tip.placement,
+                align: Alignment::Center,
+                gap: TIP_GAP,
+            },
+        );
+        self.tip.shown = Some((target, rect));
+        self.damage.push(rect.inset(-1.0));
+    }
+
+    /// Hide a visible tooltip, damaging where it was.
+    fn hide_tip(&mut self) {
+        if let Some((_, rect)) = self.tip.shown.take() {
+            self.damage.push(rect.inset(-1.0));
+        }
+    }
+
     // ---- accessors -------------------------------------------------------
 
     pub fn theme(&self) -> &Theme {
@@ -321,6 +627,23 @@ impl<Msg: 'static> Ui<Msg> {
     pub fn set_size(&mut self, size: Size, scale: Scale) {
         self.size = size;
         self.scale = scale;
+        // A visible tooltip was placed against the old surface; drop it.
+        self.tip = TipState::default();
+        // Open popups size/place themselves against the surface; let them
+        // re-measure for the new one. (`mark_full` repaints everything.)
+        for i in 0..self.popups.len() {
+            let owner = self.popups[i].owner;
+            let Self {
+                nodes,
+                fonts,
+                theme,
+                size,
+                ..
+            } = self;
+            if let Some(node) = nodes.get_mut(owner) {
+                node.widget.prepare_overlay(fonts, theme, *size);
+            }
+        }
         self.mark_full();
     }
 
@@ -391,6 +714,18 @@ impl<Msg: 'static> Ui<Msg> {
                 self.damage_overlay(id);
             }
             running |= anim.running;
+        }
+        // Tooltip dwell countdown — Ui-level, on the same deterministic frame
+        // clock. The clock only runs while the dwell is pending; a shown tip
+        // costs nothing.
+        if let Some((target, remaining)) = self.tip.armed {
+            let left = remaining - dt;
+            if left <= 0.0 {
+                self.show_tip(target); // clears `armed`
+            } else {
+                self.tip.armed = Some((target, left));
+                running = true;
+            }
         }
         // Messages emitted from a tick (key auto-repeat) join the same queue as
         // event-emitted ones; the runner drains them right after `animate`.
@@ -502,6 +837,23 @@ impl<Msg: 'static> Ui<Msg> {
             self.relayout();
         }
 
+        // Tooltips are input-shy: any press, release, or key hides the tip
+        // and cancels a pending dwell; a long-press (touch has no hover)
+        // shows the target's tip immediately.
+        match &event {
+            Event::PointerDown { .. } | Event::PointerUp { .. } | Event::Key { .. } => {
+                self.tip.armed = None;
+                self.hide_tip();
+            }
+            Event::LongPress { pos } if self.popups.is_empty() => {
+                let hit = self.root.and_then(|r| self.hit(r, *pos));
+                if let Some(t) = self.tooltip_target(hit) {
+                    self.show_tip(t);
+                }
+            }
+            _ => {}
+        }
+
         // Tab navigation is handled by the Ui, not delivered to widgets.
         if let Event::Key {
             key: Key::Tab,
@@ -518,13 +870,84 @@ impl<Msg: 'static> Ui<Msg> {
             self.update_hover(pos);
         }
 
+        // Interactive popups intercept pointer events ahead of capture and
+        // tree hit-testing (see `open_popup`). A drag in progress keeps
+        // motion/release routing to its capture holder even across popup
+        // rects, so a slider drag can't be hijacked by an open menu.
+        if !self.popups.is_empty() {
+            self.prune_popups();
+        }
+        if !self.popups.is_empty() {
+            let capture_first = self.capture.is_some()
+                && matches!(event, Event::PointerMove { .. } | Event::PointerUp { .. });
+            if let Some(pos) = event.pointer_pos().filter(|_| !capture_first) {
+                // Hit-test the popup stack top-down.
+                let mut hit: Option<(usize, WidgetId)> = None;
+                for (i, e) in self.popups.iter().enumerate().rev() {
+                    let Some(node) = self.nodes.get(e.owner) else {
+                        continue;
+                    };
+                    if node
+                        .widget
+                        .overlay_rect(node.layout, self.size)
+                        .is_some_and(|r| r.contains_point(pos))
+                    {
+                        hit = Some((i, e.owner));
+                        break;
+                    }
+                }
+                let press = matches!(
+                    event,
+                    Event::PointerDown { .. } | Event::Tap { .. } | Event::LongPress { .. }
+                );
+                if let Some((i, owner)) = hit {
+                    // A press into a lower popup collapses the ones stacked
+                    // above it.
+                    if press {
+                        self.dismiss_popups_from(i + 1);
+                    }
+                    self.dispatch_to(owner, &event);
+                    return;
+                }
+                // Outside every popup.
+                let dismissable = self.popups.iter().any(|e| e.opts.dismiss_on_outside_click);
+                if dismissable && press {
+                    // Consumed: a click-away must not activate what's
+                    // underneath the popup it dismisses.
+                    self.dismiss_popups_from(0);
+                    return;
+                }
+                if dismissable && matches!(event, Event::Scroll { .. }) {
+                    // Swallowed: the page must not scroll under an open menu.
+                    return;
+                }
+                // Moves and releases fall through to normal routing.
+            }
+        }
+
         let target = self.target_for(&event);
         if let Some(id) = target {
-            if matches!(event, Event::Scroll { .. } | Event::Key { .. }) {
-                // Scrolls and keys bubble: the target (deepest widget under
-                // the pointer / the focused widget) gets first refusal, then
-                // its ancestors — so a wheel over a label inside a ScrollView
-                // scrolls the view, and Esc inside a Dialog dismisses it.
+            let bubbles = matches!(
+                event,
+                Event::Scroll { .. }
+                    | Event::Key { .. }
+                    | Event::Tap { .. }
+                    | Event::LongPress { .. }
+                    | Event::Fling { .. }
+                    | Event::PointerDown {
+                        button: PointerButton::Right,
+                        ..
+                    }
+            );
+            if bubbles {
+                // Scrolls, keys, recognized gestures, and right-button presses
+                // bubble: the target (deepest widget under the pointer / the
+                // focused widget) gets first refusal, then its ancestors — so
+                // a wheel or fling over a label inside a ScrollView scrolls
+                // the view, Esc inside a Dialog dismisses it, and a
+                // long-press/right-click on any child opens the enclosing
+                // ContextMenu. Left-button presses/releases stay direct: two
+                // widgets arming on one press would double-activate.
                 let mut cur = Some(id);
                 while let Some(c) = cur {
                     if self.dispatch_to(c, &event) {
@@ -610,6 +1033,24 @@ impl<Msg: 'static> Ui<Msg> {
                     self.damage.push(n.layout);
                 }
             }
+
+            // Tooltip dwell follows the nearest tooltip-bearing ancestor of
+            // the hover target; an unchanged target keeps its state (a shown
+            // tip stays up while the pointer wanders within its owner).
+            let new_target = self.tooltip_target(hit);
+            let cur_target = self
+                .tip
+                .armed
+                .map(|(t, _)| t)
+                .or_else(|| self.tip.shown.map(|(t, _)| t));
+            if new_target != cur_target {
+                self.tip.armed = None;
+                self.hide_tip();
+                if let Some(t) = new_target {
+                    self.tip.armed = Some((t, self.tooltips[t].delay));
+                    self.animating = true;
+                }
+            }
         }
     }
 
@@ -688,6 +1129,14 @@ impl<Msg: 'static> Ui<Msg> {
                 CaptureOp::Clear => self.capture = None,
             }
         }
+        // Popups before focus, so an explicit `request_focus` in the same
+        // event overrides `open_popup`'s focus grab.
+        if let Some(op) = self.out.popup.take() {
+            match op {
+                PopupOp::Open(id, opts) => self.open_popup(id, opts),
+                PopupOp::Close(id) => self.close_popup(id),
+            }
+        }
         if let Some(op) = self.out.focus.take() {
             self.apply_focus(op);
         }
@@ -758,17 +1207,26 @@ impl<Msg: 'static> Ui<Msg> {
     }
 
     /// Tab order = pre-order DFS over focusable widgets. Returns the focusable
-    /// after (or before) the current focus, wrapping around. When the current
-    /// focus sits inside a focus trap (a modal dialog), the cycle is confined
-    /// to that trap's subtree.
+    /// after (or before) the current focus, wrapping around. When a popup is
+    /// open, the cycle is confined to the topmost popup owner's subtree (a
+    /// menu must not tab out to the page under it); otherwise, when the
+    /// current focus sits inside a focus trap (a modal dialog), the cycle is
+    /// confined to that trap's subtree.
     fn adjacent_focus(&self, forward: bool) -> Option<WidgetId> {
-        let scope = self.focus.and_then(|f| self.trap_ancestor(f)).or(self.root);
+        let scope = self
+            .popups
+            .last()
+            .map(|e| e.owner)
+            .or_else(|| self.focus.and_then(|f| self.trap_ancestor(f)))
+            .or(self.root);
         let mut order = Vec::new();
         if let Some(scope) = scope {
             self.collect_focusable(scope, &mut order);
         }
         if order.is_empty() {
-            return None;
+            // Nowhere to go: keep the current focus (an open popup's grab)
+            // rather than dropping it.
+            return self.focus;
         }
         let cur = self.focus.and_then(|f| order.iter().position(|&i| i == f));
         let next = match cur {
@@ -812,7 +1270,6 @@ impl<Msg: 'static> Ui<Msg> {
         for id in ids {
             if let Some(dy) = self.nodes[id].widget.scroll_blit() {
                 let bounds = self.nodes[id].layout;
-                eprintln!("BLIT dy={dy} overlaid={}", self.overlaid(id, bounds));
                 // The shift moves whatever pixels occupy the bounds — including
                 // anything painted *over* the widget (a Stack overlay). In that
                 // case reusing them would drag the overlay along; fall back to
@@ -871,9 +1328,12 @@ impl<Msg: 'static> Ui<Msg> {
             hover,
             focus,
             size,
+            tooltips,
+            tip,
             ..
         } = self;
         let (hover, focus, size) = (*hover, *focus, *size);
+        let tip_shown = tip.shown;
         surface.paint(|p| {
             p.push_clip(region);
             // Clear the region to the window background first.
@@ -896,6 +1356,23 @@ impl<Msg: 'static> Ui<Msg> {
                     focused: focus == Some(id),
                 };
                 node.widget.paint_overlay(&mut ctx);
+            }
+            // A visible tooltip paints above everything, overlays included.
+            if let Some((owner, rect)) = tip_shown {
+                if !intersect_rect(rect.inset(-1.0), region).is_empty() {
+                    if let Some(t) = tooltips.get(owner) {
+                        let st = text_style(theme, theme.metrics.font_size, theme.palette.text);
+                        p.fill_rounded_rect(rect, 4.0, theme.palette.surface_alt);
+                        p.stroke_rounded_rect(rect, 4.0, theme.palette.line, 1.0);
+                        fonts.draw_text(
+                            p,
+                            &t.text,
+                            &st,
+                            Point::new(rect.x + TIP_PAD_X, rect.y + TIP_PAD_Y),
+                            None,
+                        );
+                    }
+                }
             }
             p.pop_clip();
         });
@@ -931,6 +1408,12 @@ impl<Msg: 'static> Ui<Msg> {
     /// nothing, so dormant overlays should be removed from the tree (or sized
     /// empty), not merely skipped in `paint`.
     fn overlaid(&self, id: WidgetId, bounds: Rect) -> bool {
+        // A visible tooltip paints on top of everything.
+        if let Some((_, r)) = self.tip.shown {
+            if !intersect_rect(r.inset(-1.0), bounds).is_empty() {
+                return true;
+            }
+        }
         // Floating overlays paint on top of everything, wherever their owner
         // sits in the tree (including where it *last* painted, if it's mid-
         // dismissal this frame). Padded by the same 1px ink halo as
