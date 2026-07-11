@@ -12,7 +12,7 @@ use fbui_render::{FontContext, Painter};
 
 use crate::event::Event;
 use crate::theme::Theme;
-use crate::tree::WidgetId;
+use crate::tree::{PopupOptions, WidgetId};
 
 /// A focus-movement request raised by a widget during event handling.
 #[derive(Debug, Clone, Copy)]
@@ -33,6 +33,13 @@ pub(crate) enum CaptureOp {
     Clear,
 }
 
+/// A popup open/close request raised during event handling.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum PopupOp {
+    Open(WidgetId, PopupOptions),
+    Close(WidgetId),
+}
+
 /// The mutable side-effects a widget can request in one event pass. Owned by the
 /// [`Ui`](crate::Ui) and lent to each [`EventCtx`] as a single `&mut`.
 pub(crate) struct Outputs<Msg> {
@@ -44,6 +51,7 @@ pub(crate) struct Outputs<Msg> {
     pub scroll_layout: bool,
     pub focus: Option<FocusOp>,
     pub capture: Option<CaptureOp>,
+    pub popup: Option<PopupOp>,
     pub handled: bool,
     /// A widget started a time-based animation; the Ui should keep ticking
     /// [`animate`](crate::Ui::animate) until it settles.
@@ -59,6 +67,7 @@ impl<Msg> Default for Outputs<Msg> {
             scroll_layout: false,
             focus: None,
             capture: None,
+            popup: None,
             handled: false,
             animate: false,
         }
@@ -69,6 +78,7 @@ impl<Msg> Outputs<Msg> {
     pub fn reset_for_event(&mut self) {
         self.focus = None;
         self.capture = None;
+        self.popup = None;
         self.handled = false;
         self.animate = false;
     }
@@ -185,6 +195,22 @@ impl<'a, Msg> EventCtx<'a, Msg> {
     /// Release a previously captured pointer.
     pub fn release_pointer(&mut self) {
         self.out.capture = Some(CaptureOp::Clear);
+    }
+
+    /// Register this widget's floating overlay as an interactive **popup**
+    /// (see [`Ui::open_popup`](crate::Ui::open_popup)): pointer events inside
+    /// its [`overlay_rect`](crate::Widget::overlay_rect) route to this widget
+    /// ahead of the tree, and outside clicks dismiss it (per `opts`),
+    /// delivering [`Event::PopupDismissed`](crate::Event::PopupDismissed).
+    pub fn open_popup(&mut self, opts: PopupOptions) {
+        self.out.popup = Some(PopupOp::Open(self.self_id, opts));
+    }
+
+    /// Close this widget's popup (the reverse of
+    /// [`open_popup`](Self::open_popup)). No `PopupDismissed` is delivered —
+    /// the widget is closing itself and already knows. No-op if not open.
+    pub fn close_popup(&mut self) {
+        self.out.popup = Some(PopupOp::Close(self.self_id));
     }
 
     /// Stop this event propagating to widgets behind this one.

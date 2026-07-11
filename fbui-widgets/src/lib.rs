@@ -47,6 +47,7 @@ pub mod ctx;
 pub mod event;
 pub mod gesture;
 pub mod kinetic;
+pub mod popup;
 pub mod style;
 pub mod theme;
 pub mod tree;
@@ -58,9 +59,10 @@ pub use anim::{Easing, Lerp, Tween};
 pub use ctx::{AnimCtx, EventCtx, PaintCtx};
 pub use event::{Event, Key, Modifiers, PointerButton};
 pub use gesture::{Gesture, GestureConfig, GestureRecognizer};
+pub use popup::{place_anchored, Alignment, AnchorSpec, Placement};
 pub use style::Style;
 pub use theme::{Metrics, Palette, Theme};
-pub use tree::{Ui, WidgetId};
+pub use tree::{PopupOptions, Ui, WidgetId};
 pub use widget::{Anim, Widget};
 
 // Re-export the render layer so downstreams need only depend on the toolkit.

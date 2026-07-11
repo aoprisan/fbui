@@ -19,7 +19,7 @@ use fbui_render::{FontContext, Scale, Surface};
 use slotmap::SlotMap;
 use taffy::{AvailableSpace, TaffyTree};
 
-use crate::ctx::{AnimCtx, CaptureOp, EventCtx, FocusOp, Outputs, PaintCtx};
+use crate::ctx::{AnimCtx, CaptureOp, EventCtx, FocusOp, Outputs, PaintCtx, PopupOp};
 use crate::event::{Event, Key, Modifiers};
 use crate::style::Style;
 use crate::theme::Theme;
@@ -28,6 +28,37 @@ use crate::widget::Widget;
 slotmap::new_key_type! {
     /// A stable, generational handle to a widget in the tree.
     pub struct WidgetId;
+}
+
+/// How an interactive popup behaves while open (see [`Ui::open_popup`]).
+#[derive(Debug, Clone, Copy)]
+pub struct PopupOptions {
+    /// A pointer press/tap outside every open popup dismisses this one
+    /// (delivering [`Event::PopupDismissed`] to its owner) and is consumed,
+    /// so it can't activate whatever sits underneath. Default: `true`.
+    pub dismiss_on_outside_click: bool,
+    /// Move keyboard focus to the owner while the popup is open and restore
+    /// the previous focus when it closes. Widgets that are themselves the
+    /// focus target (a [`Select`](crate::widgets::Select) field) leave this
+    /// off and manage focus themselves. Default: `true`.
+    pub grab_focus: bool,
+}
+
+impl Default for PopupOptions {
+    fn default() -> Self {
+        PopupOptions {
+            dismiss_on_outside_click: true,
+            grab_focus: true,
+        }
+    }
+}
+
+/// One open popup: bottom of the stack first, topmost last.
+struct PopupEntry {
+    owner: WidgetId,
+    opts: PopupOptions,
+    /// Focus to restore on close, when `opts.grab_focus` moved it.
+    prev_focus: Option<WidgetId>,
 }
 
 /// One node: the widget, its taffy peer, tree links, and resolved bounds.
@@ -57,6 +88,8 @@ pub struct Ui<Msg> {
     focus: Option<WidgetId>,
     hover: Option<WidgetId>,
     capture: Option<WidgetId>,
+    /// Open interactive popups, bottom-to-top (see [`open_popup`](Ui::open_popup)).
+    popups: Vec<PopupEntry>,
     /// Scratch sink lent to each `EventCtx`; drained after every dispatch.
     out: Outputs<Msg>,
     /// Messages awaiting `App::update`.
@@ -92,6 +125,7 @@ impl<Msg: 'static> Ui<Msg> {
             focus: None,
             hover: None,
             capture: None,
+            popups: Vec::new(),
             out: Outputs::default(),
             messages: Vec::new(),
             damage: Vec::new(),
@@ -111,6 +145,7 @@ impl<Msg: 'static> Ui<Msg> {
         self.focus = None;
         self.hover = None;
         self.capture = None;
+        self.popups.clear();
         let id = self.insert(Box::new(widget), None);
         self.root = Some(id);
         self.mark_full();
@@ -166,6 +201,18 @@ impl<Msg: 'static> Ui<Msg> {
         }
         if self.root == Some(id) {
             self.root = None;
+        }
+        // Drop popup entries whose owner is going away, restoring grabbed
+        // focus first (unless the restore target is going away too). The
+        // overlay pixels were already damaged above via `last_overlay`.
+        for i in (0..self.popups.len()).rev() {
+            if ids.contains(&self.popups[i].owner) {
+                let entry = self.popups.remove(i);
+                if entry.opts.grab_focus {
+                    let prev = entry.prev_focus.filter(|p| !ids.contains(p));
+                    self.set_focus(prev);
+                }
+            }
         }
         for &n in &ids {
             let t = self.nodes[n].taffy;
@@ -292,6 +339,97 @@ impl<Msg: 'static> Ui<Msg> {
         }
     }
 
+    // ---- popups ------------------------------------------------------------
+
+    /// Promote `owner`'s floating overlay ([`Widget::overlay_rect`]) into an
+    /// interactive **popup**: pointer events inside the overlay rect route to
+    /// `owner` ahead of capture and tree hit-testing, presses outside dismiss
+    /// it (per `opts`, delivering [`Event::PopupDismissed`]) and are consumed,
+    /// scrolls outside are swallowed, and Tab is confined to `owner`'s
+    /// subtree. Popups stack: the most recently opened is topmost.
+    ///
+    /// The owner's [`prepare_overlay`](Widget::prepare_overlay) is called
+    /// first (with font access) so the overlay can size itself. No-op for a
+    /// stale id or an already-open popup. Widgets open their own popup from
+    /// an event handler with [`EventCtx::open_popup`](crate::EventCtx::open_popup);
+    /// this method is for opening from `App::update` (after arming the widget
+    /// via [`with`](Ui::with)).
+    pub fn open_popup(&mut self, owner: WidgetId, opts: PopupOptions) {
+        if !self.nodes.contains_key(owner) || self.popups.iter().any(|e| e.owner == owner) {
+            return;
+        }
+        // The overlay is placed against the owner's laid-out bounds; make
+        // sure they're current before the first damage is computed.
+        self.layout_now();
+        {
+            let Self {
+                nodes,
+                fonts,
+                theme,
+                size,
+                ..
+            } = self;
+            if let Some(node) = nodes.get_mut(owner) {
+                node.widget.prepare_overlay(fonts, theme, *size);
+            }
+        }
+        let prev_focus = self.focus;
+        self.popups.push(PopupEntry {
+            owner,
+            opts,
+            prev_focus,
+        });
+        if opts.grab_focus {
+            self.set_focus(Some(owner));
+        }
+        self.damage_overlay(owner);
+    }
+
+    /// Close `owner`'s popup — the reverse of [`open_popup`](Ui::open_popup).
+    /// No [`Event::PopupDismissed`] is delivered: closing explicitly means the
+    /// caller already knows. No-op if `owner` has no open popup.
+    pub fn close_popup(&mut self, owner: WidgetId) {
+        let Some(i) = self.popups.iter().position(|e| e.owner == owner) else {
+            return;
+        };
+        let entry = self.popups.remove(i);
+        self.damage_overlay(owner);
+        if entry.opts.grab_focus {
+            let prev = entry.prev_focus.filter(|p| self.nodes.contains_key(*p));
+            self.set_focus(prev);
+        }
+    }
+
+    /// The owner of the topmost open popup, if any.
+    pub fn popup_owner(&self) -> Option<WidgetId> {
+        self.popups.last().map(|e| e.owner)
+    }
+
+    /// Dismiss every popup at stack index `start` or above that opted into
+    /// outside-click dismissal, top-down: each owner gets
+    /// [`Event::PopupDismissed`], its overlay is damaged, and grabbed focus is
+    /// restored. Collects the victims first so an owner reacting to the event
+    /// (even re-opening) can't invalidate the walk.
+    fn dismiss_popups_from(&mut self, start: usize) {
+        let victims: Vec<WidgetId> = self.popups[start.min(self.popups.len())..]
+            .iter()
+            .filter(|e| e.opts.dismiss_on_outside_click)
+            .map(|e| e.owner)
+            .collect();
+        for owner in victims.into_iter().rev() {
+            let Some(i) = self.popups.iter().position(|e| e.owner == owner) else {
+                continue;
+            };
+            let entry = self.popups.remove(i);
+            self.dispatch_to(owner, &Event::PopupDismissed);
+            self.damage_overlay(owner);
+            if entry.opts.grab_focus {
+                let prev = entry.prev_focus.filter(|p| self.nodes.contains_key(*p));
+                self.set_focus(prev);
+            }
+        }
+    }
+
     // ---- accessors -------------------------------------------------------
 
     pub fn theme(&self) -> &Theme {
@@ -321,6 +459,21 @@ impl<Msg: 'static> Ui<Msg> {
     pub fn set_size(&mut self, size: Size, scale: Scale) {
         self.size = size;
         self.scale = scale;
+        // Open popups size/place themselves against the surface; let them
+        // re-measure for the new one. (`mark_full` repaints everything.)
+        for i in 0..self.popups.len() {
+            let owner = self.popups[i].owner;
+            let Self {
+                nodes,
+                fonts,
+                theme,
+                size,
+                ..
+            } = self;
+            if let Some(node) = nodes.get_mut(owner) {
+                node.widget.prepare_overlay(fonts, theme, *size);
+            }
+        }
         self.mark_full();
     }
 
@@ -518,6 +671,64 @@ impl<Msg: 'static> Ui<Msg> {
             self.update_hover(pos);
         }
 
+        // Interactive popups intercept pointer events ahead of capture and
+        // tree hit-testing (see `open_popup`). A drag in progress keeps
+        // motion/release routing to its capture holder even across popup
+        // rects, so a slider drag can't be hijacked by an open menu.
+        if !self.popups.is_empty() {
+            let capture_first = self.capture.is_some()
+                && matches!(
+                    event,
+                    Event::PointerMove { .. } | Event::PointerUp { .. }
+                );
+            if let Some(pos) = event.pointer_pos().filter(|_| !capture_first) {
+                // Hit-test the popup stack top-down.
+                let mut hit: Option<(usize, WidgetId)> = None;
+                for (i, e) in self.popups.iter().enumerate().rev() {
+                    let Some(node) = self.nodes.get(e.owner) else {
+                        continue;
+                    };
+                    if node
+                        .widget
+                        .overlay_rect(node.layout, self.size)
+                        .is_some_and(|r| r.contains_point(pos))
+                    {
+                        hit = Some((i, e.owner));
+                        break;
+                    }
+                }
+                let press = matches!(
+                    event,
+                    Event::PointerDown { .. } | Event::Tap { .. } | Event::LongPress { .. }
+                );
+                if let Some((i, owner)) = hit {
+                    // A press into a lower popup collapses the ones stacked
+                    // above it.
+                    if press {
+                        self.dismiss_popups_from(i + 1);
+                    }
+                    self.dispatch_to(owner, &event);
+                    return;
+                }
+                // Outside every popup.
+                let dismissable = self
+                    .popups
+                    .iter()
+                    .any(|e| e.opts.dismiss_on_outside_click);
+                if dismissable && press {
+                    // Consumed: a click-away must not activate what's
+                    // underneath the popup it dismisses.
+                    self.dismiss_popups_from(0);
+                    return;
+                }
+                if dismissable && matches!(event, Event::Scroll { .. }) {
+                    // Swallowed: the page must not scroll under an open menu.
+                    return;
+                }
+                // Moves and releases fall through to normal routing.
+            }
+        }
+
         let target = self.target_for(&event);
         if let Some(id) = target {
             if matches!(event, Event::Scroll { .. } | Event::Key { .. }) {
@@ -688,6 +899,14 @@ impl<Msg: 'static> Ui<Msg> {
                 CaptureOp::Clear => self.capture = None,
             }
         }
+        // Popups before focus, so an explicit `request_focus` in the same
+        // event overrides `open_popup`'s focus grab.
+        if let Some(op) = self.out.popup.take() {
+            match op {
+                PopupOp::Open(id, opts) => self.open_popup(id, opts),
+                PopupOp::Close(id) => self.close_popup(id),
+            }
+        }
         if let Some(op) = self.out.focus.take() {
             self.apply_focus(op);
         }
@@ -758,17 +977,26 @@ impl<Msg: 'static> Ui<Msg> {
     }
 
     /// Tab order = pre-order DFS over focusable widgets. Returns the focusable
-    /// after (or before) the current focus, wrapping around. When the current
-    /// focus sits inside a focus trap (a modal dialog), the cycle is confined
-    /// to that trap's subtree.
+    /// after (or before) the current focus, wrapping around. When a popup is
+    /// open, the cycle is confined to the topmost popup owner's subtree (a
+    /// menu must not tab out to the page under it); otherwise, when the
+    /// current focus sits inside a focus trap (a modal dialog), the cycle is
+    /// confined to that trap's subtree.
     fn adjacent_focus(&self, forward: bool) -> Option<WidgetId> {
-        let scope = self.focus.and_then(|f| self.trap_ancestor(f)).or(self.root);
+        let scope = self
+            .popups
+            .last()
+            .map(|e| e.owner)
+            .or_else(|| self.focus.and_then(|f| self.trap_ancestor(f)))
+            .or(self.root);
         let mut order = Vec::new();
         if let Some(scope) = scope {
             self.collect_focusable(scope, &mut order);
         }
         if order.is_empty() {
-            return None;
+            // Nowhere to go: keep the current focus (an open popup's grab)
+            // rather than dropping it.
+            return self.focus;
         }
         let cur = self.focus.and_then(|f| order.iter().position(|&i| i == f));
         let next = match cur {
@@ -812,7 +1040,6 @@ impl<Msg: 'static> Ui<Msg> {
         for id in ids {
             if let Some(dy) = self.nodes[id].widget.scroll_blit() {
                 let bounds = self.nodes[id].layout;
-                eprintln!("BLIT dy={dy} overlaid={}", self.overlaid(id, bounds));
                 // The shift moves whatever pixels occupy the bounds — including
                 // anything painted *over* the widget (a Stack overlay). In that
                 // case reusing them would drag the overlay along; fall back to

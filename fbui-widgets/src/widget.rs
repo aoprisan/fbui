@@ -204,9 +204,11 @@ pub trait Widget<Msg>: Any {
     /// tree order) via [`paint_overlay`](Widget::paint_overlay), and treats the
     /// rect as damage whenever the widget changes.
     ///
-    /// Overlays are paint-only: they are not hit-tested, so an interactive
-    /// overlay (a dropdown) should capture the pointer while it is open and
-    /// route events itself. Default: none.
+    /// By itself an overlay is paint-only (a toast). To make it
+    /// **interactive** — pointer events inside the rect routed to this
+    /// widget, outside clicks dismissing it — register it as a popup with
+    /// [`Ui::open_popup`](crate::Ui::open_popup) /
+    /// [`EventCtx::open_popup`](crate::EventCtx::open_popup). Default: none.
     fn overlay_rect(&self, _bounds: Rect, _surface: Size) -> Option<Rect> {
         None
     }
@@ -214,6 +216,13 @@ pub trait Widget<Msg>: Any {
     /// Paint the overlay reported by [`overlay_rect`](Widget::overlay_rect).
     /// `ctx.bounds()` is the overlay rect. Default: nothing.
     fn paint_overlay(&self, _ctx: &mut PaintCtx) {}
+
+    /// Prepare whatever [`overlay_rect`](Widget::overlay_rect) /
+    /// [`paint_overlay`](Widget::paint_overlay) need — typically measuring
+    /// text so the overlay can size itself. Called by the
+    /// [`Ui`](crate::Ui) when this widget's popup opens and again on surface
+    /// resize; `overlay_rect` itself never gets font access. Default: nothing.
+    fn prepare_overlay(&mut self, _fonts: &mut FontContext, _theme: &Theme, _surface: Size) {}
 
     /// Whether this widget clips its children to its bounds (scroll viewports).
     fn clips(&self) -> bool {

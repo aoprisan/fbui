@@ -15,6 +15,7 @@ use fbui_render::{FontContext, Painter, PathBuilder};
 
 use crate::ctx::{EventCtx, PaintCtx};
 use crate::event::{Event, Key, PointerButton};
+use crate::popup::{place_anchored, AnchorSpec, Placement};
 use crate::style::Style;
 use crate::theme::Theme;
 use crate::util::{focus_ring, text_style, union};
@@ -93,15 +94,12 @@ impl<Msg> Select<Msg> {
     /// above when there's more room there, clamped to the surface.
     fn menu_rect(&self, b: Rect, surface: Size) -> Rect {
         let h = self.options.len() as f32 * ROW_H + 2.0 * MENU_PAD;
-        let below = surface.h - b.bottom() - GAP;
-        let above = b.y - GAP;
-        if h <= below || below >= above {
-            let y = b.bottom() + GAP;
-            Rect::new(b.x, y, b.w, h.min(below.max(0.0)))
-        } else {
-            let h = h.min(above.max(0.0));
-            Rect::new(b.x, b.y - GAP - h, b.w, h)
-        }
+        place_anchored(
+            b,
+            Size::new(b.w, h),
+            surface,
+            AnchorSpec::new(Placement::Below).gap(GAP),
+        )
     }
 
     /// The menu row index at `pos`, if `pos` is inside the menu.

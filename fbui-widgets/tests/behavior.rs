@@ -21,6 +21,7 @@ enum Msg {
     Dismissed,
     Kbd(Key),
     Changed(String),
+    PopupHit(usize),
 }
 
 fn ui() -> Ui<Msg> {
@@ -1155,4 +1156,281 @@ fn spinner_animates_from_birth_and_stops_on_demand() {
     ui.with::<Spinner, _>(spin, |s| s.set_running(false));
     assert!(!ui.animate(0.01), "stopped spinner goes idle");
     assert!(!ui.is_animating());
+}
+
+// ---- popup layer -----------------------------------------------------------
+
+use fbui_render::geom::Rect;
+use fbui_render::FontContext;
+use fbui_widgets::widget::{AvailableSize, KnownDims};
+use fbui_widgets::{EventCtx, PaintCtx, PopupOptions, Widget};
+
+/// A minimal popup-owning widget: a 10×10 leaf whose overlay is a fixed rect,
+/// painted solid so damage tests can watch its pixels. Pointer downs routed
+/// into the popup emit `PopupHit(tag)`; a Ui dismissal emits `Dismissed`.
+struct TestPopup {
+    tag: usize,
+    open: bool,
+    rect: Rect,
+}
+
+impl TestPopup {
+    fn new(tag: usize, rect: Rect) -> Self {
+        TestPopup {
+            tag,
+            open: false,
+            rect,
+        }
+    }
+}
+
+impl Widget<Msg> for TestPopup {
+    fn layout_style(&self, _theme: &Theme) -> fbui_widgets::Style {
+        fbui_widgets::Style::default()
+    }
+
+    fn measure(
+        &mut self,
+        _fonts: &mut FontContext,
+        _theme: &Theme,
+        _known: KnownDims,
+        _available: AvailableSize,
+    ) -> Option<Size> {
+        Some(Size::new(10.0, 10.0))
+    }
+
+    fn paint(&self, _ctx: &mut PaintCtx) {}
+
+    fn overlay_rect(&self, _bounds: Rect, _surface: Size) -> Option<Rect> {
+        self.open.then_some(self.rect)
+    }
+
+    fn paint_overlay(&self, ctx: &mut PaintCtx) {
+        let b = ctx.bounds();
+        ctx.painter()
+            .fill_rect(b, fbui_render::Color::rgb(0xff, 0x00, 0x7f));
+    }
+
+    fn event(&mut self, ctx: &mut EventCtx<Msg>) {
+        match ctx.event() {
+            Event::PointerDown { .. } => {
+                let tag = self.tag;
+                ctx.emit(Msg::PopupHit(tag));
+                ctx.set_handled();
+            }
+            Event::PopupDismissed => {
+                self.open = false;
+                ctx.emit(Msg::Dismissed);
+                ctx.request_paint();
+            }
+            _ => {}
+        }
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+/// Open `id`'s popup: arm the widget, then register it with the Ui.
+fn open_test_popup(ui: &mut Ui<Msg>, id: WidgetId, opts: PopupOptions) {
+    ui.with::<TestPopup, _>(id, |p| p.open = true);
+    ui.open_popup(id, opts);
+}
+
+#[test]
+fn popup_routes_inside_events_and_outside_click_dismisses_consumed() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().padding(10.0).gap(10.0));
+    let btn = ui.add_child(root, Button::new("Under").on_press(|| Msg::Pressed));
+    // Popup floats exactly over the button.
+    ui.layout_now();
+    let bb = ui.bounds(btn).unwrap();
+    let pop = ui.add_child(root, TestPopup::new(1, bb));
+    ui.layout_now();
+
+    open_test_popup(&mut ui, pop, PopupOptions::default());
+    assert_eq!(ui.popup_owner(), Some(pop));
+    let _ = ui.take_messages();
+
+    // A click over the button lands in the popup rect: routed to the popup
+    // owner, never the button.
+    let c = center(&ui, btn);
+    click(&mut ui, c);
+    let msgs = ui.take_messages();
+    assert!(msgs.contains(&Msg::PopupHit(1)), "routed to popup: {msgs:?}");
+    assert!(!msgs.contains(&Msg::Pressed), "button blocked: {msgs:?}");
+
+    // A click outside the popup dismisses it (PopupDismissed reaches the
+    // owner) and is consumed — nothing underneath activates.
+    click(&mut ui, Point::new(390.0, 290.0));
+    let msgs = ui.take_messages();
+    assert_eq!(msgs, vec![Msg::Dismissed], "dismissed + consumed: {msgs:?}");
+    assert_eq!(ui.popup_owner(), None);
+
+    // With the popup gone the button works again.
+    click(&mut ui, c);
+    assert_eq!(ui.take_messages(), vec![Msg::Pressed]);
+}
+
+#[test]
+fn popup_without_outside_dismiss_lets_clicks_through() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().padding(10.0).gap(10.0));
+    let btn = ui.add_child(root, Button::new("Under").on_press(|| Msg::Pressed));
+    let pop = ui.add_child(root, TestPopup::new(1, Rect::new(200.0, 200.0, 60.0, 40.0)));
+    ui.layout_now();
+
+    open_test_popup(
+        &mut ui,
+        pop,
+        PopupOptions {
+            dismiss_on_outside_click: false,
+            grab_focus: false,
+        },
+    );
+    let _ = ui.take_messages();
+
+    // A click outside the popup falls through to the page: the button fires
+    // and the popup stays open.
+    let c = center(&ui, btn);
+    click(&mut ui, c);
+    assert_eq!(ui.take_messages(), vec![Msg::Pressed]);
+    assert_eq!(ui.popup_owner(), Some(pop), "popup not dismissed");
+}
+
+#[test]
+fn popups_stack_and_route_front_to_back() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().padding(10.0).gap(10.0));
+    // A overlaps B's left half; B is opened second, so it's topmost.
+    let a = ui.add_child(root, TestPopup::new(1, Rect::new(100.0, 100.0, 100.0, 50.0)));
+    let b = ui.add_child(root, TestPopup::new(2, Rect::new(150.0, 100.0, 100.0, 50.0)));
+    ui.layout_now();
+
+    open_test_popup(&mut ui, a, PopupOptions::default());
+    open_test_popup(&mut ui, b, PopupOptions::default());
+    assert_eq!(ui.popup_owner(), Some(b));
+    let _ = ui.take_messages();
+
+    // A press in the overlap goes to the topmost (B); A stays open below.
+    ui.event(Event::PointerDown {
+        pos: Point::new(175.0, 125.0),
+        button: PointerButton::Left,
+    });
+    let msgs = ui.take_messages();
+    assert!(msgs.contains(&Msg::PopupHit(2)), "topmost wins: {msgs:?}");
+    assert!(!msgs.contains(&Msg::PopupHit(1)));
+
+    // A press in A's exclusive region collapses B (stacked above) and routes
+    // to A.
+    ui.event(Event::PointerDown {
+        pos: Point::new(110.0, 125.0),
+        button: PointerButton::Left,
+    });
+    let msgs = ui.take_messages();
+    assert!(msgs.contains(&Msg::Dismissed), "B dismissed: {msgs:?}");
+    assert!(msgs.contains(&Msg::PopupHit(1)), "routed to A: {msgs:?}");
+    assert_eq!(ui.popup_owner(), Some(a));
+}
+
+#[test]
+fn popup_grabs_focus_confines_tab_and_restores_on_dismiss() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().padding(10.0).gap(10.0));
+    let field = ui.add_child(root, TextInput::new());
+    let btn = ui.add_child(root, Button::new("B").on_press(|| Msg::Pressed));
+    let pop = ui.add_child(root, TestPopup::new(1, Rect::new(200.0, 200.0, 60.0, 40.0)));
+    ui.layout_now();
+
+    // Focus the field first.
+    let fc = center(&ui, field);
+    click(&mut ui, fc);
+    assert_eq!(ui.focused(), Some(field));
+    let _ = ui.take_messages();
+
+    open_test_popup(&mut ui, pop, PopupOptions::default());
+    assert_eq!(ui.focused(), Some(pop), "grab_focus moves focus to owner");
+
+    // Tab while the popup is open must not wander to the page (the popup
+    // subtree has no focusables, so focus stays put).
+    press_key(&mut ui, Key::Tab);
+    assert_eq!(ui.focused(), Some(pop), "Tab confined, {btn:?} unreachable");
+
+    // Outside click dismisses and restores the previous focus.
+    click(&mut ui, Point::new(390.0, 290.0));
+    assert_eq!(ui.popup_owner(), None);
+    assert_eq!(ui.focused(), Some(field), "focus restored on dismissal");
+}
+
+#[test]
+fn popup_open_close_restores_pixels() {
+    use fbui_render::Surface;
+
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().padding(10.0).gap(10.0));
+    let _btn = ui.add_child(root, Button::new("Page"));
+    let pop = ui.add_child(root, TestPopup::new(1, Rect::new(120.0, 80.0, 100.0, 60.0)));
+    ui.layout_now();
+
+    let mut surface = Surface::new(400, 300, Scale::ONE);
+    ui.paint(&mut surface);
+    let baseline = surface.pixmap().data().to_vec();
+
+    // Open: the overlay's pixels appear.
+    open_test_popup(&mut ui, pop, PopupOptions::default());
+    assert!(ui.needs_paint(), "open damages the overlay rect");
+    ui.paint(&mut surface);
+    assert_ne!(baseline, surface.pixmap().data(), "popup visible");
+
+    // Close (widget clears its overlay, Ui unregisters): pixels restore.
+    ui.with::<TestPopup, _>(pop, |p| p.open = false);
+    ui.close_popup(pop);
+    ui.paint(&mut surface);
+    assert_eq!(
+        baseline,
+        surface.pixmap().data(),
+        "closed popup fully erased"
+    );
+}
+
+#[test]
+fn popup_swallows_outside_scroll() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let rows: Vec<String> = (0..1000).map(|i| format!("row {i}")).collect();
+    let list = ui.add_child(root, List::new(rows).on_select(Msg::Picked));
+    let pop = ui.add_child(root, TestPopup::new(1, Rect::new(300.0, 10.0, 60.0, 40.0)));
+    ui.layout_now();
+    let b = ui.bounds(list).unwrap();
+
+    open_test_popup(&mut ui, pop, PopupOptions::default());
+    let _ = ui.take_messages();
+
+    // Wheel over the list (outside the popup) is swallowed while the popup is
+    // open.
+    ui.event(Event::Scroll {
+        pos: Point::new(b.x + 20.0, b.y + 100.0),
+        delta_x: 0.0,
+        delta_y: -300.0,
+    });
+
+    // First click outside dismisses the popup (consumed); the second click,
+    // at the top of the viewport, still selects row 0 — proof the swallowed
+    // wheel never scrolled the list.
+    let top = Point::new(b.x + 20.0, b.y + 10.0);
+    click(&mut ui, top);
+    assert_eq!(ui.take_messages(), vec![Msg::Dismissed]);
+    click(&mut ui, top);
+    assert_eq!(
+        ui.take_messages(),
+        vec![Msg::Picked(0)],
+        "list did not scroll under the popup"
+    );
+
+    // Removing the owner drops the popup entry with it.
+    open_test_popup(&mut ui, pop, PopupOptions::default());
+    assert_eq!(ui.popup_owner(), Some(pop));
+    ui.remove(pop);
+    assert_eq!(ui.popup_owner(), None);
 }
