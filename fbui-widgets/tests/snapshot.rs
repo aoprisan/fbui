@@ -178,3 +178,39 @@ fn menu_open() {
         Tolerance::FUZZY,
     );
 }
+
+/// An open `ContextMenu` near the bottom-right corner: the menu flips above
+/// the anchor point and clamps inside the surface, over a filled content
+/// region. Pins the flip/clamp geometry and the shared menu chrome.
+#[test]
+fn context_menu_open() {
+    use fbui_render::geom::Point;
+    use fbui_widgets::widgets::ContextMenu;
+    use fbui_widgets::PopupOptions;
+
+    let (w, h) = (240u32, 160u32);
+    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+
+    let root = ui.set_root(Container::column().fill().padding(8.0));
+    let cm = ui.add_child(root, ContextMenu::new(["Rename", "Delete"]).fill());
+    ui.add_child(
+        cm,
+        Container::column()
+            .fill()
+            .background(Color::rgb(0x2a, 0x30, 0x3e), 8.0),
+    );
+    // Anchor near the bottom-right: two rows don't fit below or to the right,
+    // so the box flips up and clamps left.
+    ui.with::<ContextMenu<Msg>, _>(cm, |m| m.open_at(Point::new(210.0, 140.0)));
+    ui.open_popup(cm, PopupOptions::default());
+
+    let mut surface = Surface::new(w, h, Scale::ONE);
+    ui.paint(&mut surface);
+
+    assert_snapshot_in(
+        "tests/snapshots",
+        "context_menu_open",
+        surface.pixmap(),
+        Tolerance::FUZZY,
+    );
+}

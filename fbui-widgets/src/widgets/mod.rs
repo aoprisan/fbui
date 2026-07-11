@@ -9,6 +9,7 @@
 mod button;
 mod checkbox;
 mod container;
+mod context_menu;
 mod dialog;
 mod image;
 mod keyboard;
@@ -30,6 +31,7 @@ mod toast;
 pub use button::{Button, ButtonVariant};
 pub use checkbox::Checkbox;
 pub use container::{Align, Container};
+pub use context_menu::ContextMenu;
 pub use dialog::Dialog;
 pub use image::ImageView;
 pub use keyboard::Keyboard;

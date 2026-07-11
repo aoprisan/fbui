@@ -1701,3 +1701,108 @@ fn menu_esc_and_click_away_emit_on_close() {
     assert_eq!(ui.with::<Menu<Msg>, _>(menu, |m| m.is_open()), Some(false));
     assert_eq!(ui.focused(), Some(field), "focus restored after click-away");
 }
+
+// ---- ContextMenu -----------------------------------------------------------
+
+use fbui_widgets::widgets::ContextMenu;
+
+#[test]
+fn context_menu_opens_on_right_click_over_a_nested_child() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().padding(10.0));
+    let cm = ui.add_child(
+        root,
+        ContextMenu::new(["Rename", "Delete"])
+            .on_select(Msg::Picked)
+            .on_close(|| Msg::Dismissed),
+    );
+    let inner = ui.add_child(cm, Container::column().padding(6.0));
+    let btn = ui.add_child(inner, Button::new("Row").on_press(|| Msg::Pressed));
+    ui.layout_now();
+
+    // Right-click ON the nested button: the button ignores it, the event
+    // bubbles to the ContextMenu, which opens at the pointer.
+    let c = center(&ui, btn);
+    ui.event(Event::PointerDown {
+        pos: c,
+        button: PointerButton::Right,
+    });
+    assert_eq!(ui.popup_owner(), Some(cm), "menu opened via bubbling");
+    assert_eq!(
+        ui.with::<ContextMenu<Msg>, _>(cm, |m| m.is_open()),
+        Some(true)
+    );
+    let _ = ui.take_messages();
+
+    // The menu hangs off the pointer: row 0 center = pointer + pad + 16.
+    click(&mut ui, Point::new(c.x + 20.0, c.y + 4.0 + 16.0));
+    assert_eq!(ui.take_messages(), vec![Msg::Picked(0)]);
+    assert_eq!(ui.popup_owner(), None);
+    assert_eq!(
+        ui.with::<ContextMenu<Msg>, _>(cm, |m| m.is_open()),
+        Some(false)
+    );
+
+    // Left-clicks never open it; the button still works.
+    click(&mut ui, c);
+    assert_eq!(ui.take_messages(), vec![Msg::Pressed]);
+}
+
+#[test]
+fn context_menu_opens_on_long_press_and_click_away_closes() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().padding(10.0));
+    let cm = ui.add_child(
+        root,
+        ContextMenu::new(["One"])
+            .on_select(Msg::Picked)
+            .on_close(|| Msg::Dismissed),
+    );
+    let btn = ui.add_child(cm, Button::new("Hold me").on_press(|| Msg::Pressed));
+    ui.layout_now();
+
+    let c = center(&ui, btn);
+    ui.event(Event::LongPress { pos: c });
+    assert_eq!(ui.popup_owner(), Some(cm), "long-press opens");
+    let _ = ui.take_messages();
+
+    // Click-away: dismissed with on_close, consumed (the button under the
+    // click-away point must not fire).
+    let away = center(&ui, btn); // the button is under the open menu's anchor
+    let _ = away;
+    click(&mut ui, Point::new(390.0, 290.0));
+    assert_eq!(ui.take_messages(), vec![Msg::Dismissed]);
+    assert_eq!(ui.popup_owner(), None);
+}
+
+#[test]
+fn context_menu_flips_above_near_the_bottom_edge() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().padding(10.0).fill());
+    let cm = ui.add_child(
+        root,
+        ContextMenu::new(["A", "B"]).on_select(Msg::Picked).fill(),
+    );
+    ui.add_child(cm, Container::column().fill());
+    ui.layout_now();
+
+    // Open near the bottom edge (inside the padded wrapper, which ends at
+    // y=290): 2 rows (72 px) don't fit below y=285 on a 300-high surface, so
+    // the menu flips above the anchor.
+    let anchor = Point::new(200.0, 285.0);
+    ui.event(Event::LongPress { pos: anchor });
+    assert_eq!(ui.popup_owner(), Some(cm));
+    let _ = ui.take_messages();
+
+    // Flipped menu: y = 285 - 72; row 1 ("B") center = menu.y + 4 + 32 + 16.
+    let menu_y = 285.0 - (2.0 * 32.0 + 8.0);
+    click(
+        &mut ui,
+        Point::new(anchor.x + 20.0, menu_y + 4.0 + 32.0 + 16.0),
+    );
+    assert_eq!(
+        ui.take_messages(),
+        vec![Msg::Picked(1)],
+        "row hit-tested in the flipped rect"
+    );
+}

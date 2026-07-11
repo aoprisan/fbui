@@ -111,6 +111,17 @@ impl<Msg> MenuCore<Msg> {
         self.on_activate = Some(Box::new(f));
     }
 
+    pub(crate) fn push(&mut self, item: MenuItem) {
+        self.items.push(item);
+    }
+
+    /// Emit the activation message for entry `i`, if a factory is set.
+    pub(crate) fn emit_activate(&self, i: usize, ctx: &mut EventCtx<Msg>) {
+        if let Some(f) = &self.on_activate {
+            ctx.emit(f(i));
+        }
+    }
+
     pub(crate) fn disable(&mut self, index: usize) {
         if let Some(MenuItem::Item { disabled, .. }) = self.items.get_mut(index) {
             *disabled = true;
@@ -194,6 +205,80 @@ impl<Msg> MenuCore<Msg> {
         self.next_enabled(None, false)
     }
 
+    /// React to one routed event while open (`menu` is the overlay rect):
+    /// hover tracking, presses, and keyboard navigation are absorbed here
+    /// (with damage/handled requested through `ctx`); what the *host* must
+    /// act on comes back as a [`MenuAction`].
+    pub(crate) fn handle(&mut self, ctx: &mut EventCtx<Msg>, menu: Rect) -> MenuAction {
+        let ev = ctx.event().clone();
+        match ev {
+            // Pointer events arrive here only while inside the menu rect
+            // (routed by the popup layer).
+            Event::PointerMove { pos } => {
+                let row = self.row_at(pos, menu);
+                if row.is_some() && row != self.hover {
+                    self.hover = row;
+                    ctx.request_paint_rect(menu);
+                }
+            }
+            Event::PointerDown {
+                button: PointerButton::Left,
+                pos,
+            } => {
+                let row = self.row_at(pos, menu);
+                if row.is_some() && row != self.hover {
+                    self.hover = row;
+                    ctx.request_paint_rect(menu);
+                }
+                ctx.set_handled();
+            }
+            Event::PointerUp {
+                button: PointerButton::Left,
+                pos,
+            } => {
+                // Activate on release, like Select rows; a release on a
+                // disabled item / separator / the padding keeps the menu open.
+                if let Some(i) = self.row_at(pos, menu) {
+                    return MenuAction::Activate(i);
+                }
+                ctx.set_handled();
+            }
+            Event::Key {
+                key, pressed: true, ..
+            } if ctx.is_focused() => match key {
+                Key::Down | Key::Up => {
+                    let next = self.next_enabled(self.hover, key == Key::Down);
+                    if next != self.hover {
+                        self.hover = next;
+                        ctx.request_paint_rect(menu);
+                    }
+                    ctx.set_handled();
+                }
+                Key::Home => {
+                    self.hover = self.first_enabled();
+                    ctx.request_paint_rect(menu);
+                    ctx.set_handled();
+                }
+                Key::End => {
+                    self.hover = self.last_enabled();
+                    ctx.request_paint_rect(menu);
+                    ctx.set_handled();
+                }
+                Key::Enter | Key::Space => {
+                    if let Some(i) = self.hover {
+                        return MenuAction::Activate(i);
+                    }
+                    ctx.set_handled();
+                }
+                Key::Escape => return MenuAction::Close,
+                _ => {}
+            },
+            Event::PopupDismissed => return MenuAction::Dismissed,
+            _ => {}
+        }
+        MenuAction::None
+    }
+
     /// Paint the menu box; `menu` is the overlay rect.
     pub(crate) fn paint(&self, ctx: &mut PaintCtx, menu: Rect) {
         let theme = ctx.theme();
@@ -264,6 +349,19 @@ impl<Msg> MenuCore<Msg> {
         }
         p.pop_clip();
     }
+}
+
+/// What [`MenuCore::handle`] wants the host widget to do.
+pub(crate) enum MenuAction {
+    /// Nothing (any hover/damage was already absorbed).
+    None,
+    /// Item `i` was activated: emit and close the popup.
+    Activate(usize),
+    /// Esc: close the popup and fire the close callback.
+    Close,
+    /// The Ui dismissed the popup (click-away): sync state and fire the
+    /// close callback — the popup entry is already gone.
+    Dismissed,
 }
 
 /// Where an open [`Menu`] is anchored.
@@ -428,87 +526,17 @@ impl<Msg: 'static> Widget<Msg> for Menu<Msg> {
         let Some(menu) = self.overlay_rect(ctx.bounds(), ctx.surface_size()) else {
             return;
         };
-        let ev = ctx.event().clone();
-        match ev {
-            // Pointer events arrive here only while inside the menu rect
-            // (routed by the popup layer).
-            Event::PointerMove { pos } => {
-                let row = self.core.row_at(pos, menu);
-                if row.is_some() && row != self.core.hover {
-                    self.core.hover = row;
-                    ctx.request_paint_rect(menu);
-                }
-            }
-            Event::PointerDown {
-                button: PointerButton::Left,
-                pos,
-            } => {
-                let row = self.core.row_at(pos, menu);
-                if row.is_some() && row != self.core.hover {
-                    self.core.hover = row;
-                    ctx.request_paint_rect(menu);
-                }
-                ctx.set_handled();
-            }
-            Event::PointerUp {
-                button: PointerButton::Left,
-                pos,
-            } => {
-                // Activate on release, like Select rows; a release on a
-                // disabled item / separator / the padding keeps the menu open.
-                if let Some(i) = self.core.row_at(pos, menu) {
-                    self.activate(i, ctx);
-                } else {
-                    ctx.set_handled();
-                }
-            }
-            Event::Key {
-                key, pressed: true, ..
-            } if ctx.is_focused() => match key {
-                Key::Down => {
-                    let next = self.core.next_enabled(self.core.hover, true);
-                    if next != self.core.hover {
-                        self.core.hover = next;
-                        ctx.request_paint_rect(menu);
-                    }
-                    ctx.set_handled();
-                }
-                Key::Up => {
-                    let next = self.core.next_enabled(self.core.hover, false);
-                    if next != self.core.hover {
-                        self.core.hover = next;
-                        ctx.request_paint_rect(menu);
-                    }
-                    ctx.set_handled();
-                }
-                Key::Home => {
-                    self.core.hover = self.core.first_enabled();
-                    ctx.request_paint_rect(menu);
-                    ctx.set_handled();
-                }
-                Key::End => {
-                    self.core.hover = self.core.last_enabled();
-                    ctx.request_paint_rect(menu);
-                    ctx.set_handled();
-                }
-                Key::Enter | Key::Space => {
-                    if let Some(i) = self.core.hover {
-                        self.activate(i, ctx);
-                    } else {
-                        ctx.set_handled();
-                    }
-                }
-                Key::Escape => self.close_via(ctx),
-                _ => {}
-            },
-            Event::PopupDismissed => {
+        match self.core.handle(ctx, menu) {
+            MenuAction::Activate(i) => self.activate(i, ctx),
+            MenuAction::Close => self.close_via(ctx),
+            MenuAction::Dismissed => {
                 self.anchor = None;
                 self.core.hover = None;
                 if let Some(f) = &self.on_close {
                     ctx.emit(f());
                 }
             }
-            _ => {}
+            MenuAction::None => {}
         }
     }
 
