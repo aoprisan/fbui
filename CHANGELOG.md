@@ -51,6 +51,23 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
   counts down on the deterministic frame clock and the clock runs *only*
   during the dwell — a shown tip costs nothing (the idle-burns-0% rule).
   Placement prefers above (`placement(..)`), flipping at screen edges.
+  (Deliberately *not* built on the app timer API below: tooltips stay inside
+  the deterministic, headless-testable widget layer.)
+- **App timers** — `Proxy::send_after(delay, msg)` delivers a message to
+  `App::update` once after `delay`; `Proxy::send_every(period, msg)` repeats
+  (fixed-delay: a stalled loop catches up with one message, never a burst).
+  Both return a cancellable, `Send` `fbui::Timer` handle (dropping the handle
+  detaches; the delivery still happens) and work from any thread. No threads,
+  no ticking: the event loop sleeps in `poll` until the earliest deadline.
+  See the new `timer` example.
+- **`PlatformHandler::next_timeout`** (fbui-platform, defaulted — existing
+  handlers unaffected) — the handler now bounds the event loop's poll
+  timeout with its next deadline instead of the loop hard-coding 16 ms.
+  Returning `None` lets the loop block until fd activity (bounded by the
+  ~1 s hotplug-poll backstop). The `fbui` runner uses it: 16 ms only while
+  animating or mid-gesture, the next timer deadline otherwise, else no
+  time-based wakeups at all — a truly idle app now sleeps ~1 s per wakeup
+  instead of spinning at 60 Hz.
 - **`TabBar`** — a segmented tab strip for switching between views: equal-width
   segments in one tree node (self-painted, self-hit-tested), a single tab stop
   with Left/Right/Home/End moving the selection while focused. Emits
@@ -113,6 +130,10 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
   dismisses, and consumes. Behavior is unchanged (the existing Select tests
   pass as-is); Tab while the menu is open now stays on the field instead of
   leaking to the page behind it.
+- **`App::Message` now requires `Send`** (breaking): the timer queue shares
+  messages across threads, as `Proxy` always did in practice (`Proxy<M>` was
+  only ever `Send` when `M` was). UI message enums are `Send` in any
+  realistic app; the bound just states it.
 
 ### Fixed
 

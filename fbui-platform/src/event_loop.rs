@@ -98,6 +98,19 @@ pub trait PlatformHandler {
         Flow::Continue
     }
 
+    /// Upper bound on how long the loop may block in `poll` before the
+    /// handler needs [`tick`](PlatformHandler::tick) again. Return the time
+    /// to the handler's next deadline (an animation frame, an app timer), or
+    /// `None` when it has no time-based work — the loop then blocks until an
+    /// fd is ready (bounded only by the ~1 s hotplug-poll backstop), which is
+    /// what lets a fully idle app burn ~0% CPU.
+    ///
+    /// The default preserves the historical fixed 16 ms pacing, so existing
+    /// handlers are unaffected until they override this.
+    fn next_timeout(&mut self) -> Option<Duration> {
+        Some(Duration::from_millis(16))
+    }
+
     /// Called once, before the first frame, with a [`Waker`] the app can hand to
     /// background threads so they can wake the loop. Default: ignore.
     fn on_start(&mut self, waker: Waker) {
@@ -431,10 +444,18 @@ pub(crate) fn run_loop(
             state.poll_display_change()?;
         }
         state.try_render()?;
-        // Block until at least one fd is ready (or the fbdev timer fires). The
-        // timeout bounds latency for the tick() animation hook.
+        // Block until at least one fd is ready (or the fbdev pacing timer
+        // fires). The handler bounds the sleep with its next deadline — an
+        // animation frame, an app timer — and the hotplug-poll cadence
+        // backstops it, so an idle handler (`None`) sleeps up to ~1 s per
+        // turn instead of spinning at 60 Hz.
+        let backstop = hotplug_every.saturating_sub(last_hotplug.elapsed());
+        let timeout = match state.handler.next_timeout() {
+            Some(t) => t.min(backstop),
+            None => backstop,
+        };
         event_loop
-            .dispatch(Some(Duration::from_millis(16)), &mut state)
+            .dispatch(Some(timeout), &mut state)
             .map_err(|e| Error::io("calloop dispatch", std::io::Error::other(e)))?;
     }
     Ok(())
