@@ -107,6 +107,12 @@ These are the crux and are stated explicitly so widgets can't get them wrong:
 4. **Opaque-background optimization (later):** a node with an opaque background can
    stop upward damage propagation — repainting it fully covers what's beneath. v1
    conservatively repaints the damaged union; the hook is there.
+5. **Overlays (and popups, which are promoted overlays) damage both where the
+   overlay is now and where it last painted**, padded one logical pixel for
+   border ink that straddles the rect edge. The `Ui` applies this on any
+   change to an overlay-bearing widget — including popup open/close/dismissal
+   and tooltip show/hide — so appearance, movement, and disappearance always
+   repaint cleanly.
 
 The renderer already merges overlapping dirty rects and bounds copy-out, so widget
 code over-reporting damage is safe (just less efficient), while under-reporting is
@@ -145,6 +151,61 @@ logical coordinates:
 Focus is a single `Option<WidgetId>`. A focus change damages both the old and new
 focused widgets (focus rings repaint). Pointer capture is a single
 `Option<WidgetId>` too — one pointer in v1 (multi-touch capture is Phase 4).
+
+**Bubbling:** scrolls, keys, recognized gestures (tap / long-press / fling), and
+right-button presses bubble from the hit widget to its ancestors until one marks
+the event handled — a wheel or fling over a label inside a `ScrollView` scrolls
+the view, Esc inside a `Dialog` dismisses it, a right-click on any child reaches
+an enclosing `ContextMenu`. Left-button presses/releases stay direct: two widgets
+arming on one press would double-activate.
+
+### The popup layer
+
+A floating overlay (`Widget::overlay_rect` + `paint_overlay`) is paint-only by
+itself (a toast). Registering it with `Ui::open_popup(owner, PopupOptions)` (or
+`EventCtx::open_popup` from an event handler) promotes it into an interactive
+**popup**:
+
+* **Routing.** Pointer events inside a popup's overlay rect are dispatched to
+  its owner *ahead of* capture and tree hit-testing, front-to-back through the
+  popup stack (most recently opened on top). The owner hit-tests its own
+  content (menu rows), exactly like the compound widgets do.
+* **Dismissal.** A press outside every popup dismisses the dismissable ones
+  top-down — each owner receives `Event::PopupDismissed` to sync its state —
+  and the press is **consumed**, so a click-away can't activate whatever sits
+  underneath. Scrolls outside are swallowed while a dismissable popup is open.
+  Moves and releases fall through. An explicit `close_popup` delivers no event:
+  the closer already knows.
+* **Focus.** With `grab_focus` (default) the owner takes focus on open and the
+  previous focus is restored on close/dismissal. While any popup is open, Tab
+  is confined to the topmost owner's subtree — a menu can't tab out to the page
+  under it. Widgets that are themselves the focus target (`Select`) turn the
+  grab off.
+* **Lifecycle.** Removing the owner drops its popup entry; entries whose owner
+  stops reporting an overlay (closed by direct mutation, e.g. `set_options`
+  while open) are pruned on the next event; `set_root` clears the stack; a
+  surface resize re-runs `prepare_overlay` (the fonts-in-hand measuring hook)
+  for open popups.
+* **Damage.** Opening, closing, and dismissal all go through the existing
+  overlay damage rule (below); no popup-specific damage machinery exists.
+
+`Select`'s dropdown, `Menu`, and `ContextMenu` all sit on this layer; a capture
+grab is no longer part of the overlay story. `place_anchored` (in `popup.rs`)
+is the one placement rule they share: preferred side, flip when it doesn't fit
+and the opposite side has more room, clamp (and shrink as a last resort) to the
+surface.
+
+### Tooltips
+
+`Ui::set_tooltip(id, Tooltip)` attaches a hover tip to any widget. This is a
+**Ui facility**, not a wrapper widget: hover is delivered only to the deepest
+hit widget, so a wrapper around content would never see hover over its
+children — the Ui, which already owns hover transitions, runs the state
+machine. The dwell delay counts down in `Ui::animate` on the frame `dt`
+(deterministic, no wall clock; the frame clock runs only while a dwell is
+pending — a shown tip costs nothing). A long-press shows the tip immediately
+(the touch path); any press, release, or key hides it. The tip paints above
+overlays and participates in the scroll-blit fallback check like one.
 
 ## 6. Theming
 

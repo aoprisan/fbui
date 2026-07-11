@@ -201,7 +201,7 @@ impl<'a, Msg> EventCtx<'a, Msg> {
     /// (see [`Ui::open_popup`](crate::Ui::open_popup)): pointer events inside
     /// its [`overlay_rect`](crate::Widget::overlay_rect) route to this widget
     /// ahead of the tree, and outside clicks dismiss it (per `opts`),
-    /// delivering [`Event::PopupDismissed`](crate::Event::PopupDismissed).
+    /// delivering [`Event::PopupDismissed`].
     pub fn open_popup(&mut self, opts: PopupOptions) {
         self.out.popup = Some(PopupOp::Open(self.self_id, opts));
     }
