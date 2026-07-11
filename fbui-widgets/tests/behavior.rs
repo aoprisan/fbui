@@ -1573,3 +1573,131 @@ fn dialog_still_swallows_bubbled_gestures() {
         "dialog swallows the long-press: {msgs:?}"
     );
 }
+
+// ---- Menu ------------------------------------------------------------------
+
+use fbui_widgets::widgets::Menu;
+
+/// Open `menu` at (50, 50) the documented two-step way; rows are then at
+/// known offsets (ROW_H 32, SEP_H 9, MENU_PAD 4 — pinned by `Menu::row_rect`).
+fn open_menu_at_50(ui: &mut Ui<Msg>, menu: WidgetId) {
+    ui.with::<Menu<Msg>, _>(menu, |m| m.open_at(Point::new(50.0, 50.0)));
+    ui.open_popup(menu, PopupOptions::default());
+    assert_eq!(ui.popup_owner(), Some(menu));
+    let _ = ui.take_messages();
+}
+
+#[test]
+fn menu_click_activates_and_closes() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().padding(10.0));
+    let _btn = ui.add_child(root, Button::new("Page").on_press(|| Msg::Pressed));
+    let menu = ui.add_child(
+        root,
+        Menu::new(["Cut", "Copy", "Paste"])
+            .on_activate(Msg::Picked)
+            .on_close(|| Msg::Dismissed),
+    );
+    ui.layout_now();
+    open_menu_at_50(&mut ui, menu);
+
+    // Row 1 ("Copy"): y = 50 + pad 4 + 32 + 16.
+    click(&mut ui, Point::new(70.0, 102.0));
+    assert_eq!(
+        ui.take_messages(),
+        vec![Msg::Picked(1)],
+        "activation emits the index but not on_close"
+    );
+    assert_eq!(ui.with::<Menu<Msg>, _>(menu, |m| m.is_open()), Some(false));
+    assert_eq!(ui.popup_owner(), None);
+}
+
+#[test]
+fn menu_skips_separators_and_disabled_items() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().padding(10.0));
+    // Entries: 0 "Cut", 1 separator, 2 "Copy" (disabled), 3 "Paste".
+    let menu = ui.add_child(
+        root,
+        Menu::new(["Cut"])
+            .separator()
+            .item("Copy")
+            .item("Paste")
+            .disable(2)
+            .on_activate(Msg::Picked)
+            .on_close(|| Msg::Dismissed),
+    );
+    ui.layout_now();
+    open_menu_at_50(&mut ui, menu);
+
+    // Arrows: Down lands on the first enabled entry, then skips the separator
+    // and the disabled item straight to "Paste", then saturates.
+    press_key(&mut ui, Key::Down);
+    assert_eq!(
+        ui.with::<Menu<Msg>, _>(menu, |m| m.hovered()),
+        Some(Some(0))
+    );
+    press_key(&mut ui, Key::Down);
+    assert_eq!(
+        ui.with::<Menu<Msg>, _>(menu, |m| m.hovered()),
+        Some(Some(3))
+    );
+    press_key(&mut ui, Key::Down);
+    assert_eq!(
+        ui.with::<Menu<Msg>, _>(menu, |m| m.hovered()),
+        Some(Some(3))
+    );
+    press_key(&mut ui, Key::Up);
+    assert_eq!(
+        ui.with::<Menu<Msg>, _>(menu, |m| m.hovered()),
+        Some(Some(0))
+    );
+
+    // A click on the disabled row (entry 2: y = 50 + 4 + 32 + 9 + 16) does
+    // nothing and keeps the menu open.
+    click(&mut ui, Point::new(70.0, 111.0));
+    assert!(ui.take_messages().is_empty(), "disabled row is inert");
+    assert_eq!(ui.with::<Menu<Msg>, _>(menu, |m| m.is_open()), Some(true));
+
+    // End + Enter commits "Paste" (entry 3).
+    press_key(&mut ui, Key::End);
+    press_key(&mut ui, Key::Enter);
+    assert_eq!(ui.take_messages(), vec![Msg::Picked(3)]);
+    assert_eq!(ui.popup_owner(), None);
+}
+
+#[test]
+fn menu_esc_and_click_away_emit_on_close() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().padding(10.0));
+    let field = ui.add_child(root, TextInput::new());
+    let menu = ui.add_child(
+        root,
+        Menu::new(["One", "Two"])
+            .on_activate(Msg::Picked)
+            .on_close(|| Msg::Dismissed),
+    );
+    ui.layout_now();
+
+    // Focus the field, open the menu: the popup grabs focus so Esc reaches
+    // the menu, and closing restores it.
+    let fc = center(&ui, field);
+    click(&mut ui, fc);
+    open_menu_at_50(&mut ui, menu);
+    assert_eq!(ui.focused(), Some(menu), "menu holds focus while open");
+
+    press_key(&mut ui, Key::Escape);
+    assert_eq!(
+        ui.take_messages(),
+        vec![Msg::Dismissed],
+        "Esc fires on_close"
+    );
+    assert_eq!(ui.focused(), Some(field), "focus restored");
+
+    // Reopen; click-away dismisses through the popup layer with on_close.
+    open_menu_at_50(&mut ui, menu);
+    click(&mut ui, Point::new(390.0, 290.0));
+    assert_eq!(ui.take_messages(), vec![Msg::Dismissed]);
+    assert_eq!(ui.with::<Menu<Msg>, _>(menu, |m| m.is_open()), Some(false));
+    assert_eq!(ui.focused(), Some(field), "focus restored after click-away");
+}

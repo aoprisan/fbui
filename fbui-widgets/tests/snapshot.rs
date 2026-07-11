@@ -135,3 +135,46 @@ fn tabbar_and_spinner() {
         Tolerance::FUZZY,
     );
 }
+
+/// An open `Menu` on the popup layer: enabled items, a separator, a disabled
+/// item, and the keyboard-hovered first row. Labels render with host fonts
+/// under the tolerant compare (the `tabbar_and_spinner` footing); the box,
+/// row highlight, separator rule, and dimmed disabled row are pinned.
+#[test]
+fn menu_open() {
+    use fbui_render::geom::Point;
+    use fbui_widgets::event::{Event, Key, Modifiers};
+    use fbui_widgets::widgets::Menu;
+    use fbui_widgets::PopupOptions;
+
+    let (w, h) = (240u32, 200u32);
+    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+
+    let root = ui.set_root(Container::column().fill().padding(12.0));
+    // Entries: 0 "Cut", 1 "Copy", 2 separator, 3 "Paste" (disabled).
+    let menu = ui.add_child(
+        root,
+        Menu::new(["Cut", "Copy"])
+            .separator()
+            .item("Paste")
+            .disable(3),
+    );
+    ui.with::<Menu<Msg>, _>(menu, |m| m.open_at(Point::new(24.0, 20.0)));
+    ui.open_popup(menu, PopupOptions::default());
+    // Arrow down: the first enabled row gets the hover highlight.
+    ui.event(Event::Key {
+        key: Key::Down,
+        pressed: true,
+        mods: Modifiers::default(),
+    });
+
+    let mut surface = Surface::new(w, h, Scale::ONE);
+    ui.paint(&mut surface);
+
+    assert_snapshot_in(
+        "tests/snapshots",
+        "menu_open",
+        surface.pixmap(),
+        Tolerance::FUZZY,
+    );
+}
