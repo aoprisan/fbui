@@ -62,7 +62,7 @@ pub use gesture::{Gesture, GestureConfig, GestureRecognizer};
 pub use popup::{place_anchored, Alignment, AnchorSpec, Placement};
 pub use style::Style;
 pub use theme::{Metrics, Palette, Theme};
-pub use tree::{PopupOptions, Ui, WidgetId};
+pub use tree::{PopupOptions, Tooltip, Ui, WidgetId};
 pub use widget::{Anim, Widget};
 
 // Re-export the render layer so downstreams need only depend on the toolkit.

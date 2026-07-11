@@ -214,3 +214,40 @@ fn context_menu_open() {
         Tolerance::FUZZY,
     );
 }
+
+/// A visible tooltip pinned against the top edge: `Above` placement has no
+/// headroom, so the tip flips below its owner and centers on it. Text renders
+/// with host fonts under the tolerant compare; the box, border, and flip
+/// geometry are pinned.
+#[test]
+fn tooltip_shown() {
+    use fbui_render::geom::Point;
+    use fbui_widgets::event::Event;
+    use fbui_widgets::widgets::Button;
+    use fbui_widgets::Tooltip;
+
+    let (w, h) = (240u32, 120u32);
+    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+
+    let root = ui.set_root(Container::column().padding(6.0));
+    let btn = ui.add_child(root, Button::new("Save"));
+    ui.set_tooltip(btn, Tooltip::new("Write to disk"));
+    ui.layout_now();
+
+    // Hover and run out the dwell on the frame clock.
+    let b = ui.bounds(btn).unwrap();
+    ui.event(Event::PointerMove {
+        pos: Point::new(b.x + b.w / 2.0, b.y + b.h / 2.0),
+    });
+    while ui.animate(0.2) {}
+
+    let mut surface = Surface::new(w, h, Scale::ONE);
+    ui.paint(&mut surface);
+
+    assert_snapshot_in(
+        "tests/snapshots",
+        "tooltip_shown",
+        surface.pixmap(),
+        Tolerance::FUZZY,
+    );
+}

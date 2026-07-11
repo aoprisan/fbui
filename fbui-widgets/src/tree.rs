@@ -16,13 +16,15 @@
 
 use fbui_render::geom::{Point, Rect, Size};
 use fbui_render::{FontContext, Scale, Surface};
-use slotmap::SlotMap;
+use slotmap::{SecondaryMap, SlotMap};
 use taffy::{AvailableSpace, TaffyTree};
 
 use crate::ctx::{AnimCtx, CaptureOp, EventCtx, FocusOp, Outputs, PaintCtx, PopupOp};
 use crate::event::{Event, Key, Modifiers, PointerButton};
+use crate::popup::{place_anchored, Alignment, AnchorSpec, Placement};
 use crate::style::Style;
 use crate::theme::Theme;
+use crate::util::text_style;
 use crate::widget::Widget;
 
 slotmap::new_key_type! {
@@ -61,6 +63,58 @@ struct PopupEntry {
     prev_focus: Option<WidgetId>,
 }
 
+/// Tooltip box padding and anchor gap, logical px.
+const TIP_PAD_X: f32 = 8.0;
+const TIP_PAD_Y: f32 = 5.0;
+const TIP_GAP: f32 = 6.0;
+
+/// A hover tooltip attached to a widget via [`Ui::set_tooltip`].
+///
+/// This is a **`Ui` facility**, not a widget: hover is delivered only to the
+/// deepest hit widget, so a wrapper widget could never see hover over its
+/// children — the `Ui`, which owns hover, runs the show/hide state machine
+/// instead. The dwell delay counts down on the frame clock
+/// ([`Ui::animate`]), so it's deterministic and costs nothing once shown.
+#[derive(Debug, Clone)]
+pub struct Tooltip {
+    /// The tip text.
+    pub text: String,
+    /// Hover dwell before showing, seconds.
+    pub delay: f32,
+    /// Preferred side of the owner (flips when there's no room).
+    pub placement: Placement,
+}
+
+impl Tooltip {
+    /// A tooltip with the standard dwell (0.6 s), preferring above the owner.
+    pub fn new(text: impl Into<String>) -> Self {
+        Tooltip {
+            text: text.into(),
+            delay: 0.6,
+            placement: Placement::Above,
+        }
+    }
+
+    pub fn delay(mut self, seconds: f32) -> Self {
+        self.delay = seconds;
+        self
+    }
+
+    pub fn placement(mut self, placement: Placement) -> Self {
+        self.placement = placement;
+        self
+    }
+}
+
+/// The `Ui`'s tooltip state machine (at most one tip armed or visible).
+#[derive(Default)]
+struct TipState {
+    /// Hover dwell in progress: (owner, seconds remaining).
+    armed: Option<(WidgetId, f32)>,
+    /// The visible tip: (owner, its placed box).
+    shown: Option<(WidgetId, Rect)>,
+}
+
 /// One node: the widget, its taffy peer, tree links, and resolved bounds.
 struct Node<Msg> {
     widget: Box<dyn Widget<Msg>>,
@@ -90,6 +144,9 @@ pub struct Ui<Msg> {
     capture: Option<WidgetId>,
     /// Open interactive popups, bottom-to-top (see [`open_popup`](Ui::open_popup)).
     popups: Vec<PopupEntry>,
+    /// Hover tooltips by owner (see [`set_tooltip`](Ui::set_tooltip)).
+    tooltips: SecondaryMap<WidgetId, Tooltip>,
+    tip: TipState,
     /// Scratch sink lent to each `EventCtx`; drained after every dispatch.
     out: Outputs<Msg>,
     /// Messages awaiting `App::update`.
@@ -126,6 +183,8 @@ impl<Msg: 'static> Ui<Msg> {
             hover: None,
             capture: None,
             popups: Vec::new(),
+            tooltips: SecondaryMap::new(),
+            tip: TipState::default(),
             out: Outputs::default(),
             messages: Vec::new(),
             damage: Vec::new(),
@@ -146,6 +205,8 @@ impl<Msg: 'static> Ui<Msg> {
         self.hover = None;
         self.capture = None;
         self.popups.clear();
+        self.tooltips.clear();
+        self.tip = TipState::default();
         let id = self.insert(Box::new(widget), None);
         self.root = Some(id);
         self.mark_full();
@@ -218,6 +279,7 @@ impl<Msg: 'static> Ui<Msg> {
             let t = self.nodes[n].taffy;
             let _ = self.taffy.remove(t);
             self.nodes.remove(n);
+            self.tooltips.remove(n);
             if self.focus == Some(n) {
                 self.focus = None;
             }
@@ -227,6 +289,12 @@ impl<Msg: 'static> Ui<Msg> {
             if self.capture == Some(n) {
                 self.capture = None;
             }
+        }
+        if self.tip.armed.is_some_and(|(t, _)| ids.contains(&t)) {
+            self.tip.armed = None;
+        }
+        if self.tip.shown.is_some_and(|(t, _)| ids.contains(&t)) {
+            self.hide_tip();
         }
         self.needs_layout = true;
     }
@@ -454,6 +522,82 @@ impl<Msg: 'static> Ui<Msg> {
         }
     }
 
+    // ---- tooltips ----------------------------------------------------------
+
+    /// Attach a hover [`Tooltip`] to `id`, replacing any existing one. The tip
+    /// shows after the dwell delay while the pointer rests on `id` (or any
+    /// descendant), immediately on a long-press (touch), and hides on hover
+    /// change, any press/release, or a key.
+    pub fn set_tooltip(&mut self, id: WidgetId, tip: Tooltip) {
+        if self.nodes.contains_key(id) {
+            self.tooltips.insert(id, tip);
+        }
+    }
+
+    /// Remove `id`'s tooltip, hiding it if currently visible.
+    pub fn clear_tooltip(&mut self, id: WidgetId) {
+        self.tooltips.remove(id);
+        if self.tip.armed.is_some_and(|(t, _)| t == id) {
+            self.tip.armed = None;
+        }
+        if self.tip.shown.is_some_and(|(t, _)| t == id) {
+            self.hide_tip();
+        }
+    }
+
+    /// The nearest ancestor of `id` (inclusive) with a tooltip attached.
+    fn tooltip_target(&self, mut cur: Option<WidgetId>) -> Option<WidgetId> {
+        while let Some(c) = cur {
+            if self.tooltips.contains_key(c) {
+                return Some(c);
+            }
+            cur = self.nodes.get(c).and_then(|n| n.parent);
+        }
+        None
+    }
+
+    /// Measure and place `target`'s tooltip, mark it shown, damage its box.
+    fn show_tip(&mut self, target: WidgetId) {
+        self.tip.armed = None;
+        if self.tip.shown.is_some_and(|(t, _)| t == target) {
+            return;
+        }
+        self.hide_tip();
+        let Self {
+            nodes,
+            fonts,
+            theme,
+            tooltips,
+            size,
+            ..
+        } = self;
+        let (Some(tip), Some(node)) = (tooltips.get(target), nodes.get(target)) else {
+            return;
+        };
+        let st = text_style(theme, theme.metrics.font_size, theme.palette.text);
+        let ts = fonts.layout(&tip.text, &st, None).size();
+        let box_size = Size::new(ts.w + 2.0 * TIP_PAD_X, ts.h + 2.0 * TIP_PAD_Y);
+        let rect = place_anchored(
+            node.layout,
+            box_size,
+            *size,
+            AnchorSpec {
+                placement: tip.placement,
+                align: Alignment::Center,
+                gap: TIP_GAP,
+            },
+        );
+        self.tip.shown = Some((target, rect));
+        self.damage.push(rect.inset(-1.0));
+    }
+
+    /// Hide a visible tooltip, damaging where it was.
+    fn hide_tip(&mut self) {
+        if let Some((_, rect)) = self.tip.shown.take() {
+            self.damage.push(rect.inset(-1.0));
+        }
+    }
+
     // ---- accessors -------------------------------------------------------
 
     pub fn theme(&self) -> &Theme {
@@ -483,6 +627,8 @@ impl<Msg: 'static> Ui<Msg> {
     pub fn set_size(&mut self, size: Size, scale: Scale) {
         self.size = size;
         self.scale = scale;
+        // A visible tooltip was placed against the old surface; drop it.
+        self.tip = TipState::default();
         // Open popups size/place themselves against the surface; let them
         // re-measure for the new one. (`mark_full` repaints everything.)
         for i in 0..self.popups.len() {
@@ -568,6 +714,18 @@ impl<Msg: 'static> Ui<Msg> {
                 self.damage_overlay(id);
             }
             running |= anim.running;
+        }
+        // Tooltip dwell countdown — Ui-level, on the same deterministic frame
+        // clock. The clock only runs while the dwell is pending; a shown tip
+        // costs nothing.
+        if let Some((target, remaining)) = self.tip.armed {
+            let left = remaining - dt;
+            if left <= 0.0 {
+                self.show_tip(target); // clears `armed`
+            } else {
+                self.tip.armed = Some((target, left));
+                running = true;
+            }
         }
         // Messages emitted from a tick (key auto-repeat) join the same queue as
         // event-emitted ones; the runner drains them right after `animate`.
@@ -677,6 +835,23 @@ impl<Msg: 'static> Ui<Msg> {
         crate::span!("ui.event");
         if self.needs_layout {
             self.relayout();
+        }
+
+        // Tooltips are input-shy: any press, release, or key hides the tip
+        // and cancels a pending dwell; a long-press (touch has no hover)
+        // shows the target's tip immediately.
+        match &event {
+            Event::PointerDown { .. } | Event::PointerUp { .. } | Event::Key { .. } => {
+                self.tip.armed = None;
+                self.hide_tip();
+            }
+            Event::LongPress { pos } if self.popups.is_empty() => {
+                let hit = self.root.and_then(|r| self.hit(r, *pos));
+                if let Some(t) = self.tooltip_target(hit) {
+                    self.show_tip(t);
+                }
+            }
+            _ => {}
         }
 
         // Tab navigation is handled by the Ui, not delivered to widgets.
@@ -856,6 +1031,24 @@ impl<Msg: 'static> Ui<Msg> {
             if let Some(new) = hit {
                 if let Some(n) = self.nodes.get(new) {
                     self.damage.push(n.layout);
+                }
+            }
+
+            // Tooltip dwell follows the nearest tooltip-bearing ancestor of
+            // the hover target; an unchanged target keeps its state (a shown
+            // tip stays up while the pointer wanders within its owner).
+            let new_target = self.tooltip_target(hit);
+            let cur_target = self
+                .tip
+                .armed
+                .map(|(t, _)| t)
+                .or_else(|| self.tip.shown.map(|(t, _)| t));
+            if new_target != cur_target {
+                self.tip.armed = None;
+                self.hide_tip();
+                if let Some(t) = new_target {
+                    self.tip.armed = Some((t, self.tooltips[t].delay));
+                    self.animating = true;
                 }
             }
         }
@@ -1135,9 +1328,12 @@ impl<Msg: 'static> Ui<Msg> {
             hover,
             focus,
             size,
+            tooltips,
+            tip,
             ..
         } = self;
         let (hover, focus, size) = (*hover, *focus, *size);
+        let tip_shown = tip.shown;
         surface.paint(|p| {
             p.push_clip(region);
             // Clear the region to the window background first.
@@ -1160,6 +1356,23 @@ impl<Msg: 'static> Ui<Msg> {
                     focused: focus == Some(id),
                 };
                 node.widget.paint_overlay(&mut ctx);
+            }
+            // A visible tooltip paints above everything, overlays included.
+            if let Some((owner, rect)) = tip_shown {
+                if !intersect_rect(rect.inset(-1.0), region).is_empty() {
+                    if let Some(t) = tooltips.get(owner) {
+                        let st = text_style(theme, theme.metrics.font_size, theme.palette.text);
+                        p.fill_rounded_rect(rect, 4.0, theme.palette.surface_alt);
+                        p.stroke_rounded_rect(rect, 4.0, theme.palette.line, 1.0);
+                        fonts.draw_text(
+                            p,
+                            &t.text,
+                            &st,
+                            Point::new(rect.x + TIP_PAD_X, rect.y + TIP_PAD_Y),
+                            None,
+                        );
+                    }
+                }
             }
             p.pop_clip();
         });
@@ -1195,6 +1408,12 @@ impl<Msg: 'static> Ui<Msg> {
     /// nothing, so dormant overlays should be removed from the tree (or sized
     /// empty), not merely skipped in `paint`.
     fn overlaid(&self, id: WidgetId, bounds: Rect) -> bool {
+        // A visible tooltip paints on top of everything.
+        if let Some((_, r)) = self.tip.shown {
+            if !intersect_rect(r.inset(-1.0), bounds).is_empty() {
+                return true;
+            }
+        }
         // Floating overlays paint on top of everything, wherever their owner
         // sits in the tree (including where it *last* painted, if it's mid-
         // dismissal this frame). Padded by the same 1px ink halo as
