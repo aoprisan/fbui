@@ -19,6 +19,36 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Added
 
+- **Terminal backend** (`fbui-platform` feature `term`, in the default set) —
+  run any unmodified fbui app *inside a terminal*: over SSH, in a terminal
+  emulator on a dev machine, in CI. `FBUI_BACKEND=term` forces it; when DRM
+  and fbdev both fail and the process is attached to a capable terminal
+  (`$TERM` not empty/`dumb`/`linux`), the platform now falls back to it
+  instead of dying. Two pixel protocols, auto-detected
+  (`FBUI_TERM_PROTOCOL=kitty|cells` overrides): the **kitty graphics
+  protocol** (kitty/Ghostty/WezTerm) shows real pixels at full resolution
+  with damage sent as small patch images over a ping-ponged base frame — a
+  button repaint costs bytes proportional to the button, which is what makes
+  it usable over SSH; **half-block cells** (`▀` + 24-bit SGR, 2 px per cell)
+  works in any truecolor terminal as a preview. Input parses the terminal
+  byte stream into the normal normalized events: UTF-8 keys and CSI/SS3
+  sequences with modifiers (each key synthesized as press+release — terminals
+  report no release), and SGR mouse buttons/motion/wheel with
+  pixel-precision coordinates (mode 1016) in kitty mode. Terminal resize
+  rides the existing hotplug path (`reconfigure` → `on_display_changed`).
+  The raw-mode/alt-screen/mouse/image state is restored on **every** exit
+  path — drop, panic, fatal signals — mirroring the VT guard. Pure Rust, no
+  new dependencies; tested headless against pty pairs
+  (`fbui-platform/tests/term_pty.rs`). See `docs/terminal-backend.md`.
+- **`BackendKind::Terminal`** (breaking for exhaustive matches on
+  `BackendKind`) and **`PlatformConfig::prefer_term`** (breaking for struct
+  literals not using `..Default::default()`). `PlatformConfig::default()` now
+  also reads `FBUI_BACKEND` (`drm`/`fbdev`/`term`), so existing binaries gain
+  backend selection without a rebuild.
+- **Named keysyms** for PageUp/PageDown/Insert/F1–F12 in
+  `fbui_platform::keysym` (the terminal parser emits them; evdev apps can now
+  match them by name too).
+
 - **The popup layer** — floating overlays can now be *interactive*.
   `Ui::open_popup(owner, PopupOptions)` (or `EventCtx::open_popup` from a
   handler) promotes a widget's overlay into a popup: pointer events inside the

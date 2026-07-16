@@ -37,6 +37,8 @@ pub mod geom;
 pub mod input;
 pub(crate) mod ioctl;
 pub mod seat;
+#[cfg(feature = "term")]
+pub mod term;
 pub mod vt;
 
 #[cfg(feature = "event-loop")]
@@ -61,7 +63,8 @@ pub use crate::event_loop::{Flow, PlatformHandler, Waker};
 
 /// How to bring the platform up. [`Default`] picks the conventional nodes and
 /// enables the VT guard — the right answer for a fullscreen app on the active
-/// console.
+/// console — and honors the `FBUI_BACKEND` environment variable (`drm`,
+/// `fbdev`, or `term`) so any binary can be redirected without a rebuild.
 #[derive(Debug, Clone)]
 pub struct PlatformConfig {
     /// DRM card node to try first.
@@ -73,6 +76,9 @@ pub struct PlatformConfig {
     /// Skip DRM entirely and go straight to fbdev (for boards where DRM is
     /// flaky or absent).
     pub prefer_fbdev: bool,
+    /// Skip the device backends entirely and run inside the controlling
+    /// terminal emulator (requires the `term` feature; see [`term`]).
+    pub prefer_term: bool,
     /// Prefer the libinput backend over raw evdev (requires the `libinput`
     /// feature; falls back to evdev if it can't initialize).
     pub prefer_libinput: bool,
@@ -83,11 +89,13 @@ pub struct PlatformConfig {
 
 impl Default for PlatformConfig {
     fn default() -> Self {
+        let backend = std::env::var("FBUI_BACKEND").unwrap_or_default();
         PlatformConfig {
             card: PathBuf::from("/dev/dri/card0"),
             fb: PathBuf::from("/dev/fb0"),
             tty: PathBuf::from("/dev/tty"),
-            prefer_fbdev: false,
+            prefer_fbdev: backend == "fbdev",
+            prefer_term: backend == "term",
             prefer_libinput: false,
             vt_guard: true,
         }
@@ -115,8 +123,24 @@ impl Platform {
     /// fbdev), take the console, wire cooperative switching when there's no seat
     /// manager, and open the input devices.
     pub fn new(config: &PlatformConfig) -> Result<Self> {
+        #[cfg(feature = "term")]
+        if config.prefer_term {
+            return Self::new_term();
+        }
+
         let mut seat = open_seat()?;
-        let display = open_display(seat.as_mut(), config)?;
+        let display = match open_display(seat.as_mut(), config) {
+            Ok(d) => d,
+            // No DRM and no fbdev, but we're attached to a capable terminal
+            // emulator (the "`cargo run` over SSH / on a dev box" case): run
+            // in the terminal rather than dying.
+            #[cfg(feature = "term")]
+            Err(e) if term::suitable_for_fallback() => {
+                eprintln!("[platform] no display device ({e}); falling back to the terminal");
+                return Self::new_term();
+            }
+            Err(e) => return Err(e),
+        };
         let info = display.info();
         eprintln!(
             "[platform] display {}x{} {:?} via {:?} ({} buffer{})",
@@ -168,6 +192,32 @@ impl Platform {
             info,
             #[cfg(feature = "event-loop")]
             uevent,
+        })
+    }
+
+    /// Bring the platform up *inside the controlling terminal*: the terminal
+    /// emulator is the display (kitty graphics or half-block cells) and the
+    /// input device (keys + SGR mouse). No device nodes, no VT guard, no seat.
+    #[cfg(feature = "term")]
+    fn new_term() -> Result<Self> {
+        let (display, input) = term::open_pair()?;
+        let info = display.info();
+        eprintln!(
+            "[platform] display {}x{} {:?} via {:?} ({:?} protocol)",
+            info.size.w,
+            info.size.h,
+            info.format,
+            info.backend,
+            display.protocol(),
+        );
+        Ok(Platform {
+            display: Box::new(display),
+            inputs: vec![Box::new(input)],
+            seat: Box::new(term::TermSeat),
+            vt: VtGuard::disabled(),
+            info,
+            #[cfg(feature = "event-loop")]
+            uevent: None,
         })
     }
 

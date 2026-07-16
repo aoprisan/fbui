@@ -64,6 +64,9 @@ pub enum BackendKind {
     DrmDumb,
     /// Legacy `/dev/fb0` mmap, optionally double-buffered by panning.
     Fbdev,
+    /// A terminal emulator (kitty graphics protocol or half-block cells) —
+    /// the development/SSH path; see [`crate::term`].
+    Terminal,
 }
 
 /// A back buffer borrowed for the duration of one frame.

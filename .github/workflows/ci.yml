@@ -40,6 +40,8 @@ jobs:
           cargo check -p fbui-platform --no-default-features --features "fbdev noseat"
           cargo check -p fbui-platform --no-default-features --features "drm-backend noseat"
           cargo check -p fbui-platform --no-default-features --features "fbdev evdev event-loop noseat"
+          # The terminal backend stands alone (no device backends at all).
+          cargo check -p fbui-platform --no-default-features --features "term"
           # The render layer headless (default) and with the platform glue.
           cargo clippy -p fbui-render --all-targets --features platform
           # SVG icon support (resvg): lint plus its unit tests.

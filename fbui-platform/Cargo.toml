@@ -14,10 +14,14 @@ publish = false
 # session path, and the calloop event loop. The libinput/libseat/xkbcommon
 # backends are gated off because they link system libraries; enable them on
 # hosts (and CI images) that provide the headers.
-default = ["drm-backend", "fbdev", "evdev", "noseat", "event-loop"]
+default = ["drm-backend", "fbdev", "evdev", "noseat", "event-loop", "term"]
 
 drm-backend = ["dep:drm"]
 fbdev = []
+# Terminal backend: present frames into a terminal emulator (kitty graphics
+# protocol or truecolor half-blocks) and read keys/mouse from it. Pure Rust,
+# no devices, no privileges — the development/SSH/CI path.
+term = []
 
 # Input: raw evdev (pure Rust) is the portable default; libinput is the richer
 # path (hotplug, gestures, calibration) but needs the C library.
@@ -60,3 +64,8 @@ name = "integration"
 # Compiles under default features; the DRM/uinput cases are `#[ignore]` and only
 # run in a privileged CI container.
 required-features = ["drm-backend", "fbdev", "evdev"]
+
+[[test]]
+name = "term_pty"
+# Runs unprivileged against a pty pair — part of the ordinary `cargo test` run.
+required-features = ["term"]
