@@ -60,7 +60,22 @@ pub mod keysym {
     pub const UP: Keysym = Keysym(0xFF52);
     pub const RIGHT: Keysym = Keysym(0xFF53);
     pub const DOWN: Keysym = Keysym(0xFF54);
+    pub const PAGE_UP: Keysym = Keysym(0xFF55);
+    pub const PAGE_DOWN: Keysym = Keysym(0xFF56);
     pub const END: Keysym = Keysym(0xFF57);
+    pub const INSERT: Keysym = Keysym(0xFF63);
+    pub const F1: Keysym = Keysym(0xFFBE);
+    pub const F2: Keysym = Keysym(0xFFBF);
+    pub const F3: Keysym = Keysym(0xFFC0);
+    pub const F4: Keysym = Keysym(0xFFC1);
+    pub const F5: Keysym = Keysym(0xFFC2);
+    pub const F6: Keysym = Keysym(0xFFC3);
+    pub const F7: Keysym = Keysym(0xFFC4);
+    pub const F8: Keysym = Keysym(0xFFC5);
+    pub const F9: Keysym = Keysym(0xFFC6);
+    pub const F10: Keysym = Keysym(0xFFC7);
+    pub const F11: Keysym = Keysym(0xFFC8);
+    pub const F12: Keysym = Keysym(0xFFC9);
     pub const NONE: Keysym = Keysym(0);
 }
 

@@ -19,6 +19,43 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Added
 
+- **Terminal backend** (`fbui-platform` feature `term`, in the default set) —
+  run any unmodified fbui app *inside a terminal*: over SSH, in a terminal
+  emulator on a dev machine, in CI. `FBUI_BACKEND=term` forces it; when DRM
+  and fbdev both fail and the process is attached to a capable terminal
+  (`$TERM` not empty/`dumb`/`linux`), the platform now falls back to it
+  instead of dying. Two pixel protocols, auto-detected
+  (`FBUI_TERM_PROTOCOL=kitty|cells` overrides): the **kitty graphics
+  protocol** (kitty/Ghostty/WezTerm) shows real pixels at full resolution
+  with damage sent as small patch images over a ping-ponged base frame — a
+  button repaint costs bytes proportional to the button, which is what makes
+  it usable over SSH; **half-block cells** (`▀` + 24-bit SGR, 2 px per cell)
+  works in any truecolor terminal as a preview. Input parses the terminal
+  byte stream into the normal normalized events: UTF-8 keys and CSI/SS3
+  sequences with modifiers (each key synthesized as press+release — terminals
+  report no release), and SGR mouse buttons/motion/wheel with
+  pixel-precision coordinates (mode 1016) in kitty mode. Terminal resize
+  rides the existing hotplug path (`reconfigure` → `on_display_changed`).
+  The raw-mode/alt-screen/mouse/image state is restored on **every** exit
+  path — drop, panic, fatal signals — mirroring the VT guard. Pure Rust, no
+  new dependencies; tested headless against pty pairs
+  (`fbui-platform/tests/term_pty.rs`). See `docs/terminal-backend.md`.
+- **Named keysyms** for PageUp/PageDown/Insert/F1–F12 in
+  `fbui_platform::keysym` (the terminal parser emits them; evdev apps can now
+  match them by name too).
+- **Input session record & replay** (`fbui` runner) — set `FBUI_RECORD=path`
+  to capture the normalized input stream of a live session (flushed per
+  event, so a crashed session's recording survives — that's the artifact you
+  wanted), and `FBUI_REPLAY=path` to play it back through *exactly* the live
+  input path (gestures, focus, kinetic scrolling, `App::update`).
+  `FBUI_REPLAY_SPEED=n|max` scales the clock; `FBUI_REPLAY_SHOT=end.png`
+  captures the settled end state and exits (`FBUI_REPLAY_EXIT` overrides).
+  The format is hand-editable line-oriented text (`fbui-rec` v1, timestamps
+  clamped monotonic, unknown lines skipped). Together with the terminal
+  backend this makes a recorded kiosk flow a headless CI regression test:
+  replay at `max` speed on `FBUI_BACKEND=term`, screenshot, compare — end
+  states verified byte-identical across runs. See `docs/record-replay.md`.
+
 - **The popup layer** — floating overlays can now be *interactive*.
   `Ui::open_popup(owner, PopupOptions)` (or `EventCtx::open_popup` from a
   handler) promotes a widget's overlay into a popup: pointer events inside the
@@ -115,6 +152,20 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Changed
 
+- **`BackendKind` is now `#[non_exhaustive]` and gained the `Terminal`
+  variant** (breaking): downstream matches need a wildcard arm (once — the
+  planned GPU backend then arrives without another break).
+- **`PlatformConfig` gained `prefer_term`** (breaking for struct literals not
+  using `..Default::default()`), and **`PlatformConfig::default()` now reads
+  `FBUI_BACKEND`** (`drm`/`fbdev`/`term`; unknown values are warned about and
+  ignored), so existing binaries gain backend selection without a rebuild.
+  Requesting `term` on a build without the feature is a
+  `FeatureDisabled` error, never a silent fall-through to a device backend.
+- **`fbui-platform`'s default feature set now includes `term`**, and
+  `Platform::new` falls back to the terminal backend when DRM and fbdev both
+  fail *and* the process is attached to a capable terminal emulator. Builds
+  that must never touch the controlling terminal can omit the feature or set
+  `FBUI_BACKEND=drm`/`fbdev`, which disables the fallback.
 - **`Event` is now `#[non_exhaustive]`** (breaking): downstream matches need a
   wildcard arm. Added the `Event::PopupDismissed` variant, delivered to a
   popup's owner when the `Ui` dismisses it (click-away, or a press landing in

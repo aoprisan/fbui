@@ -110,11 +110,13 @@ fbui-testkit   golden-PNG snapshot harness (dev-dependency only)
 - **`fbui-platform/src/`** — `display/` (`drm.rs` primary, `fbdev.rs` fallback),
   `input/` (`evdev.rs` default, `libinput.rs` feature, `keymap.rs`), `seat/`
   (`noseat.rs`, `libseat.rs`), `vt.rs` (`VtGuard` — restore on every exit path),
-  `event_loop.rs` (calloop; apps implement `PlatformHandler`), `uevent.rs`
+  `term/` (terminal backend: kitty-graphics/half-block display + ANSI input,
+  `FBUI_BACKEND=term`, see `docs/terminal-backend.md`), `event_loop.rs`
+  (calloop; apps implement `PlatformHandler`), `uevent.rs`
   (netlink hotplug trigger). Backends are chosen at **runtime** with fallback
-  (DRM→fbdev, libinput→evdev, libseat→noseat); see the `open_*` functions in
-  `lib.rs`. When adding a backend, keep this pattern: feature-gate the impl, box
-  it behind the trait, and fall back gracefully.
+  (DRM→fbdev→terminal, libinput→evdev, libseat→noseat); see the `open_*`
+  functions in `lib.rs`. When adding a backend, keep this pattern: feature-gate
+  the impl, box it behind the trait, and fall back gracefully.
 - **`fbui-render/src/`** — `surface.rs` (shadow buffer + damage + `copy_out` +
   `scroll_region`), `painter.rs`, `text/` (cosmic-text + glyph atlas),
   `copyout.rs` (XRGB/RGB565+dither), `platform_glue.rs` (the only
@@ -135,7 +137,7 @@ the runner (examples require it), `bundled-font` compiles in Inter (~300 KB),
 `profile` emits `tracing` spans.
 
 `fbui-platform`: the **default set is everything that builds with no system C
-libraries**: `drm-backend fbdev evdev noseat event-loop`. The C-library backends
+libraries**: `drm-backend fbdev evdev noseat event-loop term`. The C-library backends
 (`libinput`, `xkbcommon`, `libseat`) are gated off and **have not been built or
 run in the dev environment** (the box lacks the libs) — treat them as
 written-against-docs and validate on a host with the headers installed.
