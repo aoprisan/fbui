@@ -200,3 +200,43 @@ fn kitty_mode_full_frame_reaches_the_terminal_intact() {
     );
     assert!(out.contains("\x1b\\"), "APC terminated");
 }
+
+#[test]
+fn escape_prefixed_key_survives_a_split_after_escape() {
+    let (master, slave) = pty(20, 8);
+    let term = FakeTerminal::start(master);
+    let (_display, mut input) = open_pair_on(slave, &setup(TermProtocol::Cells)).expect("bring-up");
+    term.take_output();
+
+    // Make ESC readable by itself, then deliver the rest while dispatch is in
+    // its ambiguity grace period. A read-batch boundary must not become an
+    // Escape keypress (which the fbui runner interprets as quit).
+    term.send(b"\x1b");
+    let writer = term.master.clone();
+    let tail = std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        let bytes = b"[A";
+        // SAFETY: write the sequence tail to the live pty master.
+        let n = unsafe {
+            libc::write(
+                writer.as_raw_fd(),
+                bytes.as_ptr() as *const libc::c_void,
+                bytes.len(),
+            )
+        };
+        assert_eq!(n, bytes.len() as isize);
+    });
+
+    let mut events = Vec::new();
+    input.dispatch(&mut |e| events.push(e)).unwrap();
+    tail.join().expect("sequence-tail writer");
+
+    let pressed: Vec<_> = events
+        .iter()
+        .filter_map(|e| match e {
+            InputEvent::Key(k) if k.state == KeyState::Pressed => Some(k.keysym),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(pressed, vec![keysym::UP], "{events:?}");
+}

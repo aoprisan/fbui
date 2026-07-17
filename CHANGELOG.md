@@ -49,7 +49,8 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
   wanted), and `FBUI_REPLAY=path` to play it back through *exactly* the live
   input path (gestures, focus, kinetic scrolling, `App::update`).
   `FBUI_REPLAY_SPEED=n|max` scales the clock; `FBUI_REPLAY_SHOT=end.png`
-  captures the settled end state and exits (`FBUI_REPLAY_EXIT` overrides).
+  captures the settled end state and exits (`FBUI_REPLAY_EXIT` overrides),
+  with a bounded settle window so perpetual animations cannot hang CI.
   The format is hand-editable line-oriented text (`fbui-rec` v1, timestamps
   clamped monotonic, unknown lines skipped). Together with the terminal
   backend this makes a recorded kiosk flow a headless CI regression test:

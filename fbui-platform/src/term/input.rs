@@ -28,6 +28,13 @@ use super::Shared;
 
 /// X11 keysym offset for Unicode codepoints beyond Latin-1.
 const UNICODE_KEYSYM: u32 = 0x0100_0000;
+/// Grace period for distinguishing a real Escape press from the first byte of
+/// a CSI/SS3/Alt sequence fragmented by a pty, serial link, or SSH transport.
+const ESC_DISAMBIGUATE_MS: libc::c_int = 50;
+/// Malformed or unterminated terminal strings must not retain input forever.
+/// Ordinary key/mouse responses are tens of bytes; 4 KiB leaves ample room
+/// while bounding both memory and repeated rescanning.
+const MAX_ESCAPE_SEQUENCE: usize = 4 * 1024;
 
 pub struct TermInput {
     shared: Arc<Shared>,
@@ -80,8 +87,16 @@ impl InputSource for TermInput {
                 events: libc::POLLIN,
                 revents: 0,
             };
-            // SAFETY: zero-timeout poll to test readability of our own fd.
-            let ready = unsafe { libc::poll(&mut pfd, 1, 0) };
+            // A lone ESC is ambiguous: wait briefly for the rest of a sequence
+            // instead of treating the current read boundary as semantic. All
+            // other reads remain nonblocking.
+            let timeout = if self.parser.has_lone_escape() {
+                ESC_DISAMBIGUATE_MS
+            } else {
+                0
+            };
+            // SAFETY: polling one live fd with a bounded timeout.
+            let ready = unsafe { libc::poll(&mut pfd, 1, timeout) };
             if ready < 0 {
                 let err = std::io::Error::last_os_error();
                 if err.raw_os_error() == Some(libc::EINTR) {
@@ -200,9 +215,21 @@ impl Parser {
                 Step::Consumed(n) => {
                     self.buf.drain(..n);
                 }
-                Step::NeedMore => return,
+                Step::NeedMore => {
+                    if self.buf.len() > MAX_ESCAPE_SEQUENCE {
+                        // Drop the allocation as well as its contents: a single
+                        // hostile string must not leave a permanently huge
+                        // parser buffer behind. The next byte starts fresh.
+                        self.buf = Vec::new();
+                    }
+                    return;
+                }
             }
         }
+    }
+
+    fn has_lone_escape(&self) -> bool {
+        self.buf == [0x1b]
     }
 
     /// The read loop found no more bytes: a buffered lone ESC is the Escape
@@ -747,6 +774,22 @@ mod tests {
         assert_eq!(keys.len(), 2);
         assert_eq!(keys[0].0, keysym::ESCAPE);
         assert_eq!(keys[1].0, keysym::UP);
+    }
+
+    #[test]
+    fn oversized_unterminated_sequence_is_dropped_and_parser_recovers() {
+        let scale = cells_scale();
+        let mut p = Parser::default();
+        let mut out = Vec::new();
+        let mut malformed = b"\x1b]".to_vec();
+        malformed.resize(MAX_ESCAPE_SEQUENCE + 1, b'x');
+        p.feed(&malformed, &scale, &mut |e| out.push(e));
+        assert!(out.is_empty());
+        assert!(p.buf.is_empty(), "oversized sequence was retained");
+        assert_eq!(p.buf.capacity(), 0, "oversized allocation was retained");
+
+        p.feed(b"z", &scale, &mut |e| out.push(e));
+        assert_eq!(pressed_keys(&out)[0].0, Keysym('z' as u32));
     }
 
     #[test]

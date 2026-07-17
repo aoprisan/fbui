@@ -32,7 +32,7 @@ screenshots (settled UI; see "Determinism" below).
 | `FBUI_RECORD=path` | Append every input event to `path` (created fresh; flushed per event, so a crash session's recording survives — that's the artifact you wanted). |
 | `FBUI_REPLAY=path` | Load and play a recording. Live input still works during playback (Esc still quits). |
 | `FBUI_REPLAY_SPEED=n\|max` | Wall-clock multiplier (default `1`). `max` delivers everything as fast as frames render. |
-| `FBUI_REPLAY_SHOT=path.png` | After the last event, wait for animations to settle, then write a PNG of the end state. |
+| `FBUI_REPLAY_SHOT=path.png` | After the last event, wait up to 300 animation frames for settling, then write a PNG of the end state. |
 | `FBUI_REPLAY_EXIT=0\|1` | What happens when playback ends. Unset: *as recorded* — a replayed Esc exits exactly as it did live (unless a shot is requested, which implies `1`). `1`: the replayer owns the ending — the recording's quit keystroke is swallowed, the shot (if any) is captured, then the app exits. `0`: same swallow, but the app stays running interactively after playback. |
 
 A recording notes the surface size it was made on; replaying on a different
@@ -67,8 +67,10 @@ recognizer runs on the **recording's own timeline**, not the wall clock —
 long-press holds and fling velocities replay identically at any
 `FBUI_REPLAY_SPEED`, including `max`. What is *not* frame-exact between
 runs: animations advance by real frame `dt`, so mid-flight frames differ —
-only settled states are comparable, which is why the shot waits for
-animations to finish.
+only settled states are comparable. A shot waits up to 300 frames for finite
+animations to finish; if an animation is intentionally perpetual (for example,
+a running spinner), fbui logs a warning and captures its current state instead
+of hanging the replay.
 
 Record at the platform-event level means recordings capture *intent* (what
 the user did), not widget identities — a recording survives refactors that

@@ -24,6 +24,8 @@
 //! tweens) advance by real frame `dt`, so mid-flight pixels can differ
 //! between runs; *settled* end states — what [`FBUI_REPLAY_SHOT`] captures —
 //! are stable because events are delivered at the same logical positions.
+//! A perpetually animated UI is captured after a bounded settle window rather
+//! than blocking an unattended replay forever.
 //!
 //! [`FBUI_REPLAY_SHOT`]: crate::run()
 

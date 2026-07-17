@@ -31,6 +31,10 @@ const WHEEL_STEP: f32 = 48.0;
 
 /// Frame cadence while animating or mid-gesture, and the poll bound then.
 const FRAME: Duration = Duration::from_millis(16);
+/// Maximum animation frames an end-state replay screenshot waits before
+/// capturing the current state. This lets finite tweens and kinetic scrolling
+/// settle without hanging forever on intentional loops such as `Spinner`.
+const REPLAY_MAX_SETTLE_FRAMES: u16 = 300;
 
 /// A clonable, `Send` handle for delivering messages into the running app from
 /// another thread — a worker computing results, an IPC reader, a progress feed.
@@ -168,9 +172,12 @@ struct ReplayState {
     shot: Option<PathBuf>,
     /// What to do when playback finishes.
     end: ReplayEnd,
-    /// Frames still to render after the last event, so the shot captures the
-    /// settled UI. `None` until playback finishes (and animations stop).
+    /// Frames still to render after settling (or its bounded wait expires), so
+    /// the requested shot is painted before the replay exits.
     finish_frames: Option<u8>,
+    /// Animation frames observed after playback ended. Bounded so perpetual
+    /// animations cannot prevent an unattended screenshot/exit forever.
+    settle_frames: u16,
 }
 
 /// Build the recorder and replayer from `FBUI_RECORD` / `FBUI_REPLAY` (see
@@ -230,6 +237,7 @@ fn record_replay_from_env(
                 shot,
                 end,
                 finish_frames: None,
+                settle_frames: 0,
             })
         }
         None => None,
@@ -578,11 +586,29 @@ impl<A: App> Runner<A> {
             }
         }
         if rs.player.finished() {
+            let shot_pending = rs.shot.is_some();
+            let animating = self.ui.is_animating();
             match rs.finish_frames {
                 // Playback ended: let running animations (kinetic coasts,
-                // tweens) settle before capturing anything.
-                None if self.ui.is_animating() => flow = Flow::Redraw,
+                // tweens) settle before capturing anything. A bounded frame
+                // budget prevents perpetual animations from hanging CI.
+                None if should_wait_for_replay_settle(
+                    shot_pending,
+                    animating,
+                    rs.settle_frames,
+                ) =>
+                {
+                    rs.settle_frames += 1;
+                    flow = Flow::Redraw;
+                }
                 None => {
+                    if shot_pending && animating {
+                        eprintln!(
+                            "fbui: replay: animations still running after {} settle frames; \
+                             capturing the current state",
+                            REPLAY_MAX_SETTLE_FRAMES
+                        );
+                    }
                     if let Some(path) = rs.shot.take() {
                         self.ui.request_screenshot(path);
                     }
@@ -625,6 +651,10 @@ impl<A: App> Runner<A> {
         self.replay = Some(rs);
         flow
     }
+}
+
+fn should_wait_for_replay_settle(shot_pending: bool, animating: bool, frames_waited: u16) -> bool {
+    shot_pending && animating && frames_waited < REPLAY_MAX_SETTLE_FRAMES
 }
 
 impl<A: App> PlatformHandler for Runner<A> {
@@ -835,5 +865,22 @@ mod tests {
         assert_send::<Waker>();
         assert_send::<Proxy<i32>>();
         assert_clone::<Proxy<i32>>();
+    }
+
+    #[test]
+    fn replay_settle_wait_is_bounded_for_perpetual_animations() {
+        assert!(should_wait_for_replay_settle(true, true, 0));
+        assert!(should_wait_for_replay_settle(
+            true,
+            true,
+            REPLAY_MAX_SETTLE_FRAMES - 1
+        ));
+        assert!(!should_wait_for_replay_settle(
+            true,
+            true,
+            REPLAY_MAX_SETTLE_FRAMES
+        ));
+        assert!(!should_wait_for_replay_settle(false, true, 0));
+        assert!(!should_wait_for_replay_settle(true, false, 0));
     }
 }
