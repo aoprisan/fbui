@@ -146,15 +146,30 @@ fn default_font_context() -> FontContext {
     FontContext::new()
 }
 
+/// What happens when playback runs out of events (`FBUI_REPLAY_EXIT`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ReplayEnd {
+    /// Unset, no shot: the recording speaks for itself — a replayed Esc exits
+    /// exactly as it did live, and a recording without one leaves the app
+    /// running.
+    AsRecorded,
+    /// Explicit `0`/`false`: swallow the recording's quit and keep the app
+    /// alive (interactive after playback).
+    Stay,
+    /// Explicit truthy, or defaulted by a shot: unattended run — swallow the
+    /// recording's quit, settle, capture, exit.
+    Exit,
+}
+
 /// Everything the runner tracks while a recording is being played back.
 struct ReplayState {
     player: Replayer,
     /// PNG of the end state, written after the last event has settled.
     shot: Option<PathBuf>,
-    /// Exit when playback (and the shot) are done.
-    exit_when_done: bool,
+    /// What to do when playback finishes.
+    end: ReplayEnd,
     /// Frames still to render after the last event, so the shot captures the
-    /// settled UI. `None` until playback finishes.
+    /// settled UI. `None` until playback finishes (and animations stop).
     finish_frames: Option<u8>,
 }
 
@@ -202,17 +217,18 @@ fn record_replay_from_env(
                 }
             }
             let shot = std::env::var_os("FBUI_REPLAY_SHOT").map(PathBuf::from);
-            let exit_when_done = match std::env::var("FBUI_REPLAY_EXIT").ok().as_deref() {
-                Some("0") | Some("false") => false,
-                Some(_) => true,
+            let end = match std::env::var("FBUI_REPLAY_EXIT").ok().as_deref() {
+                Some("0") | Some("false") => ReplayEnd::Stay,
+                Some(_) => ReplayEnd::Exit,
                 // A shot implies an unattended run; default to exiting then.
-                None => shot.is_some(),
+                None if shot.is_some() => ReplayEnd::Exit,
+                None => ReplayEnd::AsRecorded,
             };
             eprintln!("fbui: replaying input from {}", path.display());
             Some(ReplayState {
                 player,
                 shot,
-                exit_when_done,
+                end,
                 finish_frames: None,
             })
         }
@@ -270,6 +286,7 @@ pub fn run<A: App>(mut app: A) -> fbui_platform::Result<()> {
         timers: TimerQueue::new(),
         recorder,
         replay,
+        replay_now_ms: None,
     };
     platform.run(&mut runner)
 }
@@ -310,6 +327,11 @@ struct Runner<A: App> {
     /// `FBUI_REPLAY`: a recording being fed back through
     /// [`handle_input`](Self::handle_input) on the (speed-scaled) clock.
     replay: Option<ReplayState>,
+    /// While replaying, [`now_ms`](Self::now_ms) reports the *recording's*
+    /// timeline (the timestamp of the last delivered event) instead of the
+    /// wall clock, so time-sensitive gestures — long-press holds, fling
+    /// velocities — replay identically at any `FBUI_REPLAY_SPEED`.
+    replay_now_ms: Option<u64>,
 }
 
 impl<A: App> Runner<A> {
@@ -321,9 +343,11 @@ impl<A: App> Runner<A> {
         )
     }
 
-    /// Milliseconds since the run started, for the gesture recognizer's clock.
+    /// Milliseconds since the run started, for the gesture recognizer's
+    /// clock. During replay this is the recording's own timeline.
     fn now_ms(&self) -> u64 {
-        self.start.elapsed().as_millis() as u64
+        self.replay_now_ms
+            .unwrap_or_else(|| self.start.elapsed().as_millis() as u64)
     }
 
     /// Turn a recognized gesture into a widget event (and start the kinetic
@@ -526,31 +550,39 @@ impl<A: App> Runner<A> {
 
     /// Feed the replayer's due events through the normal input path. Returns
     /// the flow the replay wants (redraws while playing, and — once finished,
-    /// screenshotted, and settled — an exit if configured).
+    /// settled, and screenshotted — an exit if configured).
     fn service_replay(&mut self) -> Flow {
         let Some(mut rs) = self.replay.take() else {
             return Flow::Continue;
         };
         let mut flow = Flow::Continue;
-        for ev in rs.player.due_events() {
+        for (ms, ev) in rs.player.due_events() {
+            // Replay the *timeline*, not just the events: advance the gesture
+            // clock to this event's recorded time first, so a held long-press
+            // fires between a down and an up even at FBUI_REPLAY_SPEED=max.
+            self.replay_now_ms = Some(ms);
+            for g in self.gestures.poll(ms) {
+                self.apply_gesture(g);
+            }
             match self.handle_input(ev) {
-                // A replayed Esc ends an unattended run only after the shot:
-                // recordings usually end with the Esc that quit them.
-                Flow::Exit if rs.shot.is_some() => {}
-                Flow::Exit => flow = Flow::Exit,
-                Flow::Redraw => {
-                    if flow == Flow::Continue {
-                        flow = Flow::Redraw;
-                    }
+                // The recording's own quit keystroke ends the run only when
+                // the end is "as recorded"; a managed run (Stay / Exit /
+                // shot) owns its ending.
+                Flow::Exit if rs.end == ReplayEnd::AsRecorded => {
+                    self.replay_now_ms = None;
+                    return Flow::Exit; // replay state dropped here
                 }
+                Flow::Exit => {}
+                Flow::Redraw => flow = Flow::Redraw,
                 Flow::Continue => {}
             }
         }
         if rs.player.finished() {
             match rs.finish_frames {
+                // Playback ended: let running animations (kinetic coasts,
+                // tweens) settle before capturing anything.
+                None if self.ui.is_animating() => flow = Flow::Redraw,
                 None => {
-                    // Playback just ended: ask for the end-state capture and
-                    // give the UI two frames to paint and fulfill it.
                     if let Some(path) = rs.shot.take() {
                         self.ui.request_screenshot(path);
                     }
@@ -558,14 +590,33 @@ impl<A: App> Runner<A> {
                     flow = Flow::Redraw;
                 }
                 Some(0) => {
-                    // Settled. Either leave the app running interactively or
-                    // end the unattended run.
-                    if rs.exit_when_done {
-                        return Flow::Exit;
+                    // Give the capture a last chance off the current surface,
+                    // and be loud if it never happened (a run that exits 0
+                    // without its artifact is worse than a noisy one).
+                    self.fulfill_screenshot();
+                    if let Some(p) = self.ui.take_screenshot_request() {
+                        eprintln!(
+                            "fbui: replay finished but the screenshot {} was never painted",
+                            p.display()
+                        );
                     }
-                    return flow; // replay state dropped here
+                    // A recording that ends mid-contact must not leave a
+                    // half-finished gesture armed on the live clock.
+                    for g in self.gestures.cancel() {
+                        self.apply_gesture(g);
+                    }
+                    self.replay_now_ms = None;
+                    // Exit the unattended run, or hand the app back to the
+                    // user (replay state dropped either way).
+                    return match rs.end {
+                        ReplayEnd::Exit => Flow::Exit,
+                        _ => flow,
+                    };
                 }
                 Some(n) => {
+                    // The shot is fulfilled by the next paint; ticking it here
+                    // too covers frames the display couldn't render.
+                    self.fulfill_screenshot();
                     rs.finish_frames = Some(n - 1);
                     flow = Flow::Redraw;
                 }

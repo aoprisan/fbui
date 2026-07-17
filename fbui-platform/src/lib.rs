@@ -90,6 +90,9 @@ pub struct PlatformConfig {
 impl Default for PlatformConfig {
     fn default() -> Self {
         let backend = std::env::var("FBUI_BACKEND").unwrap_or_default();
+        if !matches!(backend.as_str(), "" | "drm" | "fbdev" | "term") {
+            eprintln!("[platform] ignoring unknown FBUI_BACKEND={backend:?} (drm | fbdev | term)");
+        }
         PlatformConfig {
             card: PathBuf::from("/dev/dri/card0"),
             fb: PathBuf::from("/dev/fb0"),
@@ -126,6 +129,12 @@ impl Platform {
         #[cfg(feature = "term")]
         if config.prefer_term {
             return Self::new_term();
+        }
+        // Asking for the terminal on a build without it must fail loudly, not
+        // quietly take over the console with a device backend instead.
+        #[cfg(not(feature = "term"))]
+        if config.prefer_term {
+            return Err(Error::FeatureDisabled("term"));
         }
 
         let mut seat = open_seat()?;

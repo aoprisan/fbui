@@ -22,6 +22,7 @@
 //! `on_display_changed` path as an HDMI mode change.
 
 use std::os::unix::io::{AsRawFd, BorrowedFd};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use crate::display::{BackendKind, Display, DisplayInfo, Frame};
@@ -45,9 +46,11 @@ pub struct TermDisplay {
     info: DisplayInfo,
     cols: u32,
     rows: u32,
-    cell_w: u32,
-    cell_h: u32,
     shadow: Vec<u8>,
+    /// Our own normal-RAM allocation, so the stride is simply `w * 4` — the
+    /// "never compute a stride" invariant is about *kernel-mapped* buffers
+    /// with driver-chosen pitch; here we are the producer and report this
+    /// stride through `Frame::stride` for everyone else to use.
     stride: usize,
     /// False until the first present (and again after a resize): the next
     /// present transmits/paints the full surface.
@@ -57,9 +60,10 @@ pub struct TermDisplay {
     next_patch_id: u32,
     live_patches: Vec<u32>,
     next_z: i32,
-    /// Reused escape-byte scratch, so a present allocates nothing in steady
-    /// state.
+    /// Reused scratch buffers (escape bytes / extracted RGB), so a present
+    /// allocates nothing in steady state.
     out: Vec<u8>,
+    rgb: Vec<u8>,
 }
 
 impl TermDisplay {
@@ -68,9 +72,11 @@ impl TermDisplay {
         guard: TtyGuard,
         protocol: TermProtocol,
         ws: WinSize,
-        cell_px: (u32, u32),
     ) -> Self {
-        let (cell_w, cell_h) = cell_px;
+        let (cell_w, cell_h) = (
+            shared.cell_w.load(Ordering::Relaxed),
+            shared.cell_h.load(Ordering::Relaxed),
+        );
         let size = Self::surface_size(protocol, ws.cols, ws.rows, cell_w, cell_h);
         let stride = size.w as usize * 4;
         let info = DisplayInfo {
@@ -87,8 +93,6 @@ impl TermDisplay {
             info,
             cols: ws.cols,
             rows: ws.rows,
-            cell_w,
-            cell_h,
             shadow: vec![0; stride * size.h as usize],
             stride,
             presented_once: false,
@@ -97,7 +101,16 @@ impl TermDisplay {
             live_patches: Vec::new(),
             next_z: 1,
             out: Vec::new(),
+            rgb: Vec::new(),
         }
+    }
+
+    /// Cell geometry, read from the [`Shared`] single source of truth.
+    fn cell_px(&self) -> (u32, u32) {
+        (
+            self.shared.cell_w.load(Ordering::Relaxed).max(1),
+            self.shared.cell_h.load(Ordering::Relaxed).max(1),
+        )
     }
 
     fn surface_size(
@@ -119,23 +132,10 @@ impl TermDisplay {
     }
 
     fn write_out(&mut self) -> Result<()> {
-        let fd = self.shared.fd.as_raw_fd();
-        let mut buf = self.out.as_slice();
-        while !buf.is_empty() {
-            // SAFETY: write(2) on our blocking tty fd with an in-bounds buffer.
-            let n = unsafe { libc::write(fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
-            if n > 0 {
-                buf = &buf[n as usize..];
-            } else {
-                let err = std::io::Error::last_os_error();
-                if err.raw_os_error() == Some(libc::EINTR) {
-                    continue;
-                }
-                return Err(crate::error::Error::io("tty write", err));
-            }
-        }
+        let r = super::write_all(self.shared.fd.as_raw_fd(), &self.out)
+            .map_err(|e| crate::error::Error::io("tty write", e));
         self.out.clear();
-        Ok(())
+        r
     }
 
     fn present_kitty(&mut self, damage: &[Rect]) {
@@ -149,19 +149,14 @@ impl TermDisplay {
             let new_base = if self.base_slot { 1 } else { 2 };
             let old_base = if self.base_slot { 2 } else { 1 };
             self.base_slot = !self.base_slot;
-            let rgb = encode::rgb_of_rect(&self.shadow, self.stride, surface);
+            encode::rgb_of_rect_into(&mut self.rgb, &self.shadow, self.stride, surface);
             encode::csi_goto(&mut self.out, 1, 1);
             encode::kitty_transmit(
                 &mut self.out,
-                &rgb,
+                &self.rgb,
                 surface.w,
                 surface.h,
-                encode::KittyPlacement {
-                    id: new_base,
-                    z: 0,
-                    x_off: 0,
-                    y_off: 0,
-                },
+                encode::KittyPlacement::base(new_base),
             );
             // New frame is on screen; now drop the stale layers beneath/above.
             if self.presented_once {
@@ -176,10 +171,11 @@ impl TermDisplay {
             return;
         }
 
+        let (cell_w, cell_h) = self.cell_px();
         for &rect in damage {
-            let rgb = encode::rgb_of_rect(&self.shadow, self.stride, rect);
-            let col = rect.x as u32 / self.cell_w;
-            let row = rect.y as u32 / self.cell_h;
+            encode::rgb_of_rect_into(&mut self.rgb, &self.shadow, self.stride, rect);
+            let col = rect.x as u32 / cell_w;
+            let row = rect.y as u32 / cell_h;
             let id = self.next_patch_id;
             self.next_patch_id += 1;
             let z = self.next_z;
@@ -187,14 +183,14 @@ impl TermDisplay {
             encode::csi_goto(&mut self.out, row + 1, col + 1);
             encode::kitty_transmit(
                 &mut self.out,
-                &rgb,
+                &self.rgb,
                 rect.w,
                 rect.h,
                 encode::KittyPlacement {
                     id,
                     z,
-                    x_off: rect.x as u32 % self.cell_w,
-                    y_off: rect.y as u32 % self.cell_h,
+                    x_off: rect.x as u32 % cell_w,
+                    y_off: rect.y as u32 % cell_h,
                 },
             );
             self.live_patches.push(id);
@@ -269,12 +265,24 @@ impl Display for TermDisplay {
 
     fn reconfigure(&mut self) -> Result<Option<DisplayInfo>> {
         let ws = super::winsize(self.shared.fd.as_raw_fd())?;
-        if ws.cols == self.cols && ws.rows == self.rows {
+        // A resize (or terminal font-size change) may change the cell pixel
+        // size too; re-derive it when the kernel reports the text area in
+        // pixels, and publish it for the mouse scaler.
+        let (cell_w, cell_h) = match self.protocol {
+            TermProtocol::Cells => (1, 2),
+            TermProtocol::Kitty if ws.x_px > 0 && ws.y_px > 0 => {
+                ((ws.x_px / ws.cols).max(1), (ws.y_px / ws.rows).max(1))
+            }
+            TermProtocol::Kitty => self.cell_px(),
+        };
+        if ws.cols == self.cols && ws.rows == self.rows && (cell_w, cell_h) == self.cell_px() {
             return Ok(None);
         }
         self.cols = ws.cols;
         self.rows = ws.rows;
-        let size = Self::surface_size(self.protocol, ws.cols, ws.rows, self.cell_w, self.cell_h);
+        self.shared.cell_w.store(cell_w, Ordering::Relaxed);
+        self.shared.cell_h.store(cell_h, Ordering::Relaxed);
+        let size = Self::surface_size(self.protocol, ws.cols, ws.rows, cell_w, cell_h);
         self.stride = size.w as usize * 4;
         self.shadow = vec![0; self.stride * size.h as usize];
         self.info.size = size;
@@ -481,6 +489,215 @@ mod tests {
         assert!(
             bytes.contains("\x1b[2J"),
             "screen cleared on resize: {bytes:?}"
+        );
+    }
+
+    // ---- a minimal kitty-graphics "terminal" for the equivalence test ----
+
+    /// One transmitted image and where it was placed.
+    struct PlacedImage {
+        id: u32,
+        col: u32,
+        row: u32, // 0-based anchor cell
+        x_off: u32,
+        y_off: u32,
+        z: i32,
+        w: u32,
+        h: u32,
+        rgb: Vec<u8>,
+        seq: usize, // placement order breaks z ties (later wins)
+    }
+
+    fn b64_decode(s: &str) -> Vec<u8> {
+        const AL: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let val = |c: u8| AL.iter().position(|&a| a == c).unwrap() as u32;
+        let s: Vec<u8> = s.bytes().filter(|&c| c != b'=').collect();
+        let mut out = Vec::new();
+        for chunk in s.chunks(4) {
+            let mut n = 0u32;
+            for (i, &c) in chunk.iter().enumerate() {
+                n |= val(c) << (18 - 6 * i);
+            }
+            out.push((n >> 16) as u8);
+            if chunk.len() > 2 {
+                out.push((n >> 8) as u8);
+            }
+            if chunk.len() > 3 {
+                out.push(n as u8);
+            }
+        }
+        out
+    }
+
+    /// Interpret a captured escape stream the way a kitty terminal would:
+    /// track cursor moves, accumulate chunked `a=T` transmits as placed
+    /// images (a retransmitted id replaces its predecessor), honor
+    /// `a=d,d=I` / `d=A` deletes.
+    fn kitty_interpret(stream: &str, images: &mut Vec<PlacedImage>, seq: &mut usize) {
+        let (mut cur_col, mut cur_row) = (1u32, 1u32);
+        // A chunked transmit in flight: (image skeleton, base64 so far).
+        let mut pending: Option<(PlacedImage, String)> = None;
+        let mut rest = stream;
+        while let Some(esc) = rest.find('\x1b') {
+            rest = &rest[esc + 1..];
+            if let Some(after) = rest.strip_prefix('[') {
+                // CSI: only cursor moves matter here.
+                if let Some(end) = after.find(|c: char| c.is_ascii_alphabetic()) {
+                    if after.as_bytes()[end] == b'H' {
+                        let mut it = after[..end].split(';');
+                        cur_row = it.next().and_then(|v| v.parse().ok()).unwrap_or(1);
+                        cur_col = it.next().and_then(|v| v.parse().ok()).unwrap_or(1);
+                    }
+                    rest = &after[end + 1..];
+                }
+                continue;
+            }
+            let Some(apc) = rest.strip_prefix("_G") else {
+                continue;
+            };
+            let st = apc.find("\x1b\\").expect("unterminated APC");
+            let body = &apc[..st];
+            rest = &apc[st + 2..];
+            let (ctrl, payload) = body.split_once(';').unwrap_or((body, ""));
+            let keys: std::collections::HashMap<&str, &str> = ctrl
+                .split(',')
+                .filter_map(|kv| kv.split_once('='))
+                .collect();
+            let more = keys.get("m") == Some(&"1");
+
+            if pending.is_some() {
+                // Continuation chunk: payload only.
+                let (_, b64) = pending.as_mut().unwrap();
+                b64.push_str(payload);
+                if !more {
+                    let (mut img, b64) = pending.take().unwrap();
+                    img.rgb = b64_decode(&b64);
+                    images.push(img);
+                }
+                continue;
+            }
+            match keys.get("a").copied() {
+                Some("T") => {
+                    let get = |k: &str| keys.get(k).and_then(|v| v.parse::<i64>().ok());
+                    let id = get("i").expect("i=") as u32;
+                    images.retain(|i| i.id != id); // retransmit replaces
+                    *seq += 1;
+                    let mut img = PlacedImage {
+                        id,
+                        col: cur_col - 1,
+                        row: cur_row - 1,
+                        x_off: get("X").unwrap_or(0) as u32,
+                        y_off: get("Y").unwrap_or(0) as u32,
+                        z: get("z").unwrap_or(0) as i32,
+                        w: get("s").expect("s=") as u32,
+                        h: get("v").expect("v=") as u32,
+                        rgb: Vec::new(),
+                        seq: *seq,
+                    };
+                    if more {
+                        pending = Some((img, payload.to_string()));
+                    } else {
+                        img.rgb = b64_decode(payload);
+                        images.push(img);
+                    }
+                }
+                Some("d") => match keys.get("d").copied() {
+                    Some("I") => {
+                        let id: u32 = keys.get("i").unwrap().parse().unwrap();
+                        images.retain(|i| i.id != id);
+                    }
+                    Some("A") => images.clear(),
+                    _ => {}
+                },
+                _ => {}
+            }
+        }
+        assert!(pending.is_none(), "stream ended mid-transmit");
+    }
+
+    /// Composite the placed images (z order, then placement order) into an
+    /// RGB surface of `w`×`h` pixels at `cell_w`×`cell_h` px per cell.
+    fn composite(images: &[PlacedImage], w: u32, h: u32, cell_w: u32, cell_h: u32) -> Vec<u8> {
+        let mut order: Vec<&PlacedImage> = images.iter().collect();
+        order.sort_by_key(|i| (i.z, i.seq));
+        let mut out = vec![0u8; (w * h * 3) as usize];
+        for img in order {
+            let ox = img.col * cell_w + img.x_off;
+            let oy = img.row * cell_h + img.y_off;
+            for y in 0..img.h {
+                for x in 0..img.w {
+                    let (dx, dy) = (ox + x, oy + y);
+                    if dx >= w || dy >= h {
+                        continue;
+                    }
+                    let src = ((y * img.w + x) * 3) as usize;
+                    let dst = ((dy * w + dx) * 3) as usize;
+                    out[dst..dst + 3].copy_from_slice(&img.rgb[src..src + 3]);
+                }
+            }
+        }
+        out
+    }
+
+    /// The repo invariant: the fast path (damage as patch placements) must
+    /// composite to *exactly* the pixels the slow path (full retransmit)
+    /// produces from the same shadow.
+    #[test]
+    fn kitty_patches_composite_identically_to_a_full_retransmit() {
+        let (master, slave) = pty();
+        let pump = Pump::start(master);
+        let (mut disp, _input) =
+            crate::term::open_pair_on(slave, &test_setup(TermProtocol::Kitty)).unwrap();
+        let size = disp.info().size; // 160x160 at the 8x16 fallback cell
+        pump.take();
+
+        let mut images: Vec<PlacedImage> = Vec::new();
+        let mut seq = 0usize;
+
+        // Frame 1: a gradient, full present.
+        {
+            let frame = disp.begin_frame().unwrap().unwrap();
+            for y in 0..size.h {
+                for x in 0..size.w {
+                    let i = (y as usize * frame.stride) + x as usize * 4;
+                    frame.buffer[i] = (x * 3) as u8; // B
+                    frame.buffer[i + 1] = (y * 5) as u8; // G
+                    frame.buffer[i + 2] = (x ^ y) as u8; // R
+                }
+            }
+        }
+        disp.present(&[Rect::from_size(size)]).unwrap();
+        kitty_interpret(&pump.take(), &mut images, &mut seq);
+
+        // Frame 2: two small edits at awkward (non-cell-aligned) offsets,
+        // presented as patches.
+        let damage = [Rect::new(13, 21, 11, 7), Rect::new(100, 3, 5, 40)];
+        {
+            let frame = disp.begin_frame().unwrap().unwrap();
+            for r in &damage {
+                for y in r.y..r.bottom() {
+                    for x in r.x..r.right() {
+                        let i = (y as usize * frame.stride) + x as usize * 4;
+                        frame.buffer[i] = 250;
+                        frame.buffer[i + 1] = (x * 7) as u8;
+                        frame.buffer[i + 2] = (y * 11) as u8;
+                    }
+                }
+            }
+        }
+        disp.present(&damage).unwrap();
+        kitty_interpret(&pump.take(), &mut images, &mut seq);
+        let fast = composite(&images, size.w, size.h, 8, 16);
+
+        // Frame 3: force the slow path (full retransmit) of the SAME shadow.
+        disp.begin_frame().unwrap();
+        disp.present(&[Rect::from_size(size)]).unwrap();
+        kitty_interpret(&pump.take(), &mut images, &mut seq);
+        let slow = composite(&images, size.w, size.h, 8, 16);
+
+        assert_eq!(
+            fast, slow,
+            "patch placements must composite byte-for-byte to the full frame"
         );
     }
 

@@ -51,18 +51,21 @@ pub fn base64(data: &[u8]) -> String {
     out
 }
 
-/// Extract tightly-packed RGB bytes for `rect` from an Xrgb8888 shadow buffer.
+/// Extract tightly-packed RGB bytes for `rect` from an Xrgb8888 shadow buffer
+/// into `rgb` (cleared first — pass a reused scratch so the hot path doesn't
+/// allocate).
 ///
 /// `rect` must already be clamped to the buffer. Memory order per pixel is
 /// `[B,G,R,X]`, so RGB is bytes `[2,1,0]`.
-pub fn rgb_of_rect(shadow: &[u8], stride: usize, rect: Rect) -> Vec<u8> {
+pub fn rgb_of_rect_into(rgb: &mut Vec<u8>, shadow: &[u8], stride: usize, rect: Rect) {
     let (x, y, w, h) = (
         rect.x as usize,
         rect.y as usize,
         rect.w as usize,
         rect.h as usize,
     );
-    let mut rgb = Vec::with_capacity(w * h * 3);
+    rgb.clear();
+    rgb.reserve(w * h * 3);
     for row in y..y + h {
         let base = row * stride + x * 4;
         let line = &shadow[base..base + w * 4];
@@ -70,7 +73,6 @@ pub fn rgb_of_rect(shadow: &[u8], stride: usize, rect: Rect) -> Vec<u8> {
             rgb.extend_from_slice(&[px[2], px[1], px[0]]);
         }
     }
-    rgb
 }
 
 /// Where a kitty image goes: the base frame or a patch above it.
@@ -84,6 +86,18 @@ pub struct KittyPlacement {
     /// start on a cell boundary.
     pub x_off: u32,
     pub y_off: u32,
+}
+
+impl KittyPlacement {
+    /// The base frame: bottom of the stack, anchored exactly at the origin.
+    pub fn base(id: u32) -> Self {
+        KittyPlacement {
+            id,
+            z: 0,
+            x_off: 0,
+            y_off: 0,
+        }
+    }
 }
 
 /// Append a kitty *transmit-and-display* (`a=T,f=24`) for an RGB payload of
@@ -162,19 +176,23 @@ pub fn cells_emit(out: &mut Vec<u8>, shadow: &[u8], stride: usize, surface_h: u3
         (shadow[i + 2], shadow[i + 1], shadow[i]) // [B,G,R,X] -> (r,g,b)
     };
 
+    // SGR state persists across cursor moves, so fg/bg carry over rows and
+    // each is re-emitted only when its half actually changes — over SSH the
+    // wire bytes are the whole point of this backend.
+    let mut cur_fg: Option<Rgb> = None;
+    let mut cur_bg: Option<Rgb> = None;
     for cy in cy0..cy1 {
         csi_goto(out, cy + 1, cx0 + 1);
-        let mut cur: Option<(Rgb, Rgb)> = None;
         for cx in cx0..cx1 {
             let top = px(cx, cy * 2);
             let bot = px(cx, cy * 2 + 1);
-            if cur != Some((top, bot)) {
-                let _ = write!(
-                    out,
-                    "\x1b[38;2;{};{};{};48;2;{};{};{}m",
-                    top.0, top.1, top.2, bot.0, bot.1, bot.2
-                );
-                cur = Some((top, bot));
+            if cur_fg != Some(top) {
+                let _ = write!(out, "\x1b[38;2;{};{};{}m", top.0, top.1, top.2);
+                cur_fg = Some(top);
+            }
+            if cur_bg != Some(bot) {
+                let _ = write!(out, "\x1b[48;2;{};{};{}m", bot.0, bot.1, bot.2);
+                cur_bg = Some(bot);
             }
             out.extend_from_slice("▀".as_bytes());
         }
@@ -246,7 +264,8 @@ mod tests {
     #[test]
     fn rgb_extraction_honors_stride_and_rect() {
         let (buf, stride) = coord_buffer(8, 4, 12);
-        let rgb = rgb_of_rect(&buf, stride, Rect::new(2, 1, 3, 2));
+        let mut rgb = vec![0xAA; 7]; // stale scratch must be cleared
+        rgb_of_rect_into(&mut rgb, &buf, stride, Rect::new(2, 1, 3, 2));
         assert_eq!(rgb.len(), 3 * 3 * 2);
         // First pixel of the rect is (x=2, y=1) -> r=2, g=1, b=42.
         assert_eq!(&rgb[0..3], &[2, 1, 42]);
@@ -348,15 +367,34 @@ mod tests {
         let mut out = Vec::new();
         cells_emit(&mut out, &buf, stride, size.h, Rect::from_size(size));
         let s = String::from_utf8(out).unwrap();
-        assert_eq!(
-            s.matches("38;2;30;20;10;48;2;30;20;10m").count(),
-            2,
-            "{s:?}"
-        );
+        // SGR persists across the row move, so fg and bg are each set once
+        // for the whole uniform region.
+        assert_eq!(s.matches("\x1b[38;2;30;20;10m").count(), 1, "{s:?}");
+        assert_eq!(s.matches("\x1b[48;2;30;20;10m").count(), 1, "{s:?}");
         assert_eq!(s.matches('▀').count(), 8);
         assert!(s.starts_with("\x1b[1;1H"));
         assert!(s.contains("\x1b[2;1H"));
         assert!(s.ends_with("\x1b[0m"));
+    }
+
+    #[test]
+    fn cells_delta_emits_only_the_changed_half() {
+        // Two cells: same top pixel color, different bottom pixel colors ->
+        // the second cell re-emits only the bg (48) component.
+        let stride = 8;
+        let mut buf = vec![0u8; stride * 2];
+        buf[0..4].copy_from_slice(&[0, 0, 1, 0]); // top-left r=1
+        buf[4..8].copy_from_slice(&[0, 0, 1, 0]); // top-right r=1
+        buf[8..12].copy_from_slice(&[0, 0, 2, 0]); // bottom-left r=2
+        buf[12..16].copy_from_slice(&[0, 0, 3, 0]); // bottom-right r=3
+        let mut out = Vec::new();
+        cells_emit(&mut out, &buf, stride, 2, Rect::new(0, 0, 2, 2));
+        let s = String::from_utf8(out).unwrap();
+        assert_eq!(s.matches("38;2;1;0;0m").count(), 1, "fg once: {s:?}");
+        assert!(
+            s.contains("48;2;2;0;0m") && s.contains("48;2;3;0;0m"),
+            "{s:?}"
+        );
     }
 
     #[test]
@@ -370,7 +408,8 @@ mod tests {
         assert!(s.starts_with("\x1b[2;2H"), "{s:?}");
         assert_eq!(s.matches('▀').count(), 1);
         // fg = pixel (1,2): r=1,g=2 ; bg = pixel (1,3): r=1,g=3.
-        assert!(s.contains("38;2;1;2;42;48;2;1;3;42m"), "{s:?}");
+        assert!(s.contains("\x1b[38;2;1;2;42m"), "{s:?}");
+        assert!(s.contains("\x1b[48;2;1;3;42m"), "{s:?}");
     }
 
     #[test]

@@ -31,7 +31,6 @@ use std::os::unix::io::{AsRawFd, OwnedFd, RawFd};
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Once};
 
-use crate::display::Display as _;
 use crate::error::{Error, Result};
 
 pub mod display;
@@ -93,7 +92,8 @@ fn restore_terminal() {
     }
 }
 
-fn write_all_best_effort(fd: RawFd, mut buf: &[u8]) {
+/// The one write(2) loop the whole backend uses: full write or an error.
+pub(crate) fn write_all(fd: RawFd, mut buf: &[u8]) -> io::Result<()> {
     while !buf.is_empty() {
         // SAFETY: plain write(2) on a live fd with an in-bounds buffer.
         let n = unsafe { libc::write(fd, buf.as_ptr() as *const libc::c_void, buf.len()) };
@@ -104,9 +104,15 @@ fn write_all_best_effort(fd: RawFd, mut buf: &[u8]) {
             if err.raw_os_error() == Some(libc::EINTR) {
                 continue;
             }
-            return; // EIO/closed pty: nothing more we can do on the way out.
+            return Err(err);
         }
     }
+    Ok(())
+}
+
+/// [`write_all`] for exit paths, where an EIO/closed pty can't be acted on.
+fn write_all_best_effort(fd: RawFd, buf: &[u8]) {
+    let _ = write_all(fd, buf);
 }
 
 extern "C" fn term_signal_restore(sig: libc::c_int) {
@@ -118,6 +124,12 @@ extern "C" fn term_signal_restore(sig: libc::c_int) {
     }
 }
 
+// NOTE: these hooks and vt.rs's install their handlers for the same fatal
+// signals, and `libc::signal` replaces rather than chains — whichever
+// subsystem armed last wins. That's safe today because the two guards never
+// coexist (the term backend always runs with `VtGuard::disabled()`), but a
+// future backend mixing them should migrate both onto one shared
+// restore-registry hook.
 fn install_hooks_once() {
     HOOKS_INSTALLED.call_once(|| {
         let prev = std::panic::take_hook();
@@ -227,12 +239,18 @@ pub(crate) struct Shared {
     pub fd: Arc<OwnedFd>,
     /// Mouse reports arrive in pixels (SGR-Pixels, mode 1016) vs cells.
     pub mouse_pixels: AtomicBool,
-    /// Pixel size of one character cell, for scaling cell-mouse coordinates.
+    /// Pixel size of one character cell: read by TermInput to scale
+    /// cell-mouse coordinates, written by TermDisplay when a resize changes
+    /// it. The single source of truth for cell geometry.
     pub cell_w: AtomicU32,
     pub cell_h: AtomicU32,
     /// Bytes read past a query response during bring-up; TermInput drains
     /// these before reading the fd.
     pub pending_input: Mutex<Vec<u8>>,
+    /// Armed (readable) eventfd when `pending_input` holds bytes, so the
+    /// event loop calls `dispatch` for them without waiting for new tty
+    /// input. `None` when nothing was stashed.
+    pub input_wake: Option<OwnedFd>,
 }
 
 /// Terminal geometry as the kernel reports it.
@@ -345,8 +363,16 @@ fn parse_pixel_report(buf: &[u8]) -> Option<((usize, usize), u32, u32)> {
 /// Would falling back to the terminal backend make sense right now? True when
 /// the process has a controlling terminal that looks like a capable emulator
 /// (not the bare Linux console, where a DRM/fbdev failure is a permissions
-/// problem the user should see, and not a dumb pipe).
+/// problem the user should see, and not a dumb pipe). An explicit
+/// `FBUI_BACKEND` naming a device backend disables the fallback entirely —
+/// asking for DRM means wanting DRM's error, not a different backend.
 pub(crate) fn suitable_for_fallback() -> bool {
+    if matches!(
+        std::env::var("FBUI_BACKEND").as_deref(),
+        Ok("drm") | Ok("fbdev")
+    ) {
+        return false;
+    }
     let term = std::env::var("TERM").unwrap_or_default();
     if term.is_empty() || term == "dumb" || term == "linux" {
         return false;
@@ -447,16 +473,33 @@ pub fn open_pair_on(tty: OwnedFd, setup: &TermSetup) -> Result<(TermDisplay, Ter
         }
     };
 
+    // Anything typed during the bring-up query belongs to the input stream;
+    // an armed eventfd makes the event loop deliver it immediately instead of
+    // waiting for the next keystroke to make the tty readable.
+    let input_wake = if stash.is_empty() {
+        None
+    } else {
+        // SAFETY: creating a fresh eventfd we own, pre-armed with a count of 1.
+        let efd = unsafe { libc::eventfd(1, libc::EFD_CLOEXEC | libc::EFD_NONBLOCK) };
+        if efd < 0 {
+            None // no wake fd: the stash still drains on the next tty input
+        } else {
+            // SAFETY: `efd` is a fresh fd we own.
+            Some(unsafe { std::os::unix::io::FromRawFd::from_raw_fd(efd) })
+        }
+    };
+
     let shared = Arc::new(Shared {
         fd,
         mouse_pixels: AtomicBool::new(pixel_mouse),
         cell_w: AtomicU32::new(cell_px.0),
         cell_h: AtomicU32::new(cell_px.1),
         pending_input: Mutex::new(stash),
+        input_wake,
     });
 
-    let display = TermDisplay::new(shared.clone(), guard, setup.protocol, ws, cell_px);
-    let input = TermInput::new(shared, display.info().size);
+    let display = TermDisplay::new(shared.clone(), guard, setup.protocol, ws);
+    let input = TermInput::new(shared);
     Ok((display, input))
 }
 

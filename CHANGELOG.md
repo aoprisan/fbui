@@ -40,11 +40,6 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
   path — drop, panic, fatal signals — mirroring the VT guard. Pure Rust, no
   new dependencies; tested headless against pty pairs
   (`fbui-platform/tests/term_pty.rs`). See `docs/terminal-backend.md`.
-- **`BackendKind::Terminal`** (breaking for exhaustive matches on
-  `BackendKind`) and **`PlatformConfig::prefer_term`** (breaking for struct
-  literals not using `..Default::default()`). `PlatformConfig::default()` now
-  also reads `FBUI_BACKEND` (`drm`/`fbdev`/`term`), so existing binaries gain
-  backend selection without a rebuild.
 - **Named keysyms** for PageUp/PageDown/Insert/F1–F12 in
   `fbui_platform::keysym` (the terminal parser emits them; evdev apps can now
   match them by name too).
@@ -157,6 +152,20 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Changed
 
+- **`BackendKind` is now `#[non_exhaustive]` and gained the `Terminal`
+  variant** (breaking): downstream matches need a wildcard arm (once — the
+  planned GPU backend then arrives without another break).
+- **`PlatformConfig` gained `prefer_term`** (breaking for struct literals not
+  using `..Default::default()`), and **`PlatformConfig::default()` now reads
+  `FBUI_BACKEND`** (`drm`/`fbdev`/`term`; unknown values are warned about and
+  ignored), so existing binaries gain backend selection without a rebuild.
+  Requesting `term` on a build without the feature is a
+  `FeatureDisabled` error, never a silent fall-through to a device backend.
+- **`fbui-platform`'s default feature set now includes `term`**, and
+  `Platform::new` falls back to the terminal backend when DRM and fbdev both
+  fail *and* the process is attached to a capable terminal emulator. Builds
+  that must never touch the controlling terminal can omit the feature or set
+  `FBUI_BACKEND=drm`/`fbdev`, which disables the fallback.
 - **`Event` is now `#[non_exhaustive]`** (breaking): downstream matches need a
   wildcard arm. Added the `Event::PopupDismissed` variant, delivered to a
   popup's owner when the `Ui` dismisses it (click-away, or a press landing in

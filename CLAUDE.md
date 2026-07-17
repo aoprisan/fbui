@@ -137,7 +137,7 @@ the runner (examples require it), `bundled-font` compiles in Inter (~300 KB),
 `profile` emits `tracing` spans.
 
 `fbui-platform`: the **default set is everything that builds with no system C
-libraries**: `drm-backend fbdev evdev noseat event-loop`. The C-library backends
+libraries**: `drm-backend fbdev evdev noseat event-loop term`. The C-library backends
 (`libinput`, `xkbcommon`, `libseat`) are gated off and **have not been built or
 run in the dev environment** (the box lacks the libs) — treat them as
 written-against-docs and validate on a host with the headers installed.

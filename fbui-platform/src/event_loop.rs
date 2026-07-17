@@ -317,8 +317,12 @@ pub(crate) fn run_loop(
     let vt_fd: Option<RawFd> = vt.switch_fd();
     let seat_fd: Option<RawFd> = seat.session_fd();
     let uevent_fd: Option<RawFd> = uevent.as_ref().map(|m| m.fd());
-    // fbdev has no flip fd, so pace it with a timer instead.
-    let needs_timer = display_fd.is_none();
+    // fbdev has no flip fd, so pace it with a timer instead. The terminal
+    // backend also has no fd but needs no pacing either — its presents
+    // complete synchronously and a buffer is always free — so it skips the
+    // timer and a fully idle app stays asleep in poll (the ~0%-CPU rule).
+    let needs_timer =
+        display_fd.is_none() && display.info().backend != crate::display::BackendKind::Terminal;
 
     let mut event_loop: Calloop<LoopState> =
         Calloop::try_new().map_err(|e| Error::io("calloop new", std::io::Error::other(e)))?;
@@ -444,6 +448,11 @@ pub(crate) fn run_loop(
             state.poll_display_change()?;
         }
         state.try_render()?;
+        // A tick that asked to exit must not sit through one more poll
+        // timeout (up to the ~1 s backstop) before the loop notices.
+        if state.exit {
+            break;
+        }
         // Block until at least one fd is ready (or the fbdev pacing timer
         // fires). The handler bounds the sleep with its next deadline — an
         // animation frame, an app timer — and the hotplug-poll cadence

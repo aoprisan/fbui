@@ -32,12 +32,8 @@ screenshots (settled UI; see "Determinism" below).
 | `FBUI_RECORD=path` | Append every input event to `path` (created fresh; flushed per event, so a crash session's recording survives — that's the artifact you wanted). |
 | `FBUI_REPLAY=path` | Load and play a recording. Live input still works during playback (Esc still quits). |
 | `FBUI_REPLAY_SPEED=n\|max` | Wall-clock multiplier (default `1`). `max` delivers everything as fast as frames render. |
-| `FBUI_REPLAY_SHOT=path.png` | After the last event, let the UI settle for two frames, then write a PNG of the end state. |
-| `FBUI_REPLAY_EXIT=0\|1` | Exit when playback (and the shot) finish. Defaults to `1` when a shot is requested, `0` otherwise. |
-
-A recording usually ends with the Esc that quit it; when a shot is requested
-that replayed Esc is ignored so the capture still happens (the run then exits
-by itself).
+| `FBUI_REPLAY_SHOT=path.png` | After the last event, wait for animations to settle, then write a PNG of the end state. |
+| `FBUI_REPLAY_EXIT=0\|1` | What happens when playback ends. Unset: *as recorded* — a replayed Esc exits exactly as it did live (unless a shot is requested, which implies `1`). `1`: the replayer owns the ending — the recording's quit keystroke is swallowed, the shot (if any) is captured, then the app exits. `0`: same swallow, but the app stays running interactively after playback. |
 
 A recording notes the surface size it was made on; replaying on a different
 size logs a warning — absolute coordinates may land on different widgets.
@@ -66,14 +62,13 @@ test flow by hand is entirely reasonable — that's why it's text.
 
 Events are delivered at recorded positions through the deterministic widget
 layer, so end states settle identically (the CI example above relies on
-that, and replays are verified byte-identical). Two things are *not*
-frame-exact between runs:
-
-- Animations advance by real frame `dt`, so mid-flight frames differ; only
-  settled states are comparable.
-- Time-sensitive gestures (long-press, fling velocity) are re-recognized
-  from the replayed timeline at playback speed. At `max` speed a held
-  long-press collapses; keep flows that depend on hold timing at `SPEED=1`.
+that, and replays are verified byte-identical). During playback the gesture
+recognizer runs on the **recording's own timeline**, not the wall clock —
+long-press holds and fling velocities replay identically at any
+`FBUI_REPLAY_SPEED`, including `max`. What is *not* frame-exact between
+runs: animations advance by real frame `dt`, so mid-flight frames differ —
+only settled states are comparable, which is why the shot waits for
+animations to finish.
 
 Record at the platform-event level means recordings capture *intent* (what
 the user did), not widget identities — a recording survives refactors that

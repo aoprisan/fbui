@@ -18,8 +18,8 @@ use std::os::unix::io::{AsRawFd, RawFd};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use crate::error::Result;
-use crate::geom::{Point, Size};
+use crate::error::{Error, Result};
+use crate::geom::Point;
 use crate::input::{
     keysym, AxisSource, Button, InputEvent, InputSource, KeyEvent, KeyState, Keysym, Modifiers,
 };
@@ -35,7 +35,7 @@ pub struct TermInput {
 }
 
 impl TermInput {
-    pub(crate) fn new(shared: Arc<Shared>, _surface: Size) -> Self {
+    pub(crate) fn new(shared: Arc<Shared>) -> Self {
         TermInput {
             shared,
             parser: Parser::default(),
@@ -45,7 +45,14 @@ impl TermInput {
 
 impl InputSource for TermInput {
     fn fds(&self) -> Vec<RawFd> {
-        vec![self.shared.fd.as_raw_fd()]
+        // The wake eventfd is armed at bring-up when bytes were stashed during
+        // a terminal query, so the loop calls `dispatch` for them immediately
+        // instead of waiting for the tty to become readable again.
+        let mut fds = vec![self.shared.fd.as_raw_fd()];
+        if let Some(wake) = &self.shared.input_wake {
+            fds.push(wake.as_raw_fd());
+        }
+        fds
     }
 
     fn dispatch(&mut self, sink: &mut dyn FnMut(InputEvent)) -> Result<()> {
@@ -53,6 +60,17 @@ impl InputSource for TermInput {
         let pending = std::mem::take(&mut *self.shared.pending_input.lock().unwrap());
         if !pending.is_empty() {
             self.parser.feed(&pending, &self.scaler(), sink);
+        }
+        if let Some(wake) = &self.shared.input_wake {
+            let mut counter = [0u8; 8];
+            // SAFETY: draining our own nonblocking eventfd; EAGAIN is fine.
+            unsafe {
+                libc::read(
+                    wake.as_raw_fd(),
+                    counter.as_mut_ptr() as *mut libc::c_void,
+                    8,
+                );
+            }
         }
 
         let fd = self.shared.fd.as_raw_fd();
@@ -64,19 +82,44 @@ impl InputSource for TermInput {
             };
             // SAFETY: zero-timeout poll to test readability of our own fd.
             let ready = unsafe { libc::poll(&mut pfd, 1, 0) };
-            if ready <= 0 || pfd.revents & libc::POLLIN == 0 {
+            if ready < 0 {
+                let err = std::io::Error::last_os_error();
+                if err.raw_os_error() == Some(libc::EINTR) {
+                    continue;
+                }
+                return Err(Error::io("tty poll", err));
+            }
+            if ready == 0 {
+                break;
+            }
+            // A hangup with nothing left to read means the terminal went away
+            // (SSH drop, emulator window closed). Error out so the event loop
+            // shuts the app down instead of spinning on a level-triggered fd.
+            if pfd.revents & libc::POLLIN == 0 {
+                if pfd.revents & (libc::POLLHUP | libc::POLLERR | libc::POLLNVAL) != 0 {
+                    return Err(Error::io(
+                        "terminal hangup",
+                        std::io::Error::from(std::io::ErrorKind::UnexpectedEof),
+                    ));
+                }
                 break;
             }
             let mut buf = [0u8; 1024];
             // SAFETY: read into a stack buffer; the fd is blocking but poll
             // just said readable, so this returns without blocking.
             let n = unsafe { libc::read(fd, buf.as_mut_ptr() as *mut libc::c_void, buf.len()) };
-            if n <= 0 {
+            if n < 0 {
                 let err = std::io::Error::last_os_error();
-                if n < 0 && err.raw_os_error() == Some(libc::EINTR) {
+                if err.raw_os_error() == Some(libc::EINTR) {
                     continue;
                 }
-                break; // EOF / EIO: the terminal went away; the loop will notice
+                return Err(Error::io("tty read", err));
+            }
+            if n == 0 {
+                return Err(Error::io(
+                    "terminal closed",
+                    std::io::Error::from(std::io::ErrorKind::UnexpectedEof),
+                ));
             }
             self.parser.feed(&buf[..n as usize], &self.scaler(), sink);
         }
@@ -106,15 +149,19 @@ pub(crate) struct MouseScale {
 
 impl MouseScale {
     fn to_pixels(self, x: u32, y: u32) -> Point {
-        if self.pixels {
-            Point::new(x.saturating_sub(1) as i32, y.saturating_sub(1) as i32)
-        } else {
-            // Center of the reported cell, so a click lands inside it.
-            Point::new(
-                (x.saturating_sub(1) * self.cell_w + self.cell_w / 2) as i32,
-                (y.saturating_sub(1) * self.cell_h + self.cell_h / 2) as i32,
-            )
-        }
+        // Widened + clamped: a garbage report (corrupt serial link, saturated
+        // CSI parameter) must never overflow, only land off-surface where the
+        // damage clamp ignores it.
+        let axis = |v: u32, cell: u32| -> i32 {
+            let px = if self.pixels {
+                v.saturating_sub(1) as u64
+            } else {
+                // Center of the reported cell, so a click lands inside it.
+                v.saturating_sub(1) as u64 * cell as u64 + (cell / 2) as u64
+            };
+            px.min(i32::MAX as u64) as i32
+        };
+        Point::new(axis(x, self.cell_w), axis(y, self.cell_h))
     }
 }
 
@@ -294,8 +341,15 @@ impl Parser {
         let moved = self.last_mouse != Some(pos);
         self.last_mouse = Some(pos);
 
-        if b & 64 != 0 {
-            // Wheel. Positive vertical = content scrolls up (wheel away).
+        if b & 32 != 0 {
+            // Motion (with or without a held button).
+            if moved {
+                sink(InputEvent::PointerMotionAbsolute { position: pos });
+            }
+            return;
+        }
+        if b & 128 == 0 && b & 64 != 0 {
+            // Buttons 4–7: the wheel. Positive vertical = content scrolls up.
             if moved {
                 sink(InputEvent::PointerMotionAbsolute { position: pos });
             }
@@ -312,18 +366,17 @@ impl Parser {
             });
             return;
         }
-        if b & 32 != 0 {
-            // Motion (with or without a held button).
-            if moved {
-                sink(InputEvent::PointerMotionAbsolute { position: pos });
+        let button = if b & 128 != 0 {
+            // Buttons 8–11 (back/forward/task): pass through by number, never
+            // misread as a left click.
+            Button::Other(8 + (b & 3) as u16)
+        } else {
+            match b & 3 {
+                0 => Button::Left,
+                1 => Button::Middle,
+                2 => Button::Right,
+                _ => return, // release marker in non-SGR encodings; not used here
             }
-            return;
-        }
-        let button = match b & 3 {
-            0 => Button::Left,
-            1 => Button::Middle,
-            2 => Button::Right,
-            _ => return, // release marker in non-SGR encodings; not used here
         };
         // Make sure the press lands where the terminal says it is.
         if moved {
@@ -426,7 +479,6 @@ fn csi_key(params: &[u32], final_byte: u8, sink: &mut dyn FnMut(InputEvent)) {
             return;
         }
         b'~' => {
-            let mods = csi_modifiers(params.get(1).copied());
             let sym = match params.first().copied().unwrap_or(0) {
                 1 | 7 => Some(keysym::HOME),
                 2 => Some(keysym::INSERT),
@@ -445,10 +497,9 @@ fn csi_key(params: &[u32], final_byte: u8, sink: &mut dyn FnMut(InputEvent)) {
             }
             return;
         }
-        // Responses: size reports (t), cursor position (R), device
-        // attributes (c), mode reports (y, $y arrives as unknown-final skip),
-        // kitty keyboard (u — we never enable it, but swallow defensively).
-        b't' | b'R' | b'c' | b'y' | b'u' | b'n' => None,
+        // Everything else — including terminal responses (size reports `t`,
+        // cursor position `R`, device attributes `c`, mode reports `y`,
+        // kitty-keyboard `u`, status `n`) — is swallowed.
         _ => None,
     };
     if let Some(sym) = sym {
@@ -696,5 +747,42 @@ mod tests {
         assert_eq!(keys.len(), 2);
         assert_eq!(keys[0].0, keysym::ESCAPE);
         assert_eq!(keys[1].0, keysym::UP);
+    }
+
+    #[test]
+    fn extended_buttons_are_not_left_clicks() {
+        // Button 8 ("back", b=128) press+release must arrive as Other(8).
+        let evs = parse(pixel_scale(), b"\x1b[<128;5;5M\x1b[<128;5;5m");
+        let buttons: Vec<_> = evs
+            .iter()
+            .filter_map(|e| match e {
+                InputEvent::PointerButton { button, state } => Some((*button, *state)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            buttons,
+            vec![
+                (Button::Other(8), KeyState::Pressed),
+                (Button::Other(8), KeyState::Released)
+            ]
+        );
+        // And a wheel event with modifier bits set is still a wheel.
+        let evs = parse(pixel_scale(), b"\x1b[<80;5;5M"); // 64 | 16 (ctrl)
+        assert!(evs
+            .iter()
+            .any(|e| matches!(e, InputEvent::PointerAxis { .. })));
+    }
+
+    #[test]
+    fn absurd_coordinates_clamp_instead_of_overflowing() {
+        // A saturated CSI parameter (u32::MAX) must not panic or wrap.
+        let evs = parse(cells_scale(), b"\x1b[<35;4294967295;4294967295M");
+        match evs.as_slice() {
+            [InputEvent::PointerMotionAbsolute { position }] => {
+                assert_eq!(*position, Point::new(i32::MAX, i32::MAX));
+            }
+            other => panic!("unexpected events: {other:?}"),
+        }
     }
 }

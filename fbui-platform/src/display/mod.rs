@@ -58,7 +58,12 @@ pub struct DisplayInfo {
 }
 
 /// Which concrete backend a [`Display`] is.
+///
+/// `#[non_exhaustive]`: backends keep arriving (the Phase 6 GPU path is
+/// planned), so downstream matches need a wildcard arm once rather than a
+/// compile break per addition.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BackendKind {
     /// DRM/KMS dumb buffers with page-flipping — the primary, vsynced path.
     DrmDumb,

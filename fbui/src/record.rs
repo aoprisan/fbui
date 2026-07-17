@@ -64,11 +64,19 @@ fn hex_of(bytes: &[u8]) -> String {
 }
 
 fn bytes_of_hex(s: &str) -> Option<Vec<u8>> {
-    if !s.len().is_multiple_of(2) {
+    // Byte-wise, not str-sliced: a hand-edited file with a non-ASCII byte in
+    // the hex field must parse to None (skip the line), never panic on a
+    // char boundary.
+    let b = s.as_bytes();
+    if !b.len().is_multiple_of(2) {
         return None;
     }
-    (0..s.len() / 2)
-        .map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok())
+    b.chunks_exact(2)
+        .map(|pair| {
+            let hi = (pair[0] as char).to_digit(16)?;
+            let lo = (pair[1] as char).to_digit(16)?;
+            Some((hi * 16 + lo) as u8)
+        })
         .collect()
 }
 
@@ -248,8 +256,7 @@ impl Recorder {
 
 /// A loaded recording being played back on the wall clock (scaled by `speed`).
 pub(crate) struct Replayer {
-    events: Vec<(u64, InputEvent)>,
-    next: usize,
+    events: std::collections::VecDeque<(u64, InputEvent)>,
     start: Instant,
     /// Wall-time multiplier (2.0 = twice as fast). `f64::INFINITY` = "max":
     /// everything is due immediately.
@@ -276,7 +283,7 @@ impl Replayer {
             Some((w.parse().ok()?, h.parse().ok()?))
         });
 
-        let mut events = Vec::new();
+        let mut events = std::collections::VecDeque::new();
         let mut last_ms = 0u64;
         for (n, line) in lines.enumerate() {
             let line = line.trim();
@@ -294,14 +301,13 @@ impl Replayer {
                 Some(ev) => {
                     // Keep the stream monotonic even if the file was hand-edited.
                     last_ms = last_ms.max(ms);
-                    events.push((last_ms, ev));
+                    events.push_back((last_ms, ev));
                 }
                 None => eprintln!("fbui: replay: skipping line {} (unknown event)", n + 2),
             }
         }
         Ok(Replayer {
             events,
-            next: 0,
             start: Instant::now(),
             speed,
             recorded_size,
@@ -316,31 +322,32 @@ impl Replayer {
         (self.start.elapsed().as_secs_f64() * 1000.0 * self.speed) as u64
     }
 
-    /// Pop every event whose timestamp has been reached.
-    pub(crate) fn due_events(&mut self) -> Vec<InputEvent> {
+    /// Pop every event whose timestamp has been reached, with its recorded
+    /// time (the runner drives its replay clock from it).
+    pub(crate) fn due_events(&mut self) -> Vec<(u64, InputEvent)> {
         self.due_at(self.elapsed_rec_ms())
     }
 
     /// The scheduling core, on an explicit clock so tests need no sleeping.
-    pub(crate) fn due_at(&mut self, rec_ms: u64) -> Vec<InputEvent> {
+    /// Events move out — nothing is cloned or revisited.
+    pub(crate) fn due_at(&mut self, rec_ms: u64) -> Vec<(u64, InputEvent)> {
         let mut out = Vec::new();
-        while let Some((ms, _)) = self.events.get(self.next) {
+        while let Some((ms, _)) = self.events.front() {
             if *ms > rec_ms {
                 break;
             }
-            out.push(self.events[self.next].1.clone());
-            self.next += 1;
+            out.push(self.events.pop_front().expect("front just checked"));
         }
         out
     }
 
     pub(crate) fn finished(&self) -> bool {
-        self.next >= self.events.len()
+        self.events.is_empty()
     }
 
     /// Wall-clock time until the next event is due (zero if overdue).
     pub(crate) fn next_due_in(&self) -> Option<Duration> {
-        let (ms, _) = self.events.get(self.next)?;
+        let (ms, _) = self.events.front()?;
         if self.speed.is_infinite() {
             return Some(Duration::ZERO);
         }
@@ -455,6 +462,14 @@ mod tests {
     #[test]
     fn bad_header_is_rejected() {
         assert!(Replayer::parse("not a recording\n@0 m 1 1\n", 1.0).is_err());
+    }
+
+    #[test]
+    fn malformed_hex_token_is_skipped_not_a_panic() {
+        // 4 bytes (passes the even-length check), but the '€' means byte
+        // offsets fall inside a multibyte char — must be None, not a panic.
+        assert!(parse_event("k 0x20 p 0 u€5").is_none());
+        assert!(parse_event("k 0x20 p 0 uzz").is_none());
     }
 
     #[test]

@@ -31,7 +31,10 @@ the VT guard's console restore.
    terminal instead of dying — so `cargo run` in a desktop terminal or over
    SSH just works. On a real console (`TERM=linux`) the device error is
    reported instead, because there a DRM/fbdev failure is almost always a
-   permissions problem you want to see.
+   permissions problem you want to see. Setting `FBUI_BACKEND=drm` or
+   `fbdev` explicitly also disables the fallback — asking for a device
+   backend means wanting its real error, and deploy scripts that must detect
+   a broken panel should set it.
 
 ## Pixel protocols
 
@@ -94,9 +97,11 @@ about a second.
   covers the modern graphics-capable set; everything else gets cells.
 - Cell-mode resolution is what it is; it's a development preview, not a
   target environment.
-- Presents are paced by the event loop's fbdev-style 16 ms timer, not vsync;
-  refresh is reported as unknown.
+- There is no vsync; refresh is reported as unknown and the runner paces
+  animation itself. A fully idle app sleeps in `poll` — no timers tick.
 - No key-release events and no multi-key chords beyond what modifiers encode.
+- If the terminal hangs up (SSH drop, emulator window closed) the app exits
+  with an error rather than running headless — the terminal *is* its display.
 
 ## Testing
 
