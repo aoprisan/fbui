@@ -57,6 +57,8 @@ pub use fbui_widgets::{
 };
 
 #[cfg(feature = "platform")]
+mod record;
+#[cfg(feature = "platform")]
 mod run;
 #[cfg(feature = "platform")]
 pub use fbui_platform::Result;

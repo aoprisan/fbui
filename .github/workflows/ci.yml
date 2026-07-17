@@ -50,6 +50,8 @@ jobs:
           cargo clippy -p fbui --all-targets --features svg
           # The umbrella + on-device runner and examples (counter/form/big_list).
           cargo clippy -p fbui --all-targets --features platform
+          # Runner-gated unit tests (record/replay format + scheduling).
+          cargo test -p fbui --features platform --lib
           # The Phase 5 tracing instrumentation (zero-cost when off).
           cargo clippy -p fbui-widgets --all-targets --features profile
           cargo clippy -p fbui --all-targets --features "platform profile"

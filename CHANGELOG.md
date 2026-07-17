@@ -48,6 +48,18 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 - **Named keysyms** for PageUp/PageDown/Insert/F1–F12 in
   `fbui_platform::keysym` (the terminal parser emits them; evdev apps can now
   match them by name too).
+- **Input session record & replay** (`fbui` runner) — set `FBUI_RECORD=path`
+  to capture the normalized input stream of a live session (flushed per
+  event, so a crashed session's recording survives — that's the artifact you
+  wanted), and `FBUI_REPLAY=path` to play it back through *exactly* the live
+  input path (gestures, focus, kinetic scrolling, `App::update`).
+  `FBUI_REPLAY_SPEED=n|max` scales the clock; `FBUI_REPLAY_SHOT=end.png`
+  captures the settled end state and exits (`FBUI_REPLAY_EXIT` overrides).
+  The format is hand-editable line-oriented text (`fbui-rec` v1, timestamps
+  clamped monotonic, unknown lines skipped). Together with the terminal
+  backend this makes a recorded kiosk flow a headless CI regression test:
+  replay at `max` speed on `FBUI_BACKEND=term`, screenshot, compare — end
+  states verified byte-identical across runs. See `docs/record-replay.md`.
 
 - **The popup layer** — floating overlays can now be *interactive*.
   `Ui::open_popup(owner, PopupOptions)` (or `EventCtx::open_popup` from a

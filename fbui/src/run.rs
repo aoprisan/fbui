@@ -7,6 +7,7 @@
 //! for every emitted message, and presents the damaged surface each frame. It is
 //! the only place that knows both halves of the stack.
 
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -22,6 +23,7 @@ use fbui_widgets::event::{Event, Key, Modifiers, PointerButton};
 use fbui_widgets::gesture::{Gesture, GestureRecognizer};
 use fbui_widgets::{Theme, Ui};
 
+use crate::record::{Recorder, Replayer};
 use crate::timer::{Timer, TimerQueue};
 
 /// How far one wheel notch scrolls, in logical pixels.
@@ -144,10 +146,87 @@ fn default_font_context() -> FontContext {
     FontContext::new()
 }
 
+/// Everything the runner tracks while a recording is being played back.
+struct ReplayState {
+    player: Replayer,
+    /// PNG of the end state, written after the last event has settled.
+    shot: Option<PathBuf>,
+    /// Exit when playback (and the shot) are done.
+    exit_when_done: bool,
+    /// Frames still to render after the last event, so the shot captures the
+    /// settled UI. `None` until playback finishes.
+    finish_frames: Option<u8>,
+}
+
+/// Build the recorder and replayer from `FBUI_RECORD` / `FBUI_REPLAY` (see
+/// `docs/record-replay.md`). A requested-but-broken recording is a hard error:
+/// silently running unrecorded (or replaying nothing) is worse than stopping.
+fn record_replay_from_env(
+    phys: fbui_platform::Size,
+) -> fbui_platform::Result<(Option<Recorder>, Option<ReplayState>)> {
+    let io_err = |what: String, e: std::io::Error| fbui_platform::Error::Io { what, source: e };
+
+    let recorder = match std::env::var_os("FBUI_RECORD") {
+        Some(path) => {
+            let path = PathBuf::from(path);
+            let r = Recorder::create(&path, (phys.w, phys.h))
+                .map_err(|e| io_err(format!("FBUI_RECORD {}", path.display()), e))?;
+            eprintln!("fbui: recording input to {}", path.display());
+            Some(r)
+        }
+        None => None,
+    };
+
+    let replay = match std::env::var_os("FBUI_REPLAY") {
+        Some(path) => {
+            let path = PathBuf::from(path);
+            let speed = match std::env::var("FBUI_REPLAY_SPEED").ok().as_deref() {
+                None => 1.0,
+                Some("max") => f64::INFINITY,
+                Some(s) => s.parse::<f64>().ok().filter(|v| *v > 0.0).ok_or_else(|| {
+                    io_err(
+                        format!("FBUI_REPLAY_SPEED {s:?}"),
+                        std::io::Error::other("expected a positive number or \"max\""),
+                    )
+                })?,
+            };
+            let player = Replayer::load(&path, speed)
+                .map_err(|e| io_err(format!("FBUI_REPLAY {}", path.display()), e))?;
+            if let Some((w, h)) = player.recorded_size {
+                if (w, h) != (phys.w, phys.h) {
+                    eprintln!(
+                        "fbui: replay: recorded on {w}x{h}, display is {}x{} — \
+                         coordinates may land on different widgets",
+                        phys.w, phys.h
+                    );
+                }
+            }
+            let shot = std::env::var_os("FBUI_REPLAY_SHOT").map(PathBuf::from);
+            let exit_when_done = match std::env::var("FBUI_REPLAY_EXIT").ok().as_deref() {
+                Some("0") | Some("false") => false,
+                Some(_) => true,
+                // A shot implies an unattended run; default to exiting then.
+                None => shot.is_some(),
+            };
+            eprintln!("fbui: replaying input from {}", path.display());
+            Some(ReplayState {
+                player,
+                shot,
+                exit_when_done,
+                finish_frames: None,
+            })
+        }
+        None => None,
+    };
+
+    Ok((recorder, replay))
+}
+
 /// Bring up the platform and run `app` until it exits (Esc, or a fatal error).
 pub fn run<A: App>(mut app: A) -> fbui_platform::Result<()> {
     let platform = Platform::new(&PlatformConfig::default())?;
     let phys = platform.info().size;
+    let (recorder, replay) = record_replay_from_env(phys)?;
     let scale = Scale::ONE;
     let logical = Size::new(
         phys.w as f32 / scale.factor(),
@@ -189,6 +268,8 @@ pub fn run<A: App>(mut app: A) -> fbui_platform::Result<()> {
         tx,
         rx,
         timers: TimerQueue::new(),
+        recorder,
+        replay,
     };
     platform.run(&mut runner)
 }
@@ -224,6 +305,11 @@ struct Runner<A: App> {
     /// serviced in `tick`/`on_wake`, and its earliest deadline bounds the
     /// loop's sleep via [`next_timeout`](PlatformHandler::next_timeout).
     timers: TimerQueue<A::Message>,
+    /// `FBUI_RECORD`: every live input event is appended here as it arrives.
+    recorder: Option<Recorder>,
+    /// `FBUI_REPLAY`: a recording being fed back through
+    /// [`handle_input`](Self::handle_input) on the (speed-scaled) clock.
+    replay: Option<ReplayState>,
 }
 
 impl<A: App> Runner<A> {
@@ -341,8 +427,10 @@ impl<A: App> Runner<A> {
     }
 }
 
-impl<A: App> PlatformHandler for Runner<A> {
-    fn on_input(&mut self, event: InputEvent) -> Flow {
+impl<A: App> Runner<A> {
+    /// The one input path: live platform events and replayed events both land
+    /// here, so a replay exercises exactly what a user did.
+    fn handle_input(&mut self, event: InputEvent) -> Flow {
         crate::span!("input");
         match event {
             InputEvent::Key(k) => {
@@ -436,6 +524,66 @@ impl<A: App> PlatformHandler for Runner<A> {
         }
     }
 
+    /// Feed the replayer's due events through the normal input path. Returns
+    /// the flow the replay wants (redraws while playing, and — once finished,
+    /// screenshotted, and settled — an exit if configured).
+    fn service_replay(&mut self) -> Flow {
+        let Some(mut rs) = self.replay.take() else {
+            return Flow::Continue;
+        };
+        let mut flow = Flow::Continue;
+        for ev in rs.player.due_events() {
+            match self.handle_input(ev) {
+                // A replayed Esc ends an unattended run only after the shot:
+                // recordings usually end with the Esc that quit them.
+                Flow::Exit if rs.shot.is_some() => {}
+                Flow::Exit => flow = Flow::Exit,
+                Flow::Redraw => {
+                    if flow == Flow::Continue {
+                        flow = Flow::Redraw;
+                    }
+                }
+                Flow::Continue => {}
+            }
+        }
+        if rs.player.finished() {
+            match rs.finish_frames {
+                None => {
+                    // Playback just ended: ask for the end-state capture and
+                    // give the UI two frames to paint and fulfill it.
+                    if let Some(path) = rs.shot.take() {
+                        self.ui.request_screenshot(path);
+                    }
+                    rs.finish_frames = Some(2);
+                    flow = Flow::Redraw;
+                }
+                Some(0) => {
+                    // Settled. Either leave the app running interactively or
+                    // end the unattended run.
+                    if rs.exit_when_done {
+                        return Flow::Exit;
+                    }
+                    return flow; // replay state dropped here
+                }
+                Some(n) => {
+                    rs.finish_frames = Some(n - 1);
+                    flow = Flow::Redraw;
+                }
+            }
+        }
+        self.replay = Some(rs);
+        flow
+    }
+}
+
+impl<A: App> PlatformHandler for Runner<A> {
+    fn on_input(&mut self, event: InputEvent) -> Flow {
+        if let Some(rec) = &mut self.recorder {
+            rec.record(&event);
+        }
+        self.handle_input(event)
+    }
+
     fn render(&mut self, frame: &mut Frame<'_>) -> Vec<PRect> {
         // Mirror the input cursor onto the sprite, then damage the pixels it is
         // leaving and entering so copy-out refreshes them from the clean shadow
@@ -524,6 +672,12 @@ impl<A: App> PlatformHandler for Runner<A> {
         let dt = (now - self.last_tick).as_secs_f32();
         self.last_tick = now;
 
+        // Deliver any replayed events that have come due on the scaled clock.
+        let replay_flow = self.service_replay();
+        if replay_flow == Flow::Exit {
+            return Flow::Exit;
+        }
+
         // Fire a pending long-press if the contact has been held long enough.
         let t = self.now_ms();
         for g in self.gestures.poll(t) {
@@ -541,7 +695,7 @@ impl<A: App> PlatformHandler for Runner<A> {
         // Deliver any timer deadlines that came due while the loop slept.
         self.service_timers();
 
-        if self.ui.needs_paint() {
+        if self.ui.needs_paint() || replay_flow == Flow::Redraw {
             Flow::Redraw
         } else {
             Flow::Continue
@@ -559,6 +713,18 @@ impl<A: App> PlatformHandler for Runner<A> {
         if let Some(due) = self.timers.next_due() {
             let d = due.saturating_duration_since(Instant::now());
             t = Some(t.map_or(d, |cur| cur.min(d)));
+        }
+        // A replay in flight must keep the loop turning: until the next event
+        // is due, and at frame cadence through the settle frames at the end.
+        if let Some(rs) = &self.replay {
+            let d = if rs.finish_frames.is_some() {
+                Some(FRAME)
+            } else {
+                rs.player.next_due_in()
+            };
+            if let Some(d) = d {
+                t = Some(t.map_or(d, |cur| cur.min(d)));
+            }
         }
         t
     }
