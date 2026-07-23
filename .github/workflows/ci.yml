@@ -55,6 +55,12 @@ jobs:
           # The Phase 5 tracing instrumentation (zero-cost when off).
           cargo clippy -p fbui-widgets --all-targets --features profile
           cargo clippy -p fbui --all-targets --features "platform profile"
+          # The remote console: headless (hub/JSON/HTTP + end-to-end tests
+          # against a real ephemeral-port listener) and wired into the runner.
+          cargo clippy -p fbui --all-targets --features remote
+          cargo test -p fbui --features remote
+          cargo clippy -p fbui --all-targets --features "platform remote"
+          cargo test -p fbui --features "platform remote" --lib
       # Docs must build clean (warnings = errors): broken intra-doc links fail the
       # build. The umbrella's `run` lives behind `platform`, so document it with
       # the feature on.

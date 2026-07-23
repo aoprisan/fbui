@@ -24,6 +24,12 @@ svg = ["fbui-render/svg"]
 # Emit `tracing` spans through input → update → layout → paint → present so an
 # app can capture a per-frame flamegraph. Off by default, zero-cost when off.
 profile = ["dep:tracing", "fbui-widgets/profile"]
+# The remote console: an embedded HTTP server (std::net, no new dependencies)
+# serving a live view of the screen, input injection, a widget-tree inspector,
+# and Prometheus metrics. The runner activates it when FBUI_REMOTE is set
+# (needs `platform` for that); the module itself is headless-testable.
+# See `docs/remote-console.md`.
+remote = []
 
 [dependencies]
 fbui-render = { path = "../fbui-render" }

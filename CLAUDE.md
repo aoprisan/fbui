@@ -134,7 +134,10 @@ fbui-testkit   golden-PNG snapshot harness (dev-dependency only)
 
 `fbui` (umbrella): headless by default; `platform` pulls in fbui-platform and
 the runner (examples require it), `bundled-font` compiles in Inter (~300 KB),
-`profile` emits `tracing` spans.
+`profile` emits `tracing` spans, `remote` adds the remote console (an embedded
+HTTP server — live screen view, input injection, widget-tree inspector,
+Prometheus metrics — activated by `FBUI_REMOTE`; see `docs/remote-console.md`;
+the module is headless-testable, the runner wiring needs `platform`).
 
 `fbui-platform`: the **default set is everything that builds with no system C
 libraries**: `drm-backend fbdev evdev noseat event-loop term`. The C-library backends

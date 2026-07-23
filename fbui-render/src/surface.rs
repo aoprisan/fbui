@@ -20,6 +20,31 @@ use crate::geom::{IRect, Rect};
 use crate::painter::Painter;
 use crate::scale::Scale;
 
+/// Encode straight-alpha RGBA8 rows (`width * 4` bytes each, no padding) as a
+/// PNG. This is [`Surface::encode_png`] for pixels that already left the
+/// surface — a frame snapshot shipped to another thread, say. Errors on a
+/// buffer that isn't exactly `width * height * 4` bytes.
+pub fn encode_png_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
+    if rgba.len() != width as usize * height as usize * 4 {
+        return Err(format!(
+            "rgba buffer is {} bytes, expected {} for {width}x{height}",
+            rgba.len(),
+            width as usize * height as usize * 4
+        ));
+    }
+    let mut bytes = std::io::Cursor::new(Vec::new());
+    image::write_buffer_with_format(
+        &mut bytes,
+        rgba,
+        width,
+        height,
+        image::ExtendedColorType::Rgba8,
+        image::ImageFormat::Png,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(bytes.into_inner())
+}
+
 /// A CPU render target plus its damage bookkeeping.
 pub struct Surface {
     shadow: tiny_skia::Pixmap,
@@ -126,18 +151,7 @@ impl Surface {
     /// pairs with this for capture from a running app; call it directly when
     /// you hold the surface (tests, tooling, a custom runner).
     pub fn encode_png(&self) -> Result<Vec<u8>, String> {
-        let rgba = self.to_rgba();
-        let mut bytes = std::io::Cursor::new(Vec::new());
-        image::write_buffer_with_format(
-            &mut bytes,
-            &rgba,
-            self.width(),
-            self.height(),
-            image::ExtendedColorType::Rgba8,
-            image::ImageFormat::Png,
-        )
-        .map_err(|e| e.to_string())?;
-        Ok(bytes.into_inner())
+        encode_png_rgba(self.width(), self.height(), &self.to_rgba())
     }
 
     /// Write the rendered pixels to `path` as a PNG. See

@@ -1929,3 +1929,48 @@ fn tooltip_long_press_shows_immediately_and_press_hides() {
     ui.paint(&mut surface);
     assert_eq!(baseline, surface.pixmap().data(), "tip fully erased");
 }
+
+// ---- introspection --------------------------------------------------------
+
+#[test]
+fn inspect_reports_the_tree_with_names_bounds_and_focus() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().padding(10.0).fill());
+    let a = ui.add_child(root, Button::new("A"));
+    let field = ui.add_child(root, TextInput::new());
+    ui.event(Event::Key {
+        key: Key::Tab,
+        pressed: true,
+        mods: Modifiers::default(),
+    }); // focus the first focusable (the button)
+
+    let snap = ui.inspect().expect("a root exists");
+    assert_eq!(snap.name, "Container");
+    assert_eq!(snap.children.len(), 2);
+    assert_eq!(snap.children[0].name, "Button");
+    assert_eq!(snap.children[1].name, "TextInput");
+
+    // Bounds match what the Ui itself reports.
+    assert_eq!(snap.children[0].bounds, ui.bounds(a).unwrap());
+    assert_eq!(snap.children[1].bounds, ui.bounds(field).unwrap());
+
+    // Focus/focusable state is carried through.
+    assert!(!snap.focusable, "containers are not focusable");
+    assert!(snap.children[0].focusable && snap.children[0].focused);
+    assert!(snap.children[1].focusable && !snap.children[1].focused);
+
+    // Ids are stable across snapshots of the same tree.
+    let again = ui.inspect().unwrap();
+    assert_eq!(snap.children[0].id, again.children[0].id);
+}
+
+#[test]
+fn inspect_lays_out_first_so_bounds_are_current() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    ui.add_child(root, Button::new("A"));
+    // No explicit layout_now: inspect must not report zero-sized bounds.
+    let snap = ui.inspect().unwrap();
+    assert!(snap.bounds.w > 0.0 && snap.bounds.h > 0.0);
+    assert!(snap.children[0].bounds.w > 0.0);
+}
