@@ -28,6 +28,12 @@
 //! # #[cfg(not(feature = "platform"))] fn main() {}
 //! ```
 
+// `run`, `Proxy`, and friends live behind the `platform` feature; intra-doc
+// links to them only resolve when it's on. CI documents this crate with the
+// feature enabled (full strictness); a headless doc build shouldn't fail on
+// links to items it deliberately compiled out.
+#![cfg_attr(not(feature = "platform"), allow(rustdoc::broken_intra_doc_links))]
+
 pub use fbui_render as render;
 pub use fbui_widgets as widgets_crate;
 
@@ -52,10 +58,15 @@ pub(crate) use span;
 // [`Widget`] trait — and size/animate their own widgets — without reaching past
 // the umbrella into `fbui_widgets`.
 pub use fbui_widgets::{
-    anim, ctx, event, style, theme, tree, widget, widgets, Anim, AnimCtx, Event, Key, Modifiers,
-    PaintCtx, PointerButton, Style, Theme, Ui, Widget, WidgetId,
+    anim, ctx, event, style, theme, tree, widget, widgets, Anim, AnimCtx, Event, InspectNode, Key,
+    Modifiers, PaintCtx, PointerButton, Style, Theme, Ui, Widget, WidgetId,
 };
 
+#[cfg(feature = "remote")]
+pub mod remote;
+
+#[cfg(feature = "platform")]
+mod hud;
 #[cfg(feature = "platform")]
 mod record;
 #[cfg(feature = "platform")]

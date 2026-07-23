@@ -19,6 +19,36 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Added
 
+- **The remote console** (`fbui` feature `remote`) — every fbui app becomes
+  remotely observable and operable over HTTP: set `FBUI_REMOTE=8433` and the
+  runner serves an embedded single-file web console with a **live view of the
+  screen** (multipart PNG stream, damage-driven), **remote control** (clicks,
+  scrolls, and typing injected through the exact live input path — gestures
+  fire, focus moves, `FBUI_RECORD` captures it, so a remotely reproduced field
+  issue becomes a replayable regression test), a **widget-tree inspector**
+  with on-screen highlighting, and a **Prometheus `/metrics` endpoint**
+  (frame cost, input counts, uptime) for fleet monitoring. Also scriptable
+  headless: `curl -X POST '…/input?type=tap&x=240&y=112'`, `GET /screen.png`
+  (works while idle), `GET /tree`. No X11, no VNC, no new dependencies — the
+  server is hand-rolled over `std::net`; nothing runs unless `FBUI_REMOTE` is
+  set, a bare port binds loopback only, and `FBUI_REMOTE_TOKEN` gates every
+  request when set. Headless-tested end to end (`fbui/tests/remote_http.rs`).
+  See `docs/remote-console.md`.
+- **`Ui::inspect`** (`fbui-widgets`) — a diagnostics snapshot of the live
+  tree: every node's widget name (new defaulted `Widget::debug_name` hook),
+  laid-out bounds, focusable/focused/hovered state, floating overlay rect,
+  and children, as plain owned data (`InspectNode`). What the remote
+  console's `/tree` serves; equally useful to a test harness or a custom
+  embedder (`fbui::remote::tree_json` emits the same JSON document).
+- **Debug HUD** (`FBUI_HUD=1`) — an fps / paint-cost readout composited into
+  the top-right corner of every presented frame, drawn like the software
+  cursor (after copy-out, never into the shadow) with a built-in 3×5 pixel
+  font, so it works even when text rendering is what's broken. Freezes with
+  an idle app — the idle-burns-0% rule is untouched.
+- **`fbui_render::encode_png_rgba`** — PNG-encode straight-alpha RGBA8 rows
+  that already left a `Surface` (`Surface::encode_png` now delegates to it);
+  the form a frame snapshot shipped to another thread needs.
+
 - **Terminal backend** (`fbui-platform` feature `term`, in the default set) —
   run any unmodified fbui app *inside a terminal*: over SSH, in a terminal
   emulator on a dev machine, in CI. `FBUI_BACKEND=term` forces it; when DRM
@@ -189,6 +219,10 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Fixed
 
+- A headless `cargo doc --no-deps --workspace` failed on `fbui`'s intra-doc
+  links to platform-gated runner items (`run`, `Proxy`); those links are now
+  exempt only when the `platform` feature is off — CI still documents with
+  the feature on, where they're fully checked.
 - A stray debug `eprintln!` in `Ui::paint` printed a line on every
   scroll-blit frame; removed.
 - `Keyboard` no longer leaks pointer capture when a held (auto-repeating)

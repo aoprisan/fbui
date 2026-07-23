@@ -77,5 +77,5 @@ pub use image::Image;
 pub use painter::Painter;
 pub use path::{Path, PathBuilder};
 pub use scale::Scale;
-pub use surface::Surface;
+pub use surface::{encode_png_rgba, Surface};
 pub use text::{FontContext, FontFamily, TextLayout, TextStyle};

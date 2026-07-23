@@ -250,6 +250,16 @@ pub trait Widget<Msg>: Any {
     /// that [`clips`](Widget::clips). Default: ignore.
     fn set_scroll_metrics(&mut self, _content: Size, _viewport: Size) {}
 
+    /// A human-readable name for diagnostics — what
+    /// [`Ui::inspect`](crate::Ui::inspect) reports for this node. The default
+    /// is the implementing type's full path (e.g.
+    /// `fbui_widgets::widgets::button::Button<app::Msg>`); inspectors
+    /// typically shorten it to the bare type name. Override only when the
+    /// type name is uninformative (a generic wrapper hosting many roles).
+    fn debug_name(&self) -> &'static str {
+        std::any::type_name::<Self>()
+    }
+
     /// Downcast hook so the application can mutate a concrete widget by id via
     /// [`Ui::with`](crate::Ui::with). Implementors return `self`.
     fn as_any_mut(&mut self) -> &mut dyn Any;

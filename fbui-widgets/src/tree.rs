@@ -115,6 +115,33 @@ struct TipState {
     shown: Option<(WidgetId, Rect)>,
 }
 
+/// One node of a [`Ui::inspect`] snapshot: plain owned data describing a live
+/// widget — no borrow into the tree, so it can cross threads or serialize.
+#[derive(Debug, Clone)]
+pub struct InspectNode {
+    /// The node's [`WidgetId`] in its `Debug` form (e.g. `WidgetId(1v1)`) —
+    /// stable for the widget's lifetime, for correlating snapshots.
+    pub id: String,
+    /// The widget's [`debug_name`](Widget::debug_name), shortened to the bare
+    /// type name (`Button`, `ScrollView`, …).
+    pub name: String,
+    /// Absolute logical bounds after layout.
+    pub bounds: Rect,
+    pub focusable: bool,
+    pub focused: bool,
+    pub hovered: bool,
+    /// The floating overlay rect the widget currently reports, if any.
+    pub overlay: Option<Rect>,
+    pub children: Vec<InspectNode>,
+}
+
+/// `fbui_widgets::widgets::button::Button<app::Msg>` → `Button`: drop generic
+/// parameters, then keep the last path segment.
+fn short_type_name(full: &str) -> &str {
+    let base = full.split('<').next().unwrap_or(full);
+    base.rsplit("::").next().unwrap_or(base)
+}
+
 /// One node: the widget, its taffy peer, tree links, and resolved bounds.
 struct Node<Msg> {
     widget: Box<dyn Widget<Msg>>,
@@ -1246,6 +1273,39 @@ impl<Msg: 'static> Ui<Msg> {
             for &c in &node.children {
                 self.collect_focusable(c, out);
             }
+        }
+    }
+
+    // ---- introspection ---------------------------------------------------
+
+    /// A snapshot of the live tree for diagnostics: every node's widget name,
+    /// laid-out bounds, focus/hover state, and floating overlay, in tree
+    /// order. Lays out first so the geometry is current. `None` with no root.
+    ///
+    /// This is the data a debugger, a remote inspector, or a test harness
+    /// needs to see the UI the way the `Ui` does. It borrows nothing from the
+    /// tree — the snapshot is plain owned data, safe to ship across threads
+    /// or serialize.
+    pub fn inspect(&mut self) -> Option<InspectNode> {
+        self.layout_now();
+        self.root.map(|r| self.inspect_node(r))
+    }
+
+    fn inspect_node(&self, id: WidgetId) -> InspectNode {
+        let node = &self.nodes[id];
+        InspectNode {
+            id: format!("{id:?}"),
+            name: short_type_name(node.widget.debug_name()).to_string(),
+            bounds: node.layout,
+            focusable: node.widget.focusable(),
+            focused: self.focus == Some(id),
+            hovered: self.hover == Some(id),
+            overlay: node.widget.overlay_rect(node.layout, self.size),
+            children: node
+                .children
+                .iter()
+                .map(|&c| self.inspect_node(c))
+                .collect(),
         }
     }
 
