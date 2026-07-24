@@ -157,6 +157,23 @@ struct Node<Msg> {
 }
 
 /// The widget tree plus its layout, input, and paint machinery.
+/// What a [`Ui::stream`] mutation changed — the widget's own precise damage
+/// verdict, in place of the blanket damage [`Ui::with`] would schedule.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StreamDamage {
+    /// Nothing visible changed (a sample coalesced into an unchanged pixel).
+    Quiet,
+    /// A scroll-blit was recorded (consumed by [`Widget::scroll_blit_xy`] on
+    /// the next paint pass); `extra` is an additional rect to repaint beyond the exposed
+    /// strip — the seam where fresh geometry must overdraw shifted pixels.
+    Shifted {
+        /// Extra logical rect to damage alongside the blit strip, if any.
+        extra: Option<Rect>,
+    },
+    /// The widget's whole laid-out box needs repainting (no relayout).
+    Repaint,
+}
+
 pub struct Ui<Msg> {
     taffy: TaffyTree<WidgetId>,
     nodes: SlotMap<WidgetId, Node<Msg>>,
@@ -181,6 +198,10 @@ pub struct Ui<Msg> {
     /// Logical damage awaiting the next paint.
     damage: Vec<Rect>,
     needs_layout: bool,
+    /// A [`stream`](Self::stream) mutation recorded a pending scroll-blit; the
+    /// next [`paint`](Self::paint) must run even though `damage` may be empty
+    /// (the blit itself produces the strip damage).
+    pending_stream: bool,
     /// At least one widget has a running animation; drive [`animate`](Self::animate).
     animating: bool,
     /// A pending [`request_screenshot`](Self::request_screenshot) destination.
@@ -216,6 +237,7 @@ impl<Msg: 'static> Ui<Msg> {
             messages: Vec::new(),
             damage: Vec::new(),
             needs_layout: true,
+            pending_stream: false,
             animating: false,
             screenshot: None,
         }
@@ -406,6 +428,50 @@ impl<Msg: 'static> Ui<Msg> {
         // a tween). Tick once; `animate` clears this again if nothing is running.
         self.animating = true;
         Some(r)
+    }
+
+    /// Like [`with`](Self::with), but for **high-rate streaming updates**: the
+    /// mutation reports its own precise damage instead of receiving the
+    /// blanket full-bounds damage + relayout `with` schedules. This is the
+    /// programmatic twin of the event-path fast lane a
+    /// [`ScrollView`](crate::widgets::ScrollView) uses — it's what lets a
+    /// telemetry [`Chart`](crate::widgets::Chart) accept samples at wire rate
+    /// while repainting only a few columns per frame.
+    ///
+    /// The closure returns a [`StreamDamage`]:
+    /// - [`Quiet`](StreamDamage::Quiet) — nothing visible changed; the update
+    ///   costs nothing.
+    /// - [`Shifted`](StreamDamage::Shifted) — the widget recorded a pending
+    ///   shift for its [`scroll_blit_xy`](Widget::scroll_blit_xy) hook; the
+    ///   next [`paint`](Self::paint) memmoves the pixels and repaints the
+    ///   exposed strip (plus the optional extra rect, e.g. the joint where new
+    ///   geometry meets shifted pixels).
+    /// - [`Repaint`](StreamDamage::Repaint) — repaint the widget's whole box
+    ///   (an axis range changed), still without a relayout.
+    ///
+    /// Returns the closure's verdict, or `None` if the id is stale or the type
+    /// doesn't match. Use plain [`with`](Self::with) for anything that can
+    /// change the widget's *size*.
+    pub fn stream<W: Widget<Msg> + 'static>(
+        &mut self,
+        id: WidgetId,
+        f: impl FnOnce(&mut W) -> StreamDamage,
+    ) -> Option<StreamDamage> {
+        let node = self.nodes.get_mut(id)?;
+        let layout = node.layout;
+        let w = node.widget.as_any_mut().downcast_mut::<W>()?;
+        let verdict = f(w);
+        match verdict {
+            StreamDamage::Quiet => {}
+            StreamDamage::Shifted { extra } => {
+                self.pending_stream = true;
+                if let Some(r) = extra {
+                    self.damage.push(r);
+                }
+            }
+            StreamDamage::Repaint => self.damage.push(layout),
+        }
+        Some(verdict)
     }
 
     /// Mark a widget's bounds for repaint without mutating it.
@@ -701,7 +767,7 @@ impl<Msg: 'static> Ui<Msg> {
 
     /// Whether there is anything to repaint.
     pub fn needs_paint(&self) -> bool {
-        self.needs_layout || !self.damage.is_empty()
+        self.needs_layout || !self.damage.is_empty() || self.pending_stream
     }
 
     /// Advance every widget's animation by `dt` seconds, accumulating damage for
@@ -835,6 +901,7 @@ impl<Msg: 'static> Ui<Msg> {
             layout.size.height,
         );
         self.nodes[id].layout = rect;
+        self.nodes[id].widget.placed(rect, self.scale);
 
         // Feed scrolling widgets their content vs. viewport extents so they can
         // clamp their offset before we read it.
@@ -1321,23 +1388,26 @@ impl<Msg: 'static> Ui<Msg> {
         if self.needs_layout {
             self.relayout();
         }
-        // Scroll-blit fast path: any widget with a pending vertical scroll has its
-        // existing pixels shifted in place (a sequential memmove) rather than
-        // re-rasterized; only the exposed strip is added to the repaint set. The
-        // widget separately damaged the small bits that don't shift (e.g. a moved
-        // scrollbar thumb), so this stays correct.
+        // Scroll-blit fast path: any widget with a pending scroll (vertical
+        // list scroll, horizontal chart stream) has its existing pixels shifted
+        // in place (a sequential memmove) rather than re-rasterized; only the
+        // exposed strip is added to the repaint set. The widget separately
+        // damaged the small bits that don't shift (a moved scrollbar thumb, the
+        // joint where a chart's new segment meets old pixels), so this stays
+        // correct.
+        self.pending_stream = false;
         let ids: Vec<WidgetId> = self.nodes.keys().collect();
         for id in ids {
-            if let Some(dy) = self.nodes[id].widget.scroll_blit() {
-                let bounds = self.nodes[id].layout;
-                // The shift moves whatever pixels occupy the bounds — including
+            let bounds = self.nodes[id].layout;
+            if let Some((region, dx, dy)) = self.nodes[id].widget.scroll_blit_xy(bounds) {
+                // The shift moves whatever pixels occupy the region — including
                 // anything painted *over* the widget (a Stack overlay). In that
                 // case reusing them would drag the overlay along; fall back to
                 // repainting the widget in full.
-                if self.overlaid(id, bounds) {
+                if self.overlaid(id, region) {
                     self.damage.push(bounds);
                 } else {
-                    let strip = surface.scroll_region(bounds, dy);
+                    let strip = surface.scroll_region_xy(region, dx, dy);
                     self.damage.push(strip);
                 }
             }

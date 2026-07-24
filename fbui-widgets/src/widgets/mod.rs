@@ -8,10 +8,12 @@
 //! (floating action menus), [`Toasts`] (transient notifications).
 
 mod button;
+mod chart;
 mod checkbox;
 mod container;
 mod context_menu;
 mod dialog;
+mod gauge;
 mod image;
 mod keyboard;
 mod label;
@@ -30,10 +32,12 @@ mod text_input;
 mod toast;
 
 pub use button::{Button, ButtonVariant};
+pub use chart::Chart;
 pub use checkbox::Checkbox;
 pub use container::{Align, Container};
 pub use context_menu::ContextMenu;
 pub use dialog::Dialog;
+pub use gauge::Gauge;
 pub use image::ImageView;
 pub use keyboard::Keyboard;
 pub use label::Label;

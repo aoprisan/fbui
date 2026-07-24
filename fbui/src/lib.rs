@@ -59,7 +59,7 @@ pub(crate) use span;
 // the umbrella into `fbui_widgets`.
 pub use fbui_widgets::{
     anim, ctx, event, style, theme, tree, widget, widgets, Anim, AnimCtx, Event, InspectNode, Key,
-    Modifiers, PaintCtx, PointerButton, Style, Theme, Ui, Widget, WidgetId,
+    Modifiers, PaintCtx, PointerButton, StreamDamage, Style, Theme, Ui, Widget, WidgetId,
 };
 
 #[cfg(feature = "remote")]
