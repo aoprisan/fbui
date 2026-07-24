@@ -56,6 +56,13 @@ impl Path {
         pb.close();
         pb.finish().map(Path)
     }
+
+    /// A full circle centred at `(cx, cy)`, or `None` if degenerate.
+    pub fn circle(cx: f32, cy: f32, radius: f32) -> Option<Path> {
+        let mut pb = tiny_skia::PathBuilder::new();
+        pb.push_circle(cx, cy, radius);
+        pb.finish().map(Path)
+    }
 }
 
 /// Builder for an open/closed path in logical coordinates.
@@ -92,6 +99,51 @@ impl PathBuilder {
         y: f32,
     ) -> &mut Self {
         self.0.cubic_to(c1x, c1y, c2x, c2y, x, y);
+        self
+    }
+
+    /// Append a circular arc centred at `(cx, cy)`: from angle `start`, sweeping
+    /// `sweep` radians. Angles are measured from the positive x-axis toward
+    /// positive y — **clockwise on screen** (y grows downward), so a gauge's
+    /// left-to-right top sweep runs from ~`0.75π` through `0` … wrapping sign as
+    /// needed. A line (or an initial `move_to` on an empty path) connects the
+    /// current point to the arc's start, so arcs chain naturally with other
+    /// segments.
+    ///
+    /// The arc is the standard cubic-Bézier approximation, split into segments
+    /// of at most a quarter turn (error < 0.03% of radius).
+    pub fn arc(&mut self, cx: f32, cy: f32, radius: f32, start: f32, sweep: f32) -> &mut Self {
+        let pt = |a: f32| (cx + radius * a.cos(), cy + radius * a.sin());
+        let (x0, y0) = pt(start);
+        if self.0.is_empty() {
+            self.0.move_to(x0, y0);
+        } else {
+            self.0.line_to(x0, y0);
+        }
+        if sweep == 0.0 || radius <= 0.0 {
+            return self;
+        }
+        let n = (sweep.abs() / std::f32::consts::FRAC_PI_2).ceil().max(1.0) as u32;
+        let step = sweep / n as f32;
+        // Control-point distance for a cubic approximating a `step`-radian arc;
+        // the sign rides along from `step`, flipping the tangents for
+        // counter-sweep arcs.
+        let k = 4.0 / 3.0 * (step / 4.0).tan();
+        let mut a0 = start;
+        for _ in 0..n {
+            let a1 = a0 + step;
+            let (px0, py0) = pt(a0);
+            let (px3, py3) = pt(a1);
+            self.0.cubic_to(
+                px0 - k * radius * a0.sin(),
+                py0 + k * radius * a0.cos(),
+                px3 + k * radius * a1.sin(),
+                py3 - k * radius * a1.cos(),
+                px3,
+                py3,
+            );
+            a0 = a1;
+        }
         self
     }
 
@@ -135,5 +187,47 @@ mod tests {
         let mut pb = PathBuilder::new();
         pb.move_to(1.0, 1.0);
         assert!(pb.finish().is_none());
+    }
+
+    #[test]
+    fn full_circle_arc_bounds_match_circle() {
+        let mut pb = PathBuilder::new();
+        pb.arc(50.0, 50.0, 20.0, 0.0, std::f32::consts::TAU);
+        let b = pb.finish().unwrap().bounds();
+        assert!((b.x - 30.0).abs() < 0.1 && (b.y - 30.0).abs() < 0.1);
+        assert!((b.w - 40.0).abs() < 0.2 && (b.h - 40.0).abs() < 0.2);
+    }
+
+    #[test]
+    fn arc_endpoint_lands_on_the_circle() {
+        // A three-quarter sweep from 0: the last on-curve point must sit at
+        // angle 1.5π, i.e. (cx, cy - r).
+        let mut pb = PathBuilder::new();
+        pb.arc(0.0, 0.0, 10.0, 0.0, 1.5 * std::f32::consts::PI);
+        pb.line_to(0.0, 0.0); // close back to centre so bounds include it
+        let b = pb.finish().unwrap().bounds();
+        assert!(
+            (b.y - -10.0).abs() < 0.1,
+            "top of arc at cy - r, got {}",
+            b.y
+        );
+        assert!(
+            (b.x - -10.0).abs() < 0.1,
+            "left extreme reached, got {}",
+            b.x
+        );
+    }
+
+    #[test]
+    fn negative_sweep_mirrors_positive() {
+        let mut a = PathBuilder::new();
+        a.arc(0.0, 0.0, 10.0, 0.0, std::f32::consts::FRAC_PI_2);
+        let ba = a.finish().unwrap().bounds();
+        let mut b = PathBuilder::new();
+        b.arc(0.0, 0.0, 10.0, 0.0, -std::f32::consts::FRAC_PI_2);
+        let bb = b.finish().unwrap().bounds();
+        // Same footprint mirrored across y=0.
+        assert!((ba.y - -bb.bottom().abs()).abs() < 0.2 || (ba.y + bb.bottom()).abs() < 0.2);
+        assert!((ba.w - bb.w).abs() < 0.2);
     }
 }

@@ -194,12 +194,30 @@ impl Surface {
     /// (shaping and rasterizing every visible row) shrinks to just the one row
     /// band that scrolled into view; the rest is a sequential `memmove`.
     pub fn scroll_region(&mut self, rect: Rect, dy: f32) -> Rect {
+        self.scroll_region_xy(rect, 0.0, dy)
+    }
+
+    /// Scroll the pixels inside `rect` (logical) by `(dx, dy)` logical pixels,
+    /// reusing them instead of re-rasterizing — the 2-axis generalization of
+    /// [`scroll_region`](Surface::scroll_region). Positive `dx` moves content
+    /// rightward, positive `dy` downward.
+    ///
+    /// Only **single-axis** shifts reuse pixels; a diagonal shift (both
+    /// components rounding to a nonzero device offset) has no cheap in-place
+    /// move order, so the whole `rect` is damaged and returned for repaint,
+    /// exactly like an over-large shift. The horizontal path is what a
+    /// streaming strip chart rides: each new sample is a per-row `memmove`
+    /// left plus a repaint of just the strip that scrolled into view.
+    pub fn scroll_region_xy(&mut self, rect: Rect, dx: f32, dy: f32) -> Rect {
         let dev = self
             .scale
             .to_device_rect(rect)
             .clamp_to(self.width(), self.height());
+        let ddx = (dx * self.scale.factor()).round() as i32;
         let ddy = (dy * self.scale.factor()).round() as i32;
-        if dev.is_empty() || ddy == 0 || ddy.unsigned_abs() >= dev.h {
+        let one_axis = (ddx == 0) != (ddy == 0);
+        if dev.is_empty() || !one_axis || ddx.unsigned_abs() >= dev.w || ddy.unsigned_abs() >= dev.h
+        {
             // Nothing reusable: the caller repaints the whole rect.
             if !dev.is_empty() {
                 self.damage.add(dev);
@@ -223,17 +241,33 @@ impl Surface {
                 let (s, d) = (row(y - ddy), row(y));
                 data.copy_within(s..s + cols * bpp, d);
             }
-        } else {
+        } else if ddy < 0 {
             // Content moves up: dest row y copies from y+|ddy|. Walk top-down.
             let s = (-ddy) as usize;
             for y in y0..y0 + h - s as i32 {
                 let (src, dst) = (row(y + s as i32), row(y));
                 data.copy_within(src..src + cols * bpp, dst);
             }
+        } else {
+            // Horizontal: within each row the source and destination spans
+            // overlap; `copy_within` is memmove, so the order is safe.
+            let s = ddx.unsigned_abs() as usize;
+            for y in y0..y0 + h {
+                let r = row(y);
+                if ddx > 0 {
+                    data.copy_within(r..r + (cols - s) * bpp, r + s * bpp);
+                } else {
+                    data.copy_within(r + s * bpp..r + cols * bpp, r);
+                }
+            }
         }
 
         self.damage.add(dev);
-        if dy > 0.0 {
+        if ddx > 0 {
+            Rect::new(rect.x, rect.y, dx, rect.h)
+        } else if ddx < 0 {
+            Rect::new(rect.right() + dx, rect.y, -dx, rect.h)
+        } else if dy > 0.0 {
             Rect::new(rect.x, rect.y, rect.w, dy)
         } else {
             Rect::new(rect.x, rect.bottom() + dy, rect.w, -dy)
@@ -365,6 +399,82 @@ mod tests {
         let whole = Rect::new(0.0, 0.0, 1.0, 4.0);
         assert_eq!(s.scroll_region(whole, 4.0), whole);
         assert_eq!(row_color(&s, 1), (1, 0, 0));
+    }
+
+    fn col_color(s: &Surface, x: u32) -> (u8, u8, u8) {
+        let px = s.pixmap().pixel(x, 0).unwrap();
+        (px.red(), px.green(), px.blue())
+    }
+
+    /// A 6×1 surface with a distinct colour per column.
+    fn column_stripes() -> Surface {
+        let mut s = Surface::new(6, 1, Scale::ONE);
+        for x in 0..6u32 {
+            s.paint(|p| {
+                p.fill_rect(
+                    Rect::new(x as f32, 0.0, 1.0, 1.0),
+                    Color::rgb(x as u8, 0, 0),
+                )
+            });
+        }
+        let _ = s.present_to_buffer(&mut [0u8; 6 * 4], 24, TargetFormat::Xrgb8888, 1);
+        s
+    }
+
+    #[test]
+    fn scroll_region_xy_shifts_pixels_left() {
+        let mut s = column_stripes();
+        // Content moves left by 2: column x now shows the old column x+2.
+        let exposed = s.scroll_region_xy(Rect::new(0.0, 0.0, 6.0, 1.0), -2.0, 0.0);
+        assert_eq!(
+            exposed,
+            Rect::new(4.0, 0.0, 2.0, 1.0),
+            "right strip exposed"
+        );
+        assert_eq!(col_color(&s, 0), (2, 0, 0));
+        assert_eq!(col_color(&s, 1), (3, 0, 0));
+        assert_eq!(col_color(&s, 3), (5, 0, 0));
+    }
+
+    #[test]
+    fn scroll_region_xy_shifts_pixels_right() {
+        let mut s = column_stripes();
+        let exposed = s.scroll_region_xy(Rect::new(0.0, 0.0, 6.0, 1.0), 2.0, 0.0);
+        assert_eq!(exposed, Rect::new(0.0, 0.0, 2.0, 1.0), "left strip exposed");
+        assert_eq!(col_color(&s, 2), (0, 0, 0));
+        assert_eq!(col_color(&s, 5), (3, 0, 0));
+    }
+
+    #[test]
+    fn scroll_region_xy_respects_sub_rect_rows() {
+        // Two rows; scroll only the top row left and check the bottom row is
+        // untouched (the per-row memmove must honor the region's y span).
+        let mut s = Surface::new(4, 2, Scale::ONE);
+        for x in 0..4u32 {
+            for y in 0..2u32 {
+                s.paint(|p| {
+                    p.fill_rect(
+                        Rect::new(x as f32, y as f32, 1.0, 1.0),
+                        Color::rgb(x as u8, y as u8 * 100, 0),
+                    )
+                });
+            }
+        }
+        let _ = s.present_to_buffer(&mut [0u8; 4 * 2 * 4], 16, TargetFormat::Xrgb8888, 1);
+        s.scroll_region_xy(Rect::new(0.0, 0.0, 4.0, 1.0), -1.0, 0.0);
+        let px = s.pixmap().pixel(0, 0).unwrap();
+        assert_eq!((px.red(), px.green()), (1, 0), "top row shifted");
+        let px = s.pixmap().pixel(0, 1).unwrap();
+        assert_eq!((px.red(), px.green()), (0, 100), "bottom row untouched");
+    }
+
+    #[test]
+    fn scroll_region_xy_diagonal_reuses_nothing() {
+        let mut s = column_stripes();
+        let whole = Rect::new(0.0, 0.0, 6.0, 1.0);
+        // Both axes nonzero: no reuse — whole rect back, pixels untouched.
+        assert_eq!(s.scroll_region_xy(whole, -2.0, 1.0), whole);
+        assert_eq!(col_color(&s, 0), (0, 0, 0));
     }
 
     #[test]

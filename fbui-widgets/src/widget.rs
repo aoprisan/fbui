@@ -183,6 +183,23 @@ pub trait Widget<Msg>: Any {
         None
     }
 
+    /// The 2-axis generalization of [`scroll_blit`](Self::scroll_blit): a
+    /// pending shift of `(dx, dy)` logical px applied to `region` (a sub-rect
+    /// of `bounds`, the widget's laid-out box), consuming it. This is what the
+    /// [`Ui`](crate::Ui) actually polls before repaint; the default forwards
+    /// the legacy vertical hook over the full bounds, so a widget overrides
+    /// exactly one of the two.
+    ///
+    /// Restricting `region` matters to widgets whose box contains both
+    /// scrolling content and fixed chrome: a streaming
+    /// [`Chart`](crate::widgets::Chart) shifts only its plot area leftward, so
+    /// its axis gutter never picks up dragged pixels. Only one axis may be
+    /// nonzero — a diagonal shift reuses nothing (see
+    /// [`Surface::scroll_region_xy`](fbui_render::Surface::scroll_region_xy)).
+    fn scroll_blit_xy(&mut self, bounds: Rect) -> Option<(Rect, f32, f32)> {
+        self.scroll_blit().map(|dy| (bounds, 0.0, dy))
+    }
+
     /// Whether this widget accepts keyboard focus (tab order, key events).
     fn focusable(&self) -> bool {
         false
@@ -249,6 +266,14 @@ pub trait Widget<Msg>: Any {
     /// so it can clamp its scroll offset. Called by the `Ui` only for widgets
     /// that [`clips`](Widget::clips). Default: ignore.
     fn set_scroll_metrics(&mut self, _content: Size, _viewport: Size) {}
+
+    /// Called after every layout pass with this widget's placed bounds and the
+    /// surface scale. The hook a widget uses to cache geometry it needs
+    /// *outside* paint — a streaming [`Chart`](crate::widgets::Chart) derives
+    /// its device-quantized sample step here so a later
+    /// [`Ui::stream`](crate::Ui::stream) push can decide between a scroll-blit
+    /// and a full repaint without a paint context. Default: ignore.
+    fn placed(&mut self, _bounds: Rect, _scale: fbui_render::Scale) {}
 
     /// A human-readable name for diagnostics — what
     /// [`Ui::inspect`](crate::Ui::inspect) reports for this node. The default

@@ -19,6 +19,38 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Added
 
+- **Instrument widgets** (`fbui-widgets`) — live-data widgets for the HMI /
+  dashboard niche: **`Chart`**, a multi-series streaming strip chart (newest
+  sample pinned right, traces scroll left; auto y-range quantized to nice
+  1-2-5 bounds with escape/shrink hysteresis, or `fixed_range`; horizontal
+  gridlines, sample-locked scrolling time-gridlines, area fill, NaN gaps,
+  y-axis gutter labels; `Chart::sparkline()` chrome-free preset) and
+  **`Gauge`**, a 270° radial dial (colored zone bands, 1-2-5 tick ladder,
+  accent value arc, needle animated on the frame-`dt` `Tween` contract,
+  numeric readout). Both headless, deterministic, and snapshot-tested. See
+  `docs/instruments.md` and the `telemetry` example.
+- **`Ui::stream` + `StreamDamage`** (`fbui-widgets`) — the high-rate mutation
+  path: unlike `Ui::with` (full-bounds damage + relayout, correct-but-
+  pessimistic), the widget reports the cheapest honest damage — `Quiet`
+  (nothing visible), `Shifted` (pixels scroll-blitted; repaint only the
+  exposed strip + seam), or `Repaint` (whole box, no relayout). A steady-state
+  chart push costs a `memmove` plus a few re-rasterized columns; the
+  `chart_stream_blit_matches_a_full_repaint` test pins the fast path against
+  a forced full repaint frame-by-frame at two scales, per the fast-path
+  invariant.
+- **2-axis scroll-blit** — `Surface::scroll_region_xy` (fbui-render)
+  generalizes the Phase 5 scroll-blit to horizontal shifts (per-row
+  overlapping `memmove`; single-axis only, diagonals fall back to full
+  repaint), and the new defaulted `Widget::scroll_blit_xy` hook lets a widget
+  shift a *sub-rect* of its box (the chart shifts its plot, never the axis
+  gutter). Existing `scroll_region`/`scroll_blit` are unchanged wrappers.
+- **`Widget::placed`** (`fbui-widgets`) — defaulted post-layout hook handing
+  every widget its placed bounds and the surface scale, so widgets that need
+  geometry outside paint (the chart's device-quantized sample step) can cache
+  it without a paint context.
+- **Arc/circle paths** (`fbui-render`) — `PathBuilder::arc` (cubic-Bézier
+  circular arcs that chain with other segments) and `Path::circle`; what the
+  gauge dials are drawn with.
 - **The remote console** (`fbui` feature `remote`) — every fbui app becomes
   remotely observable and operable over HTTP: set `FBUI_REMOTE=8433` and the
   runner serves an embedded single-file web console with a **live view of the

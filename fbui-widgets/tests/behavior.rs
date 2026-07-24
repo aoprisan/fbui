@@ -1974,3 +1974,190 @@ fn inspect_lays_out_first_so_bounds_are_current() {
     assert!(snap.bounds.w > 0.0 && snap.bounds.h > 0.0);
     assert!(snap.children[0].bounds.w > 0.0);
 }
+
+// ---- streaming charts -----------------------------------------------------
+
+#[test]
+fn chart_stream_blit_matches_a_full_repaint() {
+    use fbui_render::Surface;
+    use fbui_widgets::widgets::Chart;
+    use fbui_widgets::StreamDamage;
+
+    // Two identical two-series charts (fill, grid, time grid, gutter — every
+    // translation-sensitive feature on). A streams via the blit fast path; B is
+    // forced to a ground-truth full repaint after every push — the strip-chart
+    // version of the scroll-blit invariant, checked frame after frame.
+    //
+    // The bar: geometry must be an exact translation, so frames are compared
+    // with a *near*-zero tolerance rather than `assert_eq!` on the bytes.
+    // tiny-skia's scanline AA accumulates coverage in floats, and where a
+    // stroke edge runs nearly tangent to a scanline (a wave crest) an integer
+    // translation of the same path can flip a single AA sample by a few code
+    // values. That is rasterizer noise, not fast-path divergence: any real
+    // divergence (stale seam, wrong shift, dropped-sample fork) moves whole
+    // pixel runs, which both bounds below catch immediately.
+    fn make(scale: f32) -> (Ui<Msg>, WidgetId, Surface) {
+        let s = Scale::new(scale);
+        let mut ui = Ui::<Msg>::new(Size::new(200.0, 100.0), s, Theme::dark());
+        let root = ui.set_root(Container::column().fill().padding(4.0));
+        let chart = ui.add_child(
+            root,
+            Chart::new()
+                .fixed_range(0.0, 100.0)
+                .fill(true)
+                .time_grid_every(8)
+                .gutter(24.0)
+                .sample_width(3.0),
+        );
+        ui.layout_now();
+        let dev = |v: f32| (v * scale) as u32;
+        let surface = Surface::new(dev(200.0), dev(100.0), s);
+        (ui, chart, surface)
+    }
+
+    // A wave with a NaN gap every 13th sample, plus a second noisy series.
+    fn sample(i: u32) -> [f32; 2] {
+        let a = if i % 13 == 12 {
+            f32::NAN
+        } else {
+            (i as f32 * 0.37).sin() * 40.0 + 50.0
+        };
+        let b = (i as f32 * 0.11).cos() * 20.0 + 30.0;
+        [a, b]
+    }
+
+    for scale in [1.0f32, 2.0] {
+        let (mut ua, ca, mut sa) = make(scale);
+        let (mut ub, cb, mut sb) = make(scale);
+
+        // Seed history, then bring both to the same painted baseline.
+        for i in 0..30u32 {
+            ua.stream(ca, |c: &mut Chart| c.push(&sample(i)));
+            ub.stream(cb, |c: &mut Chart| c.push(&sample(i)));
+        }
+        ua.paint(&mut sa);
+        ub.paint(&mut sb);
+        assert_eq!(
+            sa.pixmap().data(),
+            sb.pixmap().data(),
+            "baseline, scale {scale}"
+        );
+
+        let mut blits = 0;
+        for i in 30..90u32 {
+            let v = ua
+                .stream(ca, |c: &mut Chart| c.push(&sample(i)))
+                .expect("chart id is live");
+            if matches!(v, StreamDamage::Shifted { .. }) {
+                blits += 1;
+            }
+            ua.paint(&mut sa);
+
+            ub.stream(cb, |c: &mut Chart| c.push(&sample(i)));
+            ub.set_size(Size::new(200.0, 100.0), Scale::new(scale)); // full dirty
+            ub.paint(&mut sb);
+
+            let cmp = fbui_testkit::compare(sa.pixmap(), sb.pixmap(), 12);
+            assert_eq!(
+                cmp.changed_pixels, 0,
+                "streamed frame {i} at scale {scale} diverged from ground truth \
+                 (max per-channel delta {})",
+                cmp.max_delta
+            );
+            let exact_diffs = sa
+                .pixmap()
+                .data()
+                .chunks_exact(4)
+                .zip(sb.pixmap().data().chunks_exact(4))
+                .filter(|(a, b)| a != b)
+                .count();
+            assert!(
+                exact_diffs <= 8,
+                "frame {i} at scale {scale}: {exact_diffs} non-identical pixels — \
+                 more than AA tangent noise can explain"
+            );
+        }
+        assert!(
+            blits >= 55,
+            "steady state must ride the blit fast path (got {blits}/60)"
+        );
+    }
+}
+
+#[test]
+fn chart_stream_reports_precise_damage() {
+    use fbui_widgets::widgets::Chart;
+    use fbui_widgets::StreamDamage;
+
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let chart = ui.add_child(root, Chart::new());
+    ui.layout_now();
+
+    // First pushes settle the auto-range: full repaints.
+    let v = ui.stream(chart, |c: &mut Chart| c.push(&[10.0])).unwrap();
+    assert_eq!(v, StreamDamage::Repaint, "first sample sets the range");
+    assert!(ui.needs_paint());
+
+    // Steady state within the nice range: shifted, not repainted.
+    let v = ui.stream(chart, |c: &mut Chart| c.push(&[10.5])).unwrap();
+    assert!(
+        matches!(v, StreamDamage::Shifted { extra: Some(_) }),
+        "in-range sample blits, got {v:?}"
+    );
+
+    // A sample far outside the nice range moves it: full repaint again.
+    let v = ui.stream(chart, |c: &mut Chart| c.push(&[500.0])).unwrap();
+    assert_eq!(v, StreamDamage::Repaint, "range escape repaints");
+}
+
+#[test]
+fn chart_ring_capacity_tracks_layout() {
+    use fbui_widgets::widgets::Chart;
+
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    // 400px surface, 4px/sample → ~100 visible; capacity adds only a small
+    // overhang beyond that.
+    let chart = ui.add_child(root, Chart::new().gutter(0.0).sample_width(4.0));
+    ui.layout_now();
+    for i in 0..1000 {
+        ui.stream(chart, |c: &mut Chart| c.push(&[i as f32 % 50.0]));
+    }
+    let len = ui.with(chart, |c: &mut Chart| c.len()).unwrap();
+    assert!(len >= 100, "holds at least the visible window, got {len}");
+    assert!(len <= 120, "drops samples once fully off-screen, got {len}");
+}
+
+#[test]
+fn gauge_needle_glides_then_settles() {
+    use fbui_widgets::widgets::Gauge;
+    use fbui_widgets::StreamDamage;
+
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let gauge = ui.add_child(root, Gauge::new(0.0, 100.0));
+    ui.layout_now();
+
+    // Streaming a new reading damages (Repaint) and starts the glide.
+    let v = ui.stream(gauge, |g: &mut Gauge| g.update(80.0)).unwrap();
+    assert_eq!(v, StreamDamage::Repaint);
+    assert!(ui.animate(1.0 / 60.0), "needle glide is running");
+
+    // The glide is dt-driven and settles: run the clock dry.
+    for _ in 0..120 {
+        if !ui.animate(1.0 / 60.0) {
+            break;
+        }
+    }
+    assert!(!ui.animate(1.0 / 60.0), "glide settles to rest");
+
+    // An unchanged reading on a settled needle is Quiet — costs nothing.
+    let v = ui.stream(gauge, |g: &mut Gauge| g.update(80.0)).unwrap();
+    assert_eq!(v, StreamDamage::Quiet);
+
+    // Values clamp to the range.
+    ui.stream(gauge, |g: &mut Gauge| g.update(900.0));
+    let cur = ui.with(gauge, |g: &mut Gauge| g.current()).unwrap();
+    assert_eq!(cur, 100.0);
+}

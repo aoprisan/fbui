@@ -251,3 +251,89 @@ fn tooltip_shown() {
         Tolerance::FUZZY,
     );
 }
+
+/// The HMI instrument pair: a streamed two-series strip chart (fill + grids)
+/// beside gauges with zone bands. Deliberately text-free (readouts off, no
+/// gutter labels) so the goldens stay host-independent; all the vector
+/// geometry — dials, zones, needles, traces, grids — is pinned.
+#[test]
+fn instruments_chart_and_gauges() {
+    use fbui_widgets::widgets::{Chart, Gauge};
+
+    let (w, h) = (360u32, 220u32);
+    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+
+    let root = ui.set_root(Container::column().fill().padding(10.0).gap(10.0));
+    let dials = ui.add_child(root, Container::row().gap(10.0));
+    let g1 = ui.add_child(
+        dials,
+        Gauge::new(0.0, 100.0)
+            .zone(60.0, Color::rgb(0x34, 0xd3, 0x99))
+            .zone(85.0, Color::rgb(0xfb, 0xbf, 0x24))
+            .zone(100.0, Color::rgb(0xef, 0x44, 0x44))
+            .show_value(false)
+            .animate_secs(0.0),
+    );
+    let g2 = ui.add_child(
+        dials,
+        Gauge::new(0.0, 8.0).show_value(false).animate_secs(0.0),
+    );
+    let chart = ui.add_child(
+        root,
+        Chart::new()
+            .fixed_range(0.0, 100.0)
+            .fill(true)
+            .time_grid_every(10)
+            .gutter(0.0)
+            .sample_width(3.0),
+    );
+    ui.layout_now();
+
+    ui.with(g1, |g: &mut Gauge| g.set_value(72.0));
+    ui.with(g2, |g: &mut Gauge| g.set_value(3.6));
+    for i in 0..120u32 {
+        ui.stream(chart, |c: &mut Chart| {
+            c.push(&[
+                (i as f32 * 0.23).sin() * 30.0 + 55.0,
+                (i as f32 * 0.09).cos() * 18.0 + 25.0,
+            ])
+        });
+    }
+
+    let mut surface = Surface::new(w, h, Scale::ONE);
+    ui.paint(&mut surface);
+
+    assert_snapshot_in(
+        "tests/snapshots",
+        "instruments_chart_and_gauges",
+        surface.pixmap(),
+        Tolerance::FUZZY,
+    );
+}
+
+/// A bare sparkline: the chrome-free chart preset used inline in status rows.
+#[test]
+fn sparkline_inline() {
+    use fbui_widgets::widgets::Chart;
+
+    let (w, h) = (120u32, 40u32);
+    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+    let root = ui.set_root(Container::column().fill().padding(8.0));
+    let spark = ui.add_child(root, Chart::sparkline());
+    ui.layout_now();
+    for i in 0..80u32 {
+        ui.stream(spark, |c: &mut Chart| {
+            c.push_one((i as f32 * 0.31).sin() * (i as f32 * 0.02) + 2.0)
+        });
+    }
+
+    let mut surface = Surface::new(w, h, Scale::ONE);
+    ui.paint(&mut surface);
+
+    assert_snapshot_in(
+        "tests/snapshots",
+        "sparkline_inline",
+        surface.pixmap(),
+        Tolerance::FUZZY,
+    );
+}
