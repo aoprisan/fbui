@@ -304,7 +304,8 @@ impl<Msg: 'static> Ui<Msg> {
         }
 
         // Detach from the parent (tree + taffy handle their own sides).
-        if let Some(p) = self.nodes[id].parent {
+        let parent = self.nodes[id].parent;
+        if let Some(p) = parent {
             if let Some(pn) = self.nodes.get_mut(p) {
                 pn.children.retain(|&c| c != id);
             }
@@ -345,6 +346,17 @@ impl<Msg: 'static> Ui<Msg> {
         if self.tip.shown.is_some_and(|(t, _)| ids.contains(&t)) {
             self.hide_tip();
         }
+        // Later siblings shifted down an index; parents that position
+        // children by index ([`Widget::position_child`]) need their styles
+        // re-resolved.
+        if let Some(p) = parent {
+            if self.nodes.contains_key(p) {
+                let kids = self.nodes[p].children.clone();
+                for k in kids {
+                    self.apply_style(k);
+                }
+            }
+        }
         self.needs_layout = true;
     }
 
@@ -363,19 +375,23 @@ impl<Msg: 'static> Ui<Msg> {
         let node = &self.nodes[id];
         let mut style = node.widget.layout_style(&self.theme);
         if let Some(parent) = node.parent {
-            if self
-                .nodes
-                .get(parent)
-                .is_some_and(|p| p.widget.stacks_children())
-            {
-                style.position = taffy::Position::Absolute;
-                let zero = taffy::LengthPercentageAuto::length(0.0);
-                style.inset = taffy::Rect {
-                    left: zero,
-                    right: zero,
-                    top: zero,
-                    bottom: zero,
-                };
+            if let Some(p) = self.nodes.get(parent) {
+                if p.widget.stacks_children() {
+                    style.position = taffy::Position::Absolute;
+                    let zero = taffy::LengthPercentageAuto::length(0.0);
+                    style.inset = taffy::Rect {
+                        left: zero,
+                        right: zero,
+                        top: zero,
+                        bottom: zero,
+                    };
+                }
+                // Parent-imposed positioning (a Navigator placing screen i at
+                // i × 100%): the parent adjusts the child's resolved style by
+                // index.
+                if let Some(index) = p.children.iter().position(|&c| c == id) {
+                    p.widget.position_child(index, &mut style);
+                }
             }
         }
         style
@@ -745,6 +761,26 @@ impl<Msg: 'static> Ui<Msg> {
         self.focus
     }
 
+    /// Set (or clear, with `None`) keyboard focus programmatically — the
+    /// `App::update` counterpart of a widget's
+    /// [`request_focus`](crate::EventCtx::request_focus). A stale or
+    /// non-focusable target clears focus instead, so a restored focus (a
+    /// [`Navigator`](crate::widgets::Navigator) pop returning to a screen
+    /// whose field was since rebuilt) can never point at nothing.
+    pub fn focus(&mut self, target: Option<WidgetId>) {
+        let target = target.filter(|t| self.nodes.get(*t).is_some_and(|n| n.widget.focusable()));
+        self.set_focus(target);
+    }
+
+    /// The ids of `id`'s direct children, in tree (z) order. Empty for a
+    /// stale id or a leaf.
+    pub fn child_ids(&self, id: WidgetId) -> Vec<WidgetId> {
+        self.nodes
+            .get(id)
+            .map(|n| n.children.clone())
+            .unwrap_or_default()
+    }
+
     /// The resolved absolute logical bounds of a widget after the last layout.
     /// `None` for a stale id or before the first layout.
     pub fn bounds(&self, id: WidgetId) -> Option<Rect> {
@@ -784,6 +820,7 @@ impl<Msg: 'static> Ui<Msg> {
         let ids: Vec<WidgetId> = self.nodes.keys().collect();
         let mut running = false;
         let mut msgs = Vec::new();
+        let mut reaped: Vec<WidgetId> = Vec::new();
         for id in ids {
             let mut actx = AnimCtx {
                 dt,
@@ -807,6 +844,19 @@ impl<Msg: 'static> Ui<Msg> {
                 self.damage_overlay(id);
             }
             running |= anim.running;
+            // A widget retiring transient children (a popped Navigator screen
+            // whose exit transition just settled) hands their indices back
+            // here; resolve to ids now, remove after the walk so the
+            // snapshot of `ids` stays valid.
+            let len = self.nodes[id].children.len();
+            for idx in self.nodes[id].widget.take_child_removals(len) {
+                if let Some(&cid) = self.nodes[id].children.get(idx) {
+                    reaped.push(cid);
+                }
+            }
+        }
+        for cid in reaped {
+            self.remove(cid);
         }
         // Tooltip dwell countdown — Ui-level, on the same deterministic frame
         // clock. The clock only runs while the dwell is pending; a shown tip
@@ -1148,13 +1198,19 @@ impl<Msg: 'static> Ui<Msg> {
         }
     }
 
-    /// Deepest widget containing `pos`, honoring clip boundaries.
+    /// Deepest widget containing `pos`, honoring clip boundaries and each
+    /// parent's [`active_children`](Widget::active_children) window (covered
+    /// Navigator screens don't take clicks).
     fn hit(&self, id: WidgetId, pos: Point) -> Option<WidgetId> {
         let node = self.nodes.get(id)?;
         if node.widget.clips() && !contains(node.layout, pos) {
             return None;
         }
-        for &c in node.children.iter().rev() {
+        let active = node.widget.active_children(node.children.len());
+        for (i, &c) in node.children.iter().enumerate().rev() {
+            if active.as_ref().is_some_and(|r| !r.contains(&i)) {
+                continue;
+            }
             if let Some(h) = self.hit(c, pos) {
                 return Some(h);
             }
@@ -1242,7 +1298,9 @@ impl<Msg: 'static> Ui<Msg> {
 
     fn apply_focus(&mut self, op: FocusOp) {
         let new = match op {
-            FocusOp::Request(id) => Some(id),
+            // Guard against a stale id (a widget restoring remembered focus
+            // into a since-rebuilt subtree): focus must never dangle.
+            FocusOp::Request(id) => Some(id).filter(|i| self.nodes.contains_key(*i)),
             FocusOp::Clear => None,
             FocusOp::Next => self.adjacent_focus(true),
             FocusOp::Prev => self.adjacent_focus(false),
@@ -1337,7 +1395,13 @@ impl<Msg: 'static> Ui<Msg> {
             if node.widget.focusable() {
                 out.push(id);
             }
-            for &c in &node.children {
+            let active = node.widget.active_children(node.children.len());
+            for (i, &c) in node.children.iter().enumerate() {
+                // Inactive children (covered Navigator screens) drop out of
+                // the Tab order along with their whole subtrees.
+                if active.as_ref().is_some_and(|r| !r.contains(&i)) {
+                    continue;
+                }
                 self.collect_focusable(c, out);
             }
         }

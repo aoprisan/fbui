@@ -256,6 +256,38 @@ pub trait Widget<Msg>: Any {
         false
     }
 
+    /// Adjust the resolved layout style of this widget's child at `index` —
+    /// the parent-imposed-positioning hook. Runs after the
+    /// [`stacks_children`](Widget::stacks_children) resolution, whenever the
+    /// child's style is (re)applied. This is how a
+    /// [`Navigator`](crate::widgets::Navigator) lays its screens side by side
+    /// (child `i` absolutely positioned at `i × 100%`) without the screens
+    /// knowing. Default: leave the child's own style alone.
+    fn position_child(&self, _index: usize, _style: &mut Style) {}
+
+    /// Which of this widget's children (by index, out of `len`) are currently
+    /// **interactive** — hit-testable and part of the Tab order. `None` means
+    /// all of them (the default). A stack-of-screens container returns just
+    /// the active screen, so covered/offscreen screens keep their retained
+    /// state but can't steal clicks or focus. Painting is unaffected: an
+    /// inactive child still draws if it intersects the repaint region (a
+    /// screen mid-transition).
+    fn active_children(&self, _len: usize) -> Option<std::ops::Range<usize>> {
+        None
+    }
+
+    /// Child indices (out of `len`) this widget wants **removed from the
+    /// tree**, consuming the request. Polled by [`Ui::animate`](crate::Ui::animate)
+    /// after this widget's [`animate`](Widget::animate) step; the `Ui` then
+    /// removes those children and their subtrees. This is how transient
+    /// structure a widget itself retires comes down — a
+    /// [`Navigator`](crate::widgets::Navigator) screen after its pop
+    /// transition settles — since widgets can't touch the tree directly.
+    /// Default: none.
+    fn take_child_removals(&mut self, _len: usize) -> Vec<usize> {
+        Vec::new()
+    }
+
     /// A translation applied to this widget's children's positions (scroll
     /// offset). Default: none.
     fn content_offset(&self) -> Point {

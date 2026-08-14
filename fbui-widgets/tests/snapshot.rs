@@ -452,3 +452,50 @@ fn video_color_bars_letterboxed() {
         Tolerance::FUZZY,
     );
 }
+
+/// A `Navigator` slide frozen mid-transition: the outgoing green screen exits
+/// left as the incoming red screen slides in from the right, both clipped to
+/// the navigator's box. Text-free; pins the strip layout, the per-index
+/// screen positioning, and the tweened offset at a fixed set of frame ticks.
+#[test]
+fn navigator_mid_slide() {
+    use fbui_widgets::widgets::Navigator;
+
+    let (w, h) = (200u32, 160u32);
+    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+    let nav = ui.set_root(Navigator::new().duration(0.3));
+    let s0 = Navigator::push(&mut ui, nav, Container::column().fill().padding(10.0));
+    ui.add_child(
+        s0,
+        Container::column()
+            .grow(1.0)
+            .background(Color::rgb(0x40, 0x80, 0x30), 6.0),
+    );
+    for _ in 0..120 {
+        if !ui.animate(1.0 / 60.0) {
+            break;
+        }
+    }
+    let s1 = Navigator::push(&mut ui, nav, Container::column().fill().padding(22.0));
+    ui.add_child(
+        s1,
+        Container::column()
+            .grow(1.0)
+            .background(Color::rgb(0x80, 0x30, 0x40), 12.0),
+    );
+
+    let mut surface = Surface::new(w, h, Scale::ONE);
+    ui.paint(&mut surface);
+    // Freeze partway through the slide (10 of 18 frames at 60 fps).
+    for _ in 0..10 {
+        ui.animate(1.0 / 60.0);
+        ui.paint(&mut surface);
+    }
+
+    assert_snapshot_in(
+        "tests/snapshots",
+        "navigator_mid_slide",
+        surface.pixmap(),
+        Tolerance::FUZZY,
+    );
+}
