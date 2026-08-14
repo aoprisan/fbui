@@ -19,6 +19,19 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Added
 
+- **Monkey testing** (`fbui`, feature `platform`) — `FBUI_MONKEY=<seed>`
+  synthesizes a seed-deterministic pseudo-random input session (taps, drags,
+  flings, long-presses, cancelled touches, mouse clicks, wheel scrolls,
+  navigation keys, multibyte text) and drives it through the same replay path
+  as live input. The whole session is saved as a normal `.rec` file *before*
+  the first event fires, so any panic the monkey finds ships with its own
+  `FBUI_REPLAY` reproducer — hand-trimmable to a minimal test, since the
+  format is plain text. Every gesture is physically plausible and balanced
+  (a run ends with nothing held; Escape is never pressed), positions are
+  always on-screen, and long-press/fling timing rides the replay clock so it
+  holds at `FBUI_REPLAY_SPEED=max`. `FBUI_MONKEY_EVENTS` sets the budget
+  (default 1000), `FBUI_MONKEY_OUT` the script path; `FBUI_REPLAY_SHOT` /
+  `FBUI_REPLAY_EXIT` work as in replay. See `docs/monkey-testing.md`.
 - **Instrument widgets** (`fbui-widgets`) — live-data widgets for the HMI /
   dashboard niche: **`Chart`**, a multi-series streaming strip chart (newest
   sample pinned right, traces scroll left; auto y-range quantized to nice

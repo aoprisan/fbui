@@ -75,3 +75,9 @@ of hanging the replay.
 Record at the platform-event level means recordings capture *intent* (what
 the user did), not widget identities — a recording survives refactors that
 keep the layout, and breaks (loudly, visibly) when the layout moves.
+
+## See also
+
+Recordings don't have to come from a human: `FBUI_MONKEY=<seed>` synthesizes
+a seeded pseudo-random session, saves it as a normal `.rec` file, and plays
+it through this same machinery — see [monkey testing](monkey-testing.md).
