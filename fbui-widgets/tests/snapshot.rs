@@ -337,3 +337,73 @@ fn sparkline_inline() {
         Tolerance::FUZZY,
     );
 }
+
+/// A `TreeView` with an expanded branch, a nested expanded branch, a selected
+/// row, and enough rows to overflow. Text-free (no fonts loaded), so this pins
+/// the structural chrome: disclosure triangles at both orientations, the
+/// per-depth indent, the selection bar, and the scrollbar thumb.
+#[test]
+fn tree_view_disclosure_and_selection() {
+    use fbui_widgets::widgets::{TreeNode, TreeView};
+
+    let (w, h) = (240u32, 160u32);
+    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+
+    let root = ui.set_root(Container::column().fill());
+    let tv = ui.add_child(
+        root,
+        TreeView::new(vec![
+            TreeNode::branch(
+                "a",
+                vec![
+                    TreeNode::leaf("a1"),
+                    TreeNode::branch("a2", vec![TreeNode::leaf("a2x")]).expanded(true),
+                ],
+            )
+            .expanded(true),
+            TreeNode::branch("b", vec![TreeNode::leaf("b1")]),
+            TreeNode::leaf("c"),
+        ]),
+    );
+    ui.layout_now();
+    // Select the nested branch row (id 2 = "a2") without an event pass.
+    ui.with(tv, |t: &mut TreeView<Msg>| t.set_selected(Some(2)));
+
+    let mut surface = Surface::new(w, h, Scale::ONE);
+    ui.paint(&mut surface);
+
+    assert_snapshot_in(
+        "tests/snapshots",
+        "tree_view_disclosure",
+        surface.pixmap(),
+        Tolerance::FUZZY,
+    );
+}
+
+/// A `Calendar` for August 2026 with the 14th selected and the 20th marked as
+/// today. Day numerals need host fonts (tolerant compare, as in
+/// `tabbar_and_spinner`); the header arrows, hairline, selection pill, and
+/// today ring are font-independent geometry.
+#[test]
+fn calendar_month_grid() {
+    use fbui_widgets::widgets::{Calendar, Date};
+
+    let (w, h) = (280u32, 252u32);
+    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+
+    let root = ui.set_root(Container::column());
+    ui.add_child(
+        root,
+        Calendar::new(Date::new(2026, 8, 14).unwrap()).today(Date::new(2026, 8, 20).unwrap()),
+    );
+
+    let mut surface = Surface::new(w, h, Scale::ONE);
+    ui.paint(&mut surface);
+
+    assert_snapshot_in(
+        "tests/snapshots",
+        "calendar_month_grid",
+        surface.pixmap(),
+        Tolerance::FUZZY,
+    );
+}

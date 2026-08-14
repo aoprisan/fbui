@@ -55,7 +55,7 @@ mod util;
 pub mod widget;
 pub mod widgets;
 
-pub use anim::{Easing, Lerp, Tween};
+pub use anim::{Easing, Lerp, Spring, Tween};
 pub use ctx::{AnimCtx, EventCtx, PaintCtx};
 pub use event::{Event, Key, Modifiers, PointerButton};
 pub use gesture::{Gesture, GestureConfig, GestureRecognizer};

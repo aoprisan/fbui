@@ -22,6 +22,7 @@ enum Msg {
     Kbd(Key),
     Changed(String),
     PopupHit(usize),
+    PickedDate(Date),
 }
 
 fn ui() -> Ui<Msg> {
@@ -2160,4 +2161,237 @@ fn gauge_needle_glides_then_settles() {
     ui.stream(gauge, |g: &mut Gauge| g.update(900.0));
     let cur = ui.with(gauge, |g: &mut Gauge| g.current()).unwrap();
     assert_eq!(cur, 100.0);
+}
+
+// ---- TreeView ---------------------------------------------------------------
+
+use fbui_widgets::widgets::{Calendar, Date, TreeNode, TreeView};
+
+/// A three-level sample tree: ids follow depth-first insertion order —
+/// A=0, B=1, C=2, D=3.
+fn sample_tree() -> Vec<TreeNode> {
+    vec![
+        TreeNode::branch("A", vec![TreeNode::leaf("B"), TreeNode::leaf("C")]),
+        TreeNode::leaf("D"),
+    ]
+}
+
+#[test]
+fn tree_view_toggles_on_disclosure_and_selects_on_row_body() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let tv = ui.add_child(
+        root,
+        TreeView::new(sample_tree())
+            .on_select(Msg::Picked)
+            .on_toggle(|id, open| Msg::Toggled(open && id == 0)),
+    );
+    ui.layout_now();
+    let b = ui.bounds(tv).unwrap();
+
+    // Collapsed: rows are A (0) and D (3). Tap A's disclosure triangle
+    // (depth 0 => zone starts 8px in, 24px wide).
+    click(&mut ui, Point::new(b.x + 20.0, b.y + 20.0));
+    assert_eq!(ui.take_messages(), vec![Msg::Toggled(true)]);
+    assert!(ui
+        .with(tv, |t: &mut TreeView<Msg>| t.is_expanded(0))
+        .unwrap());
+
+    // Now rows are A,B,C,D. Tap row 1's body: selects B (id 1), no toggle.
+    click(&mut ui, Point::new(b.x + 150.0, b.y + 60.0));
+    assert_eq!(ui.take_messages(), vec![Msg::Picked(1)]);
+    assert_eq!(
+        ui.with(tv, |t: &mut TreeView<Msg>| t.selected()).unwrap(),
+        Some(1)
+    );
+
+    // Tapping a *branch* row body selects it rather than toggling.
+    click(&mut ui, Point::new(b.x + 150.0, b.y + 20.0));
+    assert_eq!(ui.take_messages(), vec![Msg::Picked(0)]);
+    assert!(
+        ui.with(tv, |t: &mut TreeView<Msg>| t.is_expanded(0))
+            .unwrap(),
+        "body tap must not toggle"
+    );
+}
+
+#[test]
+fn tree_view_keyboard_navigation() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let tv = ui.add_child(root, TreeView::new(sample_tree()).on_select(Msg::Picked));
+    ui.layout_now();
+    let b = ui.bounds(tv).unwrap();
+    let selected = |ui: &mut Ui<Msg>| ui.with(tv, |t: &mut TreeView<Msg>| t.selected()).unwrap();
+
+    // Click A's body: focus + select A.
+    click(&mut ui, Point::new(b.x + 150.0, b.y + 20.0));
+    let _ = ui.take_messages();
+
+    // Right on a collapsed branch expands it (selection stays).
+    press_key(&mut ui, Key::Right);
+    assert!(ui
+        .with(tv, |t: &mut TreeView<Msg>| t.is_expanded(0))
+        .unwrap());
+    assert_eq!(selected(&mut ui), Some(0));
+
+    // Right again descends to the first child.
+    press_key(&mut ui, Key::Right);
+    assert_eq!(selected(&mut ui), Some(1));
+
+    // Down walks visible rows: B -> C -> D (across the depth change).
+    press_key(&mut ui, Key::Down);
+    assert_eq!(selected(&mut ui), Some(2));
+    press_key(&mut ui, Key::Down);
+    assert_eq!(selected(&mut ui), Some(3));
+    // Down at the last row stays put.
+    press_key(&mut ui, Key::Down);
+    assert_eq!(selected(&mut ui), Some(3));
+
+    // Up back to C, Left from a leaf ascends to the parent branch.
+    press_key(&mut ui, Key::Up);
+    assert_eq!(selected(&mut ui), Some(2));
+    press_key(&mut ui, Key::Left);
+    assert_eq!(selected(&mut ui), Some(0));
+
+    // Left on an expanded branch collapses it; B/C leave the visible set.
+    press_key(&mut ui, Key::Left);
+    assert!(!ui
+        .with(tv, |t: &mut TreeView<Msg>| t.is_expanded(0))
+        .unwrap());
+    press_key(&mut ui, Key::Down);
+    assert_eq!(selected(&mut ui), Some(3), "next visible row is D");
+}
+
+#[test]
+fn tree_view_collapse_reanchors_hidden_selection() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill());
+    let tv = ui.add_child(root, TreeView::new(sample_tree()).on_select(Msg::Picked));
+    ui.layout_now();
+    let b = ui.bounds(tv).unwrap();
+
+    // Expand A (disclosure), select C, then collapse A from its triangle:
+    // the hidden selection re-anchors on the collapsed branch.
+    click(&mut ui, Point::new(b.x + 20.0, b.y + 20.0));
+    click(&mut ui, Point::new(b.x + 150.0, b.y + 100.0));
+    assert_eq!(
+        ui.with(tv, |t: &mut TreeView<Msg>| t.selected()).unwrap(),
+        Some(2)
+    );
+    click(&mut ui, Point::new(b.x + 20.0, b.y + 20.0));
+    assert_eq!(
+        ui.with(tv, |t: &mut TreeView<Msg>| t.selected()).unwrap(),
+        Some(0)
+    );
+}
+
+// ---- Calendar ---------------------------------------------------------------
+
+#[test]
+fn calendar_tap_picks_the_day_under_the_pointer() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column());
+    let cal = ui.add_child(
+        root,
+        Calendar::new(Date::new(2026, 8, 14).unwrap()).on_pick(Msg::PickedDate),
+    );
+    ui.layout_now();
+    let b = ui.bounds(cal).unwrap();
+
+    // August 2026 starts on a Saturday, so with a Monday week start the grid
+    // begins on Mon Jul 27 and row 1, col 0 is Mon Aug 3. The grid sits below
+    // the 36px header and 24px weekday row; cells are 40x32.
+    click(
+        &mut ui,
+        Point::new(b.x + 20.0, b.y + 36.0 + 24.0 + 32.0 + 16.0),
+    );
+    assert_eq!(
+        ui.take_messages(),
+        vec![Msg::PickedDate(Date::new(2026, 8, 3).unwrap())]
+    );
+
+    // A muted edge day picks too, and the view follows its month.
+    click(&mut ui, Point::new(b.x + 20.0, b.y + 36.0 + 24.0 + 16.0)); // row 0, col 0
+    assert_eq!(
+        ui.take_messages(),
+        vec![Msg::PickedDate(Date::new(2026, 7, 27).unwrap())]
+    );
+    let vm = ui
+        .with(cal, |c: &mut Calendar<Msg>| c.view_month())
+        .unwrap();
+    assert_eq!(vm, (2026, 7));
+}
+
+#[test]
+fn calendar_header_arrows_page_by_month() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column());
+    let cal = ui.add_child(
+        root,
+        Calendar::new(Date::new(2026, 1, 15).unwrap()).on_pick(Msg::PickedDate),
+    );
+    ui.layout_now();
+    let b = ui.bounds(cal).unwrap();
+    let vm = |ui: &mut Ui<Msg>| {
+        ui.with(cal, |c: &mut Calendar<Msg>| c.view_month())
+            .unwrap()
+    };
+
+    // Prev arrow crosses the year boundary; no pick is emitted.
+    click(&mut ui, Point::new(b.x + 18.0, b.y + 18.0));
+    assert_eq!(vm(&mut ui), (2025, 12));
+    click(&mut ui, Point::new(b.right() - 18.0, b.y + 18.0));
+    click(&mut ui, Point::new(b.right() - 18.0, b.y + 18.0));
+    assert_eq!(vm(&mut ui), (2026, 2));
+    assert!(ui.take_messages().is_empty(), "paging emits no pick");
+    // Paging never moves the selection.
+    let sel = ui.with(cal, |c: &mut Calendar<Msg>| c.selected()).unwrap();
+    assert_eq!(sel, Date::new(2026, 1, 15).unwrap());
+}
+
+#[test]
+fn calendar_keyboard_crosses_month_boundaries_and_picks() {
+    let mut ui = ui();
+    let root = ui.set_root(Container::column());
+    let cal = ui.add_child(
+        root,
+        Calendar::new(Date::new(2026, 8, 1).unwrap()).on_pick(Msg::PickedDate),
+    );
+    ui.layout_now();
+    let b = ui.bounds(cal).unwrap();
+    let sel = |ui: &mut Ui<Msg>| ui.with(cal, |c: &mut Calendar<Msg>| c.selected()).unwrap();
+
+    // Focus with a click on the selected day (Sat Aug 1: row 0, col 5).
+    click(
+        &mut ui,
+        Point::new(b.x + 5.0 * 40.0 + 20.0, b.y + 36.0 + 24.0 + 16.0),
+    );
+    let _ = ui.take_messages();
+
+    // Left from the 1st lands on Jul 31 and the view follows.
+    press_key(&mut ui, Key::Left);
+    assert_eq!(sel(&mut ui), Date::new(2026, 7, 31).unwrap());
+    let vm = ui
+        .with(cal, |c: &mut Calendar<Msg>| c.view_month())
+        .unwrap();
+    assert_eq!(vm, (2026, 7));
+
+    // A week up, a month down (day clamps are covered in unit tests).
+    press_key(&mut ui, Key::Up);
+    assert_eq!(sel(&mut ui), Date::new(2026, 7, 24).unwrap());
+    press_key(&mut ui, Key::PageDown);
+    assert_eq!(sel(&mut ui), Date::new(2026, 8, 24).unwrap());
+    press_key(&mut ui, Key::Home);
+    assert_eq!(sel(&mut ui), Date::new(2026, 8, 1).unwrap());
+    press_key(&mut ui, Key::End);
+    assert_eq!(sel(&mut ui), Date::new(2026, 8, 31).unwrap());
+    assert!(ui.take_messages().is_empty(), "navigation emits no pick");
+
+    // Enter picks the selection.
+    press_key(&mut ui, Key::Enter);
+    assert_eq!(
+        ui.take_messages(),
+        vec![Msg::PickedDate(Date::new(2026, 8, 31).unwrap())]
+    );
 }
