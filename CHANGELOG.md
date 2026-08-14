@@ -19,6 +19,38 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Added
 
+- **`TreeView`** (`fbui-widgets`) — the hierarchical counterpart to `List`:
+  expand/collapse branches with disclosure triangles, per-depth indentation,
+  and single selection. Nodes are plain data (`TreeNode::branch`/`leaf`)
+  addressed by stable depth-first `NodeId`s; the tree is flattened to its
+  visible rows and painted with `List`'s windowing, drag/kinetic scrolling,
+  and scroll-blit fast path, so a huge collapsed tree costs what its visible
+  rows cost. Tap the triangle to toggle, the row body to select; with focus,
+  Up/Down walk visible rows, Right expands then descends, Left collapses then
+  ascends, and Enter/Space select (Space toggling branches). `on_select` /
+  `on_toggle` message hooks, `set_nodes`/`set_selected`/`set_expanded` for
+  `Ui::with` mutation.
+- **`Calendar`** (`fbui-widgets`) — a month-grid date picker: header with
+  previous/next month arrows, weekday row, and a fixed 6×7 grid including the
+  adjacent months' muted edge days. Ships its own proleptic-Gregorian `Date`
+  type (validated construction, leap years, day/month arithmetic with
+  end-of-month clamping — no external date crate) and, per the no-wall-clock
+  rule, never reads "today" from the system: the app passes it in
+  (`Calendar::today`) to get the marker ring. Tap a day to pick
+  (`on_pick(Date)`); with focus the arrows move by day/week across month
+  boundaries, PageUp/PageDown by month, Home/End inside it, Enter/Space
+  re-emit the pick. Monday or Sunday week start.
+- **`anim::Spring`** (`fbui-widgets`) — spring-physics animation beside
+  `Tween`, for motion that must absorb interruption: it carries velocity, so
+  `retarget` mid-flight bends the trajectory smoothly instead of restarting
+  it, and `set_velocity` hands off a fling's release speed. Feel is described
+  by `response` (undamped period; default 0.35 s) and `damping_ratio` (1.0 =
+  critical, below overshoots) rather than raw spring constants. Same
+  frame-clock contract as `Tween` (`advance(dt) -> bool`, snaps exactly onto
+  the target on settle), integrated with substepped semi-implicit Euler so a
+  stalled frame can't destabilize it — deterministic and unit-tested
+  headless.
+
 - **Monkey testing** (`fbui`, feature `platform`) — `FBUI_MONKEY=<seed>`
   synthesizes a seed-deterministic pseudo-random input session (taps, drags,
   flings, long-presses, cancelled touches, mouse clicks, wheel scrolls,

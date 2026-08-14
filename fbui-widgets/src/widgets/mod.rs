@@ -8,6 +8,7 @@
 //! (floating action menus), [`Toasts`] (transient notifications).
 
 mod button;
+mod calendar;
 mod chart;
 mod checkbox;
 mod container;
@@ -30,8 +31,10 @@ mod switch;
 mod tabbar;
 mod text_input;
 mod toast;
+mod tree_view;
 
 pub use button::{Button, ButtonVariant};
+pub use calendar::{Calendar, Date};
 pub use chart::Chart;
 pub use checkbox::Checkbox;
 pub use container::{Align, Container};
@@ -54,3 +57,4 @@ pub use switch::Switch;
 pub use tabbar::TabBar;
 pub use text_input::TextInput;
 pub use toast::{ToastKind, Toasts};
+pub use tree_view::{NodeId, TreeNode, TreeView};
