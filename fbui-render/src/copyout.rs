@@ -19,6 +19,7 @@
 //! channels as-is.
 
 use crate::geom::IRect;
+use crate::rotate::Rotation;
 
 /// Byte layout of the destination scanout buffer. Mirrors
 /// `fbui_platform::PixelFormat`; the `platform` glue maps between them.
@@ -69,6 +70,71 @@ pub fn copy_out_dithered(
     damage: &[IRect],
 ) {
     copy_out_inner(shadow, dst, dst_stride, format, damage, true)
+}
+
+/// As [`copy_out`]/[`copy_out_dithered`], but writing each shadow pixel to its
+/// **rotated** position in the destination — the copy-out half of display
+/// rotation (see [`Rotation`]). `damage` rects are in surface (shadow) space;
+/// `dst` is the panel's buffer (`dst_stride * panel_height` bytes, panel
+/// dimensions = the shadow's swapped for quarter turns).
+///
+/// Destination rows are still written **forward and sequentially** — the
+/// write-combined-memory rule — while reads gather from the shadow, which is
+/// normal RAM where scattered reads are fine. Dithering is keyed off absolute
+/// *panel* position, so damaged-span copies stay stable frame to frame.
+pub fn copy_out_rotated(
+    shadow: &tiny_skia::Pixmap,
+    dst: &mut [u8],
+    dst_stride: usize,
+    format: TargetFormat,
+    damage: &[IRect],
+    rotation: Rotation,
+    dither: bool,
+) {
+    if rotation == Rotation::Rot0 {
+        return copy_out_inner(shadow, dst, dst_stride, format, damage, dither);
+    }
+    let sw = shadow.width();
+    let sh = shadow.height();
+    let src = shadow.data();
+    let inv = rotation.inverse();
+    // Axis swap is symmetric: the panel dims are the surface dims swapped.
+    let (pw, ph) = rotation.surface_size(sw, sh);
+    let bpp = format.bytes_per_pixel();
+    let dither = dither && format == TargetFormat::Rgb565;
+    let mut scratch: Vec<u8> = Vec::new();
+
+    for rect in damage {
+        let r = rect.clamp_to(sw, sh);
+        if r.is_empty() {
+            continue;
+        }
+        let d = rotation.map_rect(r, sw, sh).clamp_to(pw, ph);
+        if d.is_empty() {
+            continue;
+        }
+        let cols = d.w as usize;
+        scratch.resize(cols * 4, 0);
+        for py in d.y..d.y + d.h as i32 {
+            // Gather this panel row's pixels from the (rotated) shadow…
+            for (i, px) in (d.x..d.x + d.w as i32).enumerate() {
+                let (sx, sy) = inv.map_pixel(px as u32, py as u32, pw, ph);
+                let off = (sy as usize * sw as usize + sx as usize) * 4;
+                scratch[i * 4..i * 4 + 4].copy_from_slice(&src[off..off + 4]);
+            }
+            // …then convert and write the row sequentially, as ever.
+            let dst_off = py as usize * dst_stride + d.x as usize * bpp;
+            let dst_row = &mut dst[dst_off..dst_off + cols * bpp];
+            match format {
+                TargetFormat::Xrgb8888 => convert_row_32(&scratch, dst_row, 0xff),
+                TargetFormat::Argb8888 => convert_row_argb(&scratch, dst_row),
+                TargetFormat::Rgb565 if dither => {
+                    convert_row_565_dithered(&scratch, dst_row, d.x as usize, py as usize)
+                }
+                TargetFormat::Rgb565 => convert_row_565(&scratch, dst_row),
+            }
+        }
+    }
 }
 
 fn copy_out_inner(
@@ -273,6 +339,112 @@ mod tests {
             assert!((r8 - 133).abs() <= 8, "red {r8} too far from 133");
         }
         assert!(words.len() > 1, "dithering should produce >1 level");
+    }
+
+    /// A 2×1 shadow with two distinct pixels, rotated onto a 1×2 panel: the
+    /// pixels must land transposed, converted, and inside the panel's stride.
+    #[test]
+    fn rotated_copy_places_pixels_transposed() {
+        let mut shadow = tiny_skia::Pixmap::new(2, 1).unwrap();
+        shadow.pixels_mut()[0] = tiny_skia::ColorU8::from_rgba(10, 0, 0, 255).premultiply();
+        shadow.pixels_mut()[1] = tiny_skia::ColorU8::from_rgba(20, 0, 0, 255).premultiply();
+
+        // Rot90: surface (x,y) -> panel (sh-1-y, x) = (0, x). Panel is 1×2.
+        let stride = 8; // 1 px + 4 bytes padding
+        let mut dst = vec![0u8; stride * 2];
+        copy_out_rotated(
+            &shadow,
+            &mut dst,
+            stride,
+            TargetFormat::Xrgb8888,
+            &[IRect::from_wh(2, 1)],
+            Rotation::Rot90,
+            false,
+        );
+        // Panel row 0 = surface pixel (0,0) (red 10), row 1 = (1,0) (red 20),
+        // in [B,G,R,X] order.
+        assert_eq!(&dst[0..4], &[0, 0, 10, 0xff]);
+        assert_eq!(&dst[stride..stride + 4], &[0, 0, 20, 0xff]);
+    }
+
+    /// Every rotation: a full-surface rotated copy equals rotating the shadow
+    /// pixel-by-pixel through `map_pixel` — and a per-damage-rect copy equals
+    /// the full copy (the fast path never diverges from the slow one).
+    #[test]
+    fn rotated_copy_matches_reference_and_damage_split() {
+        let (sw, sh) = (5u32, 3u32);
+        let mut shadow = tiny_skia::Pixmap::new(sw, sh).unwrap();
+        for y in 0..sh {
+            for x in 0..sw {
+                shadow.pixels_mut()[(y * sw + x) as usize] =
+                    tiny_skia::ColorU8::from_rgba((10 + x) as u8, (100 + y) as u8, 7, 255)
+                        .premultiply();
+            }
+        }
+        for rot in [Rotation::Rot90, Rotation::Rot180, Rotation::Rot270] {
+            let (pw, ph) = rot.surface_size(sw, sh);
+            let stride = pw as usize * 4;
+
+            // Reference: place each pixel via map_pixel, converting by hand.
+            let mut want = vec![0u8; stride * ph as usize];
+            for y in 0..sh {
+                for x in 0..sw {
+                    let px = shadow.pixel(x, y).unwrap();
+                    let (dx, dy) = rot.map_pixel(x, y, sw, sh);
+                    let off = dy as usize * stride + dx as usize * 4;
+                    want[off..off + 4].copy_from_slice(&[px.blue(), px.green(), px.red(), 0xff]);
+                }
+            }
+
+            let mut full = vec![0u8; stride * ph as usize];
+            copy_out_rotated(
+                &shadow,
+                &mut full,
+                stride,
+                TargetFormat::Xrgb8888,
+                &[IRect::from_wh(sw, sh)],
+                rot,
+                false,
+            );
+            assert_eq!(full, want, "{rot:?} full copy vs reference");
+
+            // Split into per-pixel damage rects: identical output.
+            let mut split = vec![0u8; stride * ph as usize];
+            let rects: Vec<IRect> = (0..sh as i32)
+                .flat_map(|y| (0..sw as i32).map(move |x| IRect::new(x, y, 1, 1)))
+                .collect();
+            copy_out_rotated(
+                &shadow,
+                &mut split,
+                stride,
+                TargetFormat::Xrgb8888,
+                &rects,
+                rot,
+                false,
+            );
+            assert_eq!(split, want, "{rot:?} damage-split copy vs reference");
+        }
+    }
+
+    /// Rot0 through the rotated entry point is byte-identical to the plain
+    /// copy — the runner can call one function unconditionally.
+    #[test]
+    fn rotated_rot0_equals_plain_copy() {
+        let shadow = red_shadow(3, 2);
+        let mut a = vec![0u8; 3 * 2 * 4];
+        let mut b = vec![0u8; 3 * 2 * 4];
+        let damage = [IRect::new(1, 0, 2, 2)];
+        copy_out(&shadow, &mut a, 12, TargetFormat::Xrgb8888, &damage);
+        copy_out_rotated(
+            &shadow,
+            &mut b,
+            12,
+            TargetFormat::Xrgb8888,
+            &damage,
+            Rotation::Rot0,
+            false,
+        );
+        assert_eq!(a, b);
     }
 
     #[test]

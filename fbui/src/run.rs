@@ -18,7 +18,7 @@ use fbui_platform::{
     PlatformConfig, PlatformHandler, Point as PPoint, Rect as PRect, Waker,
 };
 use fbui_render::geom::{IRect, Point, Size};
-use fbui_render::{FontContext, Scale, Surface};
+use fbui_render::{FontContext, Rotation, Scale, Surface};
 use fbui_widgets::event::{Event, Key, Modifiers, PointerButton};
 use fbui_widgets::gesture::{Gesture, GestureRecognizer};
 use fbui_widgets::{Theme, Ui};
@@ -359,20 +359,43 @@ fn remote_from_env(
     Ok(Some(hub))
 }
 
+/// Read `FBUI_ROTATE` (degrees: 0/90/180/270): how far the UI is turned
+/// clockwise on the panel — set it to make the UI upright on a physically
+/// rotated (portrait-mounted) screen. A junk value is a hard error, like the
+/// other `FBUI_*` toggles: a kiosk silently coming up sideways is worse than
+/// one that stops with a message.
+fn rotation_from_env() -> fbui_platform::Result<Rotation> {
+    match std::env::var("FBUI_ROTATE") {
+        Err(_) => Ok(Rotation::Rot0),
+        Ok(s) => s
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .and_then(Rotation::from_degrees)
+            .ok_or_else(|| fbui_platform::Error::Io {
+                what: format!("FBUI_ROTATE {s:?}"),
+                source: std::io::Error::other("expected 0, 90, 180 or 270"),
+            }),
+    }
+}
+
 /// Bring up the platform and run `app` until it exits (Esc, or a fatal error).
 pub fn run<A: App>(mut app: A) -> fbui_platform::Result<()> {
     let platform = Platform::new(&PlatformConfig::default())?;
     let phys = platform.info().size;
+    let rotation = rotation_from_env()?;
+    // The UI-orientation surface: panel dims, swapped for quarter turns. All
+    // layout/paint happens here; the rotation is applied at copy-out, and
+    // input is mapped back in `cursor_logical`.
+    let (sw, sh) = rotation.surface_size(phys.w, phys.h);
     let (recorder, replay) = record_replay_from_env(phys)?;
     #[cfg(feature = "remote")]
-    let remote = remote_from_env(phys)?;
+    let remote = remote_from_env(fbui_platform::Size { w: sw, h: sh })?;
     let scale = Scale::ONE;
-    let logical = Size::new(
-        phys.w as f32 / scale.factor(),
-        phys.h as f32 / scale.factor(),
-    );
+    let logical = Size::new(sw as f32 / scale.factor(), sh as f32 / scale.factor());
 
-    let mut surface = Surface::new(phys.w, phys.h, scale);
+    let mut surface = Surface::new(sw, sh, scale);
+    surface.set_rotation(rotation);
     // 16-bit panels band badly on gradients; dither the copy-out for them.
     if platform.info().format == fbui_platform::PixelFormat::Rgb565 {
         surface.set_dither(true);
@@ -396,6 +419,7 @@ pub fn run<A: App>(mut app: A) -> fbui_platform::Result<()> {
         surface,
         logical,
         scale,
+        rotation,
         phys_w: phys.w as f32,
         phys_h: phys.h as f32,
         cursor: (phys.w as f32 / 2.0, phys.h as f32 / 2.0),
@@ -423,6 +447,10 @@ struct Runner<A: App> {
     surface: Surface,
     logical: Size,
     scale: Scale,
+    /// `FBUI_ROTATE`: how the UI is turned on the panel. The surface lives in
+    /// UI orientation; the cursor (and every other panel-space rect) maps
+    /// through this at the seams.
+    rotation: Rotation,
     phys_w: f32,
     phys_h: f32,
     /// Pointer position in physical pixels (the platform tracks none itself).
@@ -467,12 +495,21 @@ struct Runner<A: App> {
 }
 
 impl<A: App> Runner<A> {
-    /// Cursor in logical coordinates.
+    /// Cursor in logical coordinates: the panel-space pointer mapped into UI
+    /// orientation, then scaled.
     fn cursor_logical(&self) -> Point {
-        Point::new(
-            self.cursor.0 / self.scale.factor(),
-            self.cursor.1 / self.scale.factor(),
-        )
+        let (ux, uy) =
+            self.rotation
+                .map_panel_point(self.cursor.0, self.cursor.1, self.phys_w, self.phys_h);
+        Point::new(ux / self.scale.factor(), uy / self.scale.factor())
+    }
+
+    /// Map a panel-space device rect (cursor sprite, HUD box) into surface
+    /// space, for damaging shadow pixels that back panel-space overlays.
+    fn panel_to_surface_rect(&self, r: IRect) -> IRect {
+        self.rotation
+            .inverse()
+            .map_rect(r, self.phys_w as u32, self.phys_h as u32)
     }
 
     /// Milliseconds since the run started, for the gesture recognizer's
@@ -808,6 +845,11 @@ impl<A: App> Runner<A> {
                 RemoteCommand::RefreshFrame => self.publish_remote_frame(&hub),
                 other => {
                     for ev in remote_input_events(&other) {
+                        // Console coordinates are surface-space (the space of
+                        // the published frames); the input path speaks panel
+                        // space. Convert before recording so `FBUI_RECORD`
+                        // files stay uniformly panel-space.
+                        let ev = self.remote_event_to_panel(ev);
                         hub.record_input(1);
                         if let Some(rec) = &mut self.recorder {
                             rec.record(&ev);
@@ -825,6 +867,27 @@ impl<A: App> Runner<A> {
             self.publish_remote_frame(&hub);
         }
         flow
+    }
+
+    /// Map a remote-injected absolute pointer position from surface space
+    /// (what the console's frame view shows) into panel space (what
+    /// `handle_input` expects). Everything else passes through.
+    fn remote_event_to_panel(&self, ev: InputEvent) -> InputEvent {
+        match ev {
+            InputEvent::PointerMotionAbsolute { position } => {
+                let (sw, sh) = (self.surface.width() as f32, self.surface.height() as f32);
+                let (px, py) = self.rotation.inverse().map_panel_point(
+                    position.x as f32,
+                    position.y as f32,
+                    sw,
+                    sh,
+                );
+                InputEvent::PointerMotionAbsolute {
+                    position: PPoint::new(px.round() as i32, py.round() as i32),
+                }
+            }
+            other => other,
+        }
     }
 
     /// Ship the shadow surface to the console as an RGBA snapshot. The shadow
@@ -949,13 +1012,18 @@ impl<A: App> PlatformHandler for Runner<A> {
         // (the arrow itself lives only in the frame, never the shadow).
         self.cursor_sprite
             .move_absolute(PPoint::new(self.cursor.0 as i32, self.cursor.1 as i32));
+        // Sprite and HUD rects are panel-space (they composite into the back
+        // buffer after the rotated copy-out); damage the shadow pixels that
+        // map onto them so copy-out refreshes those panel pixels.
         let d = self.cursor_sprite.damage();
-        self.surface
-            .damage_device_rect(IRect::new(d.x, d.y, d.w, d.h));
+        let d = self.panel_to_surface_rect(IRect::new(d.x, d.y, d.w, d.h));
+        self.surface.damage_device_rect(d);
         // Same rule for the HUD box: it repaints with fresh numbers every
         // frame, so the pixels under its last position must refresh too.
         if let Some(hud) = &self.hud {
-            self.surface.damage_device_rect(hud.damage());
+            let d = hud.damage();
+            let d = self.panel_to_surface_rect(d);
+            self.surface.damage_device_rect(d);
         }
 
         self.ui.paint(&mut self.surface);
@@ -1041,11 +1109,13 @@ impl<A: App> PlatformHandler for Runner<A> {
         let (pw, ph) = (info.size.w, info.size.h);
         self.phys_w = pw as f32;
         self.phys_h = ph as f32;
+        let (sw, sh) = self.rotation.surface_size(pw, ph);
         self.logical = Size::new(
-            pw as f32 / self.scale.factor(),
-            ph as f32 / self.scale.factor(),
+            sw as f32 / self.scale.factor(),
+            sh as f32 / self.scale.factor(),
         );
-        self.surface = Surface::new(pw, ph, self.scale);
+        self.surface = Surface::new(sw, sh, self.scale);
+        self.surface.set_rotation(self.rotation);
         if info.format == fbui_platform::PixelFormat::Rgb565 {
             self.surface.set_dither(true);
         }
@@ -1058,9 +1128,10 @@ impl<A: App> PlatformHandler for Runner<A> {
         self.cursor_sprite = SoftwareCursor::new(info.size);
         self.cursor_dirty = true;
         self.ui.set_size(self.logical, self.scale);
+        // The console sees the UI-orientation surface, so it gets those dims.
         #[cfg(feature = "remote")]
         if let Some(hub) = &self.remote {
-            hub.set_size(pw, ph);
+            hub.set_size(sw, sh);
         }
     }
 
