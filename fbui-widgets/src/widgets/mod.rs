@@ -32,6 +32,7 @@ mod tabbar;
 mod text_input;
 mod toast;
 mod tree_view;
+mod video;
 
 pub use button::{Button, ButtonVariant};
 pub use calendar::{Calendar, Date};
@@ -58,3 +59,4 @@ pub use tabbar::TabBar;
 pub use text_input::TextInput;
 pub use toast::{ToastKind, Toasts};
 pub use tree_view::{NodeId, TreeNode, TreeView};
+pub use video::{fit_rect, VideoFit, VideoView};

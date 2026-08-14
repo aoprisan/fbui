@@ -66,6 +66,7 @@ pub mod sample;
 pub mod scale;
 pub mod surface;
 pub mod text;
+pub mod yuv;
 
 #[cfg(feature = "platform")]
 mod platform_glue;

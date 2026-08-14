@@ -20,8 +20,8 @@
 //! tracker) from [`crate::Surface`] for the duration of one paint pass.
 
 use tiny_skia::{
-    BlendMode, FillRule, GradientStop, LinearGradient, Mask, Paint, PathBuilder, PixmapPaint,
-    RadialGradient, Shader, SpreadMode, Stroke, Transform,
+    BlendMode, FillRule, FilterQuality, GradientStop, LinearGradient, Mask, Paint, PathBuilder,
+    PixmapPaint, RadialGradient, Shader, SpreadMode, Stroke, Transform,
 };
 
 use crate::color::Color;
@@ -261,6 +261,34 @@ impl<'a> Painter<'a> {
             mask.as_ref(),
         );
         self.add_damage(IRect::new(dx, dy, image.width(), image.height()));
+    }
+
+    /// Blit a decoded image **scaled** to fill the logical rect `dest`
+    /// (bilinear; 1:1 falls back to nearest). This is the object-fit
+    /// primitive a video frame or a fitted photo rides — the caller picks the
+    /// dest rect (contain/cover/stretch math) and clips as needed.
+    pub fn draw_image_scaled(&mut self, image: &Image, dest: Rect) {
+        let dev = self.scale.to_device_rect(dest);
+        if dev.is_empty() || image.width() == 0 || image.height() == 0 {
+            return;
+        }
+        let sx = dev.w as f32 / image.width() as f32;
+        let sy = dev.h as f32 / image.height() as f32;
+        let one_to_one = (sx - 1.0).abs() < f32::EPSILON && (sy - 1.0).abs() < f32::EPSILON;
+        let paint = PixmapPaint {
+            opacity: 1.0,
+            blend_mode: BlendMode::SourceOver,
+            quality: if one_to_one {
+                FilterQuality::Nearest
+            } else {
+                FilterQuality::Bilinear
+            },
+        };
+        let t = Transform::from_row(sx, 0.0, 0.0, sy, dev.x as f32, dev.y as f32);
+        let mask = self.clip_mask.clone();
+        self.target()
+            .draw_pixmap(0, 0, image.pixmap.as_ref(), &paint, t, mask.as_ref());
+        self.add_damage(dev);
     }
 
     // ---- clip ------------------------------------------------------------
