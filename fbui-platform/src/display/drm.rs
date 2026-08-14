@@ -291,6 +291,36 @@ impl Display for DrmDisplay {
         Ok(completed)
     }
 
+    fn set_power(&mut self, on: bool) -> Result<()> {
+        // DPMS is meaningless (and would fail) without master — and a session
+        // that's switched away must not touch the other session's display.
+        if !self.master {
+            return Ok(());
+        }
+        // The kernel creates a legacy "DPMS" property on every connector; find
+        // it by name and set DRM_MODE_DPMS_ON (0) / _OFF (3). A connector
+        // without one (shouldn't happen) just stays lit — best-effort per the
+        // trait contract.
+        let props = self
+            .card
+            .get_properties(self.connector)
+            .map_err(|e| Error::io("get_properties", e))?;
+        let (handles, _) = props.as_props_and_values();
+        for &ph in handles {
+            let Ok(info) = self.card.get_property(ph) else {
+                continue;
+            };
+            if info.name().to_str() == Ok("DPMS") {
+                let value: u64 = if on { 0 } else { 3 };
+                self.card
+                    .set_property(self.connector, ph, value)
+                    .map_err(|e| master_aware_err("set_property DPMS", e))?;
+                return Ok(());
+            }
+        }
+        Ok(())
+    }
+
     fn suspend(&mut self) -> Result<()> {
         if self.master {
             self.card

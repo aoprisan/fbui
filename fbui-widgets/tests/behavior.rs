@@ -2395,3 +2395,202 @@ fn calendar_keyboard_crosses_month_boundaries_and_picks() {
         vec![Msg::PickedDate(Date::new(2026, 8, 31).unwrap())]
     );
 }
+
+// ---- Navigator ------------------------------------------------------------
+
+/// Settle any running Navigator transition by ticking the frame clock.
+fn settle_anim(ui: &mut Ui<Msg>) {
+    for _ in 0..120 {
+        if !ui.animate(1.0 / 60.0) {
+            break;
+        }
+    }
+    // One more tick so settle-frame child removals are applied.
+    ui.animate(1.0 / 60.0);
+}
+
+/// Build a navigator with a root screen holding one button; returns
+/// (ui, nav, screen, button).
+fn nav_ui() -> (Ui<Msg>, WidgetId, WidgetId, WidgetId) {
+    use fbui_widgets::widgets::Navigator;
+    let mut ui = ui();
+    let nav = ui.set_root(Navigator::new());
+    let s0 = Navigator::push(&mut ui, nav, Container::column().fill());
+    let b0 = ui.add_child(s0, Button::new("home").on_press(|| Msg::Pressed));
+    settle_anim(&mut ui);
+    ui.layout_now();
+    (ui, nav, s0, b0)
+}
+
+#[test]
+fn navigator_push_covers_and_pop_restores() {
+    use fbui_widgets::widgets::Navigator;
+    let (mut ui, nav, _s0, b0) = nav_ui();
+
+    // The root screen's button is clickable.
+    let at = center(&ui, b0);
+    click(&mut ui, at);
+    assert_eq!(ui.take_messages(), vec![Msg::Pressed]);
+
+    // Push a second screen with its own button.
+    let s1 = Navigator::push(&mut ui, nav, Container::column().fill());
+    let b1 = ui.add_child(s1, Button::new("detail").on_press(|| Msg::Toggled(true)));
+    settle_anim(&mut ui);
+    ui.layout_now();
+
+    // The new screen occupies the navigator's box…
+    assert_eq!(ui.bounds(s1), ui.bounds(nav), "active screen fills the box");
+    // …and the covered screen sits one width to the left, out of view.
+    let (nb, s0b) = (ui.bounds(nav).unwrap(), ui.bounds(_s0).unwrap());
+    assert_eq!(s0b.x, nb.x - nb.w, "covered screen parked offscreen");
+
+    // Clicking where the old button was hits the new screen, not through it.
+    let at = center(&ui, b1);
+    click(&mut ui, at);
+    assert_eq!(ui.take_messages(), vec![Msg::Toggled(true)]);
+
+    // Pop: the detail screen leaves the tree once the slide settles, and the
+    // root screen is interactive again.
+    assert!(Navigator::pop(&mut ui, nav), "pop from depth 1 succeeds");
+    settle_anim(&mut ui);
+    ui.layout_now();
+    assert!(
+        ui.bounds(s1).is_none(),
+        "popped screen reaped from the tree"
+    );
+    assert_eq!(ui.bounds(_s0), ui.bounds(nav), "root screen back in view");
+    let at = center(&ui, b0);
+    click(&mut ui, at);
+    assert_eq!(ui.take_messages(), vec![Msg::Pressed]);
+}
+
+#[test]
+fn navigator_focus_memory_survives_push_pop() {
+    use fbui_widgets::widgets::Navigator;
+    let (mut ui, nav, _s0, b0) = nav_ui();
+
+    // Focus the root screen's button (click focuses it).
+    let at = center(&ui, b0);
+    click(&mut ui, at);
+    ui.take_messages();
+    assert_eq!(ui.focused(), Some(b0));
+
+    // Push: focus is remembered and cleared; Tab now cycles only the new
+    // screen's widgets.
+    let s1 = Navigator::push(&mut ui, nav, Container::column().fill());
+    let b1 = ui.add_child(s1, Button::new("detail").on_press(|| Msg::Pressed));
+    settle_anim(&mut ui);
+    ui.layout_now();
+    assert_eq!(ui.focused(), None, "focus cleared on push");
+    ui.event(Event::Key {
+        key: Key::Tab,
+        pressed: true,
+        mods: Modifiers::default(),
+    });
+    assert_eq!(ui.focused(), Some(b1), "Tab confined to the active screen");
+
+    // Pop restores the remembered focus on the uncovered screen.
+    Navigator::pop(&mut ui, nav);
+    settle_anim(&mut ui);
+    assert_eq!(ui.focused(), Some(b0), "focus restored on pop");
+}
+
+#[test]
+fn navigator_escape_pops_and_emits() {
+    use fbui_widgets::widgets::Navigator;
+    let mut ui = ui();
+    let nav = ui.set_root(Navigator::<Msg>::new().on_back(Msg::Dismissed));
+    let _s0 = Navigator::push(&mut ui, nav, Container::column().fill());
+    let s1 = Navigator::push(&mut ui, nav, Container::column().fill());
+    let b1 = ui.add_child(s1, Button::new("x").on_press(|| Msg::Pressed));
+    settle_anim(&mut ui);
+    ui.layout_now();
+    ui.take_messages();
+
+    // Focus inside the stack so the key bubbles up through the navigator.
+    ui.focus(Some(b1));
+    ui.event(Event::Key {
+        key: Key::Escape,
+        pressed: true,
+        mods: Modifiers::default(),
+    });
+    assert_eq!(ui.take_messages(), vec![Msg::Dismissed]);
+    settle_anim(&mut ui);
+    assert!(ui.bounds(s1).is_none(), "escape popped the top screen");
+
+    // At the root, Escape no longer pops (nothing beneath).
+    ui.focus(None);
+    ui.event(Event::Key {
+        key: Key::Escape,
+        pressed: true,
+        mods: Modifiers::default(),
+    });
+    settle_anim(&mut ui);
+    assert!(ui.bounds(_s0).is_some(), "root screen stays");
+}
+
+/// The fast-path invariant: a mid-transition frame produced with the
+/// scroll-blit must match a full repaint of the same state. The comparison is
+/// the snapshot machinery's tolerant one rather than byte-exact for a precise
+/// reason: tiny-skia's anti-aliasing is not translation-invariant for shapes
+/// clipped by the canvas edge (a rounded corner sliding off the left edge
+/// rasterizes a couple of code-values differently than the same corner
+/// painted fully on-canvas and then shifted), so a handful of AA pixels at
+/// the seams may differ by a few LSBs. Anything beyond that — a misplaced
+/// strip, a stale band, a double-blend — fails loudly.
+#[test]
+fn navigator_slide_blit_matches_a_full_repaint() {
+    use fbui_render::{Color, Surface};
+    use fbui_widgets::widgets::Navigator;
+
+    // Font-free screens: solid colored panels with distinct nested boxes.
+    fn make() -> (Ui<Msg>, WidgetId, Surface) {
+        let mut ui = Ui::<Msg>::new(Size::new(200.0, 160.0), Scale::ONE, Theme::dark());
+        let nav = ui.set_root(Navigator::new().duration(0.3));
+        let s0 = Navigator::push(&mut ui, nav, Container::column().fill().padding(10.0));
+        ui.add_child(
+            s0,
+            Container::column()
+                .grow(1.0)
+                .background(Color::rgb(0x40, 0x80, 0x30), 6.0),
+        );
+        settle_anim(&mut ui);
+        let s1 = Navigator::push(&mut ui, nav, Container::column().fill().padding(22.0));
+        ui.add_child(
+            s1,
+            Container::column()
+                .grow(1.0)
+                .background(Color::rgb(0x80, 0x30, 0x40), 12.0),
+        );
+        let surface = Surface::new(200, 160, Scale::ONE);
+        (ui, nav, surface)
+    }
+
+    // A: paint mid-transition frames incrementally (blit fast path).
+    let (mut ua, _na, mut sa) = make();
+    ua.paint(&mut sa); // frame 0 (transition just started)
+    for _ in 0..6 {
+        ua.animate(1.0 / 60.0);
+        ua.paint(&mut sa);
+    }
+
+    // B: identical Ui advanced the same way, then forced to repaint fully —
+    // the ground truth for the same mid-transition state.
+    let (mut ub, _nb, mut sb) = make();
+    ub.paint(&mut sb);
+    for _ in 0..6 {
+        ub.animate(1.0 / 60.0);
+        ub.paint(&mut sb);
+    }
+    ub.set_size(Size::new(200.0, 160.0), Scale::ONE); // full damage, no state change
+    ub.paint(&mut sb);
+
+    let cmp = fbui_testkit::compare(sa.pixmap(), sb.pixmap(), 8);
+    assert!(
+        cmp.changed_pixels <= 16,
+        "slide-blit diverged from a full repaint beyond canvas-edge AA wobble: \
+         {} pixels changed (max delta {})",
+        cmp.changed_pixels,
+        cmp.max_delta
+    );
+}

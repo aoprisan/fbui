@@ -68,6 +68,30 @@ mod drm {
         assert!(last_age.is_some());
     }
 
+    /// DPMS off/on via the connector property (idle blanking). VKMS exposes
+    /// the standard "DPMS" property like real hardware; both directions must
+    /// succeed, and the display must still present afterwards.
+    #[test]
+    #[ignore = "needs a DRM card with master (modprobe vkms; run as root --ignored)"]
+    fn drm_vkms_dpms_roundtrip() {
+        let path = card_path();
+        let mut display = DrmDisplay::open(&path).expect("open DRM card / become master");
+        display.set_power(false).expect("DPMS off");
+        display.set_power(true).expect("DPMS on");
+
+        // The panel must come back presentable.
+        let Some(frame) = display.begin_frame().expect("begin_frame") else {
+            panic!("no buffer free right after bring-up");
+        };
+        for b in frame.buffer.iter_mut() {
+            *b = 0x55;
+        }
+        let damage = vec![Rect::from_size(frame.size)];
+        display.present(&damage).expect("present after DPMS cycle");
+        wait_readable(&display);
+        display.dispatch_present().expect("dispatch");
+    }
+
     /// Poll the display's present fd until it's readable (the page flip landed).
     fn wait_readable(display: &DrmDisplay) {
         use std::os::unix::io::AsRawFd;

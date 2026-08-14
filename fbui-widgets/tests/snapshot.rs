@@ -7,9 +7,9 @@
 //! `FBUI_UPDATE_SNAPSHOTS=1 cargo test -p fbui-widgets --test snapshot`
 
 use fbui_render::geom::Size;
-use fbui_render::{Color, Scale, Surface};
+use fbui_render::{Color, Image, Scale, Surface};
 use fbui_testkit::{assert_snapshot_in, Tolerance};
-use fbui_widgets::widgets::{Container, Keyboard, Slider, Spinner, Stack, TabBar};
+use fbui_widgets::widgets::{Container, Keyboard, Slider, Spinner, Stack, TabBar, VideoView};
 use fbui_widgets::{Theme, Ui};
 
 #[derive(Clone)]
@@ -403,6 +403,98 @@ fn calendar_month_grid() {
     assert_snapshot_in(
         "tests/snapshots",
         "calendar_month_grid",
+        surface.pixmap(),
+        Tolerance::FUZZY,
+    );
+}
+
+/// A `VideoView` showing a YUV-decoded color-bar frame: a wide 80×30 frame in
+/// a 160×120 box letterboxes top and bottom under `Contain`, and the bars scale
+/// up 2× through the bilinear image path. Text-free and fully synthetic
+/// (the frame is generated via `fbui_render::yuv`), so it's host-deterministic
+/// and pins the whole camera-to-pixels pipeline end to end.
+#[test]
+fn video_color_bars_letterboxed() {
+    // Six vertical color bars, YUYV-encoded (BT.601 limited range), 80×30.
+    let (fw, fh) = (80u32, 30u32);
+    // (Y, U, V) for white, yellow, cyan, green, magenta, red.
+    let bars = [
+        (235u8, 128u8, 128u8),
+        (210, 16, 146),
+        (170, 166, 16),
+        (145, 54, 34),
+        (106, 202, 222),
+        (81, 90, 240),
+    ];
+    let mut yuyv = Vec::with_capacity((fw * fh * 2) as usize);
+    for _row in 0..fh {
+        for pair in 0..fw / 2 {
+            let (y, u, v) = bars[(pair * 2 * bars.len() as u32 / fw) as usize];
+            yuyv.extend_from_slice(&[y, u, y, v]);
+        }
+    }
+    let rgba = fbui_render::yuv::yuyv_to_rgba(&yuyv, fw, fh).unwrap();
+    let frame = Image::from_rgba_bytes(fw, fh, &rgba).unwrap();
+
+    let (w, h) = (160u32, 120u32);
+    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+    let root = ui.set_root(Container::column().fill());
+    let video = ui.add_child(root, VideoView::new().letterbox(Color::rgb(10, 10, 14)));
+    ui.with(video, |v: &mut VideoView| v.set_frame(frame));
+
+    let mut surface = Surface::new(w, h, Scale::ONE);
+    ui.paint(&mut surface);
+
+    assert_snapshot_in(
+        "tests/snapshots",
+        "video_color_bars",
+        surface.pixmap(),
+        Tolerance::FUZZY,
+    );
+}
+
+/// A `Navigator` slide frozen mid-transition: the outgoing green screen exits
+/// left as the incoming red screen slides in from the right, both clipped to
+/// the navigator's box. Text-free; pins the strip layout, the per-index
+/// screen positioning, and the tweened offset at a fixed set of frame ticks.
+#[test]
+fn navigator_mid_slide() {
+    use fbui_widgets::widgets::Navigator;
+
+    let (w, h) = (200u32, 160u32);
+    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+    let nav = ui.set_root(Navigator::new().duration(0.3));
+    let s0 = Navigator::push(&mut ui, nav, Container::column().fill().padding(10.0));
+    ui.add_child(
+        s0,
+        Container::column()
+            .grow(1.0)
+            .background(Color::rgb(0x40, 0x80, 0x30), 6.0),
+    );
+    for _ in 0..120 {
+        if !ui.animate(1.0 / 60.0) {
+            break;
+        }
+    }
+    let s1 = Navigator::push(&mut ui, nav, Container::column().fill().padding(22.0));
+    ui.add_child(
+        s1,
+        Container::column()
+            .grow(1.0)
+            .background(Color::rgb(0x80, 0x30, 0x40), 12.0),
+    );
+
+    let mut surface = Surface::new(w, h, Scale::ONE);
+    ui.paint(&mut surface);
+    // Freeze partway through the slide (10 of 18 frames at 60 fps).
+    for _ in 0..10 {
+        ui.animate(1.0 / 60.0);
+        ui.paint(&mut surface);
+    }
+
+    assert_snapshot_in(
+        "tests/snapshots",
+        "navigator_mid_slide",
         surface.pixmap(),
         Tolerance::FUZZY,
     );

@@ -171,6 +171,14 @@ impl<'a, Msg> EventCtx<'a, Msg> {
         self.out.focus = Some(FocusOp::Request(self.self_id));
     }
 
+    /// Direct keyboard focus at a specific widget — for containers that steer
+    /// focus among others (a [`Navigator`](crate::widgets::Navigator)
+    /// restoring a screen's remembered focus on pop). A stale id clears focus
+    /// instead of dangling.
+    pub fn focus_widget(&mut self, id: WidgetId) {
+        self.out.focus = Some(FocusOp::Request(id));
+    }
+
     /// Move focus to the next focusable widget.
     pub fn focus_next(&mut self) {
         self.out.focus = Some(FocusOp::Next);

@@ -111,6 +111,17 @@ pub trait PlatformHandler {
         Some(Duration::from_millis(16))
     }
 
+    /// A pending display power change requested by the handler, consuming it:
+    /// `Some(false)` asks the loop to turn the panel off
+    /// ([`Display::set_power`]), `Some(true)` to turn it back on. Polled once
+    /// per loop turn (right after [`tick`](PlatformHandler::tick)), so a
+    /// request raised while handling input or a wake is applied within the
+    /// same turn. This indirection exists because the handler never holds the
+    /// `Display` — the loop owns it. Default: no request, panel stays as is.
+    fn take_power_request(&mut self) -> Option<bool> {
+        None
+    }
+
     /// Called once, before the first frame, with a [`Waker`] the app can hand to
     /// background threads so they can wake the loop. Default: ignore.
     fn on_start(&mut self, waker: Waker) {
@@ -442,6 +453,19 @@ pub(crate) fn run_loop(
             Flow::Redraw => state.needs_redraw = true,
             Flow::Exit => state.exit = true,
             Flow::Continue => {}
+        }
+        // Apply a pending display power change (idle blanking / wake). Only
+        // while the session is active — an inactive session must not touch a
+        // display another VT owns.
+        if let Some(on) = state.handler.take_power_request() {
+            if state.active {
+                state.display.set_power(on)?;
+                if on {
+                    // Panel back on: repaint in case the driver dropped the
+                    // scanout contents while powered down.
+                    state.needs_redraw = true;
+                }
+            }
         }
         if last_hotplug.elapsed() >= hotplug_every {
             last_hotplug = std::time::Instant::now();

@@ -153,6 +153,20 @@ pub trait Display {
         Ok(())
     }
 
+    /// Set the panel's power state: `false` turns the display off (DPMS off /
+    /// framebuffer blank — backlight and scanout stop, contents are kept),
+    /// `true` turns it back on. This is the idle-blanking hook a kiosk uses
+    /// to save power and avoid burn-in; rendering may continue while off (it
+    /// just isn't visible) but a well-behaved app simply goes idle.
+    ///
+    /// Best-effort by design: a backend or panel without a power control
+    /// returns `Ok(())` and stays lit, because a kiosk that can't blank is
+    /// fine and a kiosk that dies at idle timeout is not. Default: no-op.
+    fn set_power(&mut self, on: bool) -> Result<()> {
+        let _ = on;
+        Ok(())
+    }
+
     /// Re-probe the output for a hotplug / mode change and, if the active mode
     /// changed, reconfigure to it — returning the new [`DisplayInfo`].
     ///

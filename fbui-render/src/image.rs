@@ -46,6 +46,26 @@ impl Image {
         Image { pixmap }
     }
 
+    /// Build from raw straight-alpha RGBA8 bytes (`width * height * 4`,
+    /// row-major, no padding) — the frame-producer path: a camera capture or
+    /// decoded video frame converted via [`crate::yuv`], without the producer
+    /// needing the `image` crate. Errors on a size mismatch.
+    pub fn from_rgba_bytes(width: u32, height: u32, rgba: &[u8]) -> Result<Image, String> {
+        let expect = width as usize * height as usize * 4;
+        if rgba.len() != expect {
+            return Err(format!(
+                "rgba buffer is {} bytes, expected {expect} for {width}x{height}",
+                rgba.len()
+            ));
+        }
+        let mut pixmap =
+            tiny_skia::Pixmap::new(width.max(1), height.max(1)).expect("image pixmap alloc");
+        for (dst, src) in pixmap.pixels_mut().iter_mut().zip(rgba.chunks_exact(4)) {
+            *dst = tiny_skia::ColorU8::from_rgba(src[0], src[1], src[2], src[3]).premultiply();
+        }
+        Ok(Image { pixmap })
+    }
+
     /// Rasterize SVG bytes at `width`×`height` device pixels (feature `svg`).
     ///
     /// The drawing is scaled to **fit** the box, preserving its aspect ratio,

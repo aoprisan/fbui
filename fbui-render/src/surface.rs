@@ -18,6 +18,7 @@ use crate::copyout::{self, TargetFormat};
 use crate::damage::DamageTracker;
 use crate::geom::{IRect, Rect};
 use crate::painter::Painter;
+use crate::rotate::Rotation;
 use crate::scale::Scale;
 
 /// Encode straight-alpha RGBA8 rows (`width * 4` bytes each, no padding) as a
@@ -53,6 +54,9 @@ pub struct Surface {
     base: Color,
     /// Apply ordered dithering when copying out to a 16-bit (RGB565) target.
     dither_565: bool,
+    /// Rotation applied at copy-out: the shadow is UI-orientation, the
+    /// destination buffer panel-orientation. [`Rotation::Rot0`] = plain copy.
+    rotation: Rotation,
 }
 
 impl Surface {
@@ -75,7 +79,24 @@ impl Surface {
             damage: DamageTracker::new(),
             base,
             dither_565: false,
+            rotation: Rotation::Rot0,
         }
+    }
+
+    /// Rotate the copy-out: the surface stays in UI orientation (create it at
+    /// the panel's dimensions swapped for quarter turns — see
+    /// [`Rotation::surface_size`]) and every present writes each pixel to its
+    /// rotated position in the destination buffer. Marks the whole surface
+    /// damaged. Input mapping is the embedder's job
+    /// ([`Rotation::map_panel_point`]).
+    pub fn set_rotation(&mut self, rotation: Rotation) {
+        self.rotation = rotation;
+        self.damage.add(IRect::from_wh(self.width(), self.height()));
+    }
+
+    /// The rotation applied at copy-out.
+    pub fn rotation(&self) -> Rotation {
+        self.rotation
     }
 
     /// Enable (or disable) ordered dithering on the RGB565 copy-out path. Off by
@@ -275,11 +296,13 @@ impl Surface {
     }
 
     /// Flush accumulated damage for a back buffer of the given `age`, copy the
-    /// damaged spans into `dst`, and return the device-pixel regions that were
-    /// written (so the caller can hand them to `present`).
+    /// damaged spans into `dst`, and return the **destination-space** regions
+    /// that were written (so the caller can hand them to `present`). Without a
+    /// [rotation](Self::set_rotation) destination space is surface space; with
+    /// one, the rects are the damage mapped into panel space.
     ///
-    /// `dst` is `stride * height` bytes; `stride` is the kernel-reported pitch,
-    /// never assumed to be `width * bpp`.
+    /// `dst` is `stride * height` bytes (panel dimensions when rotated);
+    /// `stride` is the kernel-reported pitch, never assumed `width * bpp`.
     pub fn present_to_buffer(
         &mut self,
         dst: &mut [u8],
@@ -289,7 +312,23 @@ impl Surface {
     ) -> Vec<IRect> {
         let (w, h) = (self.shadow.width(), self.shadow.height());
         let damage = self.damage.flush(age, w, h);
-        if self.dither_565 && format == TargetFormat::Rgb565 {
+        let dither = self.dither_565 && format == TargetFormat::Rgb565;
+        if self.rotation != Rotation::Rot0 {
+            copyout::copy_out_rotated(
+                &self.shadow,
+                dst,
+                stride,
+                format,
+                &damage,
+                self.rotation,
+                dither,
+            );
+            return damage
+                .into_iter()
+                .map(|r| self.rotation.map_rect(r, w, h))
+                .collect();
+        }
+        if dither {
             copyout::copy_out_dithered(&self.shadow, dst, stride, format, &damage);
         } else {
             copyout::copy_out(&self.shadow, dst, stride, format, &damage);
@@ -498,6 +537,34 @@ mod tests {
         assert!(!s.is_clean());
         let damage = s.present_to_buffer(&mut [0u8; 8 * 8 * 4], 32, TargetFormat::Xrgb8888, 1);
         assert_eq!(damage, vec![IRect::new(2, 3, 4, 4)]);
+    }
+
+    #[test]
+    fn rotated_present_writes_panel_space_and_reports_panel_rects() {
+        // A 2×3 (portrait) surface presented onto a 3×2 (landscape) panel at
+        // Rot90. Paint one marker pixel and check where it lands.
+        let mut s = Surface::new(2, 3, Scale::ONE);
+        s.set_rotation(Rotation::Rot90);
+        let stride = 3 * 4;
+        let _ = s.present_to_buffer(
+            &mut vec![0u8; stride * 2],
+            stride,
+            TargetFormat::Xrgb8888,
+            1,
+        );
+
+        s.paint(|p| p.fill_rect(Rect::new(0.0, 0.0, 1.0, 1.0), Color::rgb(200, 0, 0)));
+        let mut dst = vec![0u8; stride * 2];
+        let damage = s.present_to_buffer(&mut dst, stride, TargetFormat::Xrgb8888, 1);
+        // Surface (0,0) -> panel (sh-1-y, x) = (2, 0); rects come back in
+        // panel space, ready for `present`.
+        assert_eq!(damage, vec![IRect::new(2, 0, 1, 1)]);
+        let off = 2 * 4;
+        assert_eq!(
+            &dst[off..off + 4],
+            &[0, 0, 200, 0xff],
+            "pixel at panel (2,0)"
+        );
     }
 
     #[test]

@@ -18,12 +18,13 @@ use fbui_platform::{
     PlatformConfig, PlatformHandler, Point as PPoint, Rect as PRect, Waker,
 };
 use fbui_render::geom::{IRect, Point, Size};
-use fbui_render::{FontContext, Scale, Surface};
+use fbui_render::{FontContext, Rotation, Scale, Surface};
 use fbui_widgets::event::{Event, Key, Modifiers, PointerButton};
 use fbui_widgets::gesture::{Gesture, GestureRecognizer};
 use fbui_widgets::{Theme, Ui};
 
 use crate::hud::Hud;
+use crate::power::{IdlePolicy, IdleTracker, Stage, Transition};
 use crate::record::{Recorder, Replayer};
 #[cfg(feature = "remote")]
 use crate::remote::{Command as RemoteCommand, Hub, RemoteButton};
@@ -139,6 +140,15 @@ pub trait App: 'static {
     /// won't render until you supply some).
     fn fonts(&self) -> Vec<Vec<u8>> {
         Vec::new()
+    }
+
+    /// The idle power-management policy: dim the backlight, then blank the
+    /// panel, after periods of no input; wake (and swallow the waking tap) on
+    /// the next input. Operators can override the timings per deployment with
+    /// `FBUI_IDLE_DIM` / `FBUI_IDLE_BLANK` / `FBUI_IDLE_DIM_LEVEL` — see
+    /// [`IdlePolicy::with_env`]. Default: disabled.
+    fn idle_policy(&self) -> IdlePolicy<Self::Message> {
+        IdlePolicy::disabled()
     }
 }
 
@@ -359,20 +369,43 @@ fn remote_from_env(
     Ok(Some(hub))
 }
 
+/// Read `FBUI_ROTATE` (degrees: 0/90/180/270): how far the UI is turned
+/// clockwise on the panel — set it to make the UI upright on a physically
+/// rotated (portrait-mounted) screen. A junk value is a hard error, like the
+/// other `FBUI_*` toggles: a kiosk silently coming up sideways is worse than
+/// one that stops with a message.
+fn rotation_from_env() -> fbui_platform::Result<Rotation> {
+    match std::env::var("FBUI_ROTATE") {
+        Err(_) => Ok(Rotation::Rot0),
+        Ok(s) => s
+            .trim()
+            .parse::<u32>()
+            .ok()
+            .and_then(Rotation::from_degrees)
+            .ok_or_else(|| fbui_platform::Error::Io {
+                what: format!("FBUI_ROTATE {s:?}"),
+                source: std::io::Error::other("expected 0, 90, 180 or 270"),
+            }),
+    }
+}
+
 /// Bring up the platform and run `app` until it exits (Esc, or a fatal error).
 pub fn run<A: App>(mut app: A) -> fbui_platform::Result<()> {
     let platform = Platform::new(&PlatformConfig::default())?;
     let phys = platform.info().size;
+    let rotation = rotation_from_env()?;
+    // The UI-orientation surface: panel dims, swapped for quarter turns. All
+    // layout/paint happens here; the rotation is applied at copy-out, and
+    // input is mapped back in `cursor_logical`.
+    let (sw, sh) = rotation.surface_size(phys.w, phys.h);
     let (recorder, replay) = record_replay_from_env(phys)?;
     #[cfg(feature = "remote")]
-    let remote = remote_from_env(phys)?;
+    let remote = remote_from_env(fbui_platform::Size { w: sw, h: sh })?;
     let scale = Scale::ONE;
-    let logical = Size::new(
-        phys.w as f32 / scale.factor(),
-        phys.h as f32 / scale.factor(),
-    );
+    let logical = Size::new(sw as f32 / scale.factor(), sh as f32 / scale.factor());
 
-    let mut surface = Surface::new(phys.w, phys.h, scale);
+    let mut surface = Surface::new(sw, sh, scale);
+    surface.set_rotation(rotation);
     // 16-bit panels band badly on gradients; dither the copy-out for them.
     if platform.info().format == fbui_platform::PixelFormat::Rgb565 {
         surface.set_dither(true);
@@ -387,6 +420,39 @@ pub fn run<A: App>(mut app: A) -> fbui_platform::Result<()> {
     app.build(&mut ui);
 
     let now = Instant::now();
+    // Idle power management: the app's policy with operator env overrides.
+    let idle_policy = app
+        .idle_policy()
+        .with_env()
+        .map_err(|msg| fbui_platform::Error::Io {
+            what: msg,
+            source: std::io::Error::other("invalid idle policy"),
+        })?;
+    let idle = idle_policy.enabled().then(|| {
+        let backlight = fbui_platform::Backlight::discover();
+        let fmt = |d: Option<Duration>| match d {
+            Some(d) => format!("{:.0}s", d.as_secs_f64()),
+            None => "off".into(),
+        };
+        eprintln!(
+            "fbui: idle policy: dim {} (to {}%), blank {}, backlight {}",
+            fmt(idle_policy.dim_after),
+            idle_policy.dim_percent,
+            fmt(idle_policy.blank_after),
+            match &backlight {
+                Some(b) => b.path().display().to_string(),
+                None => "none found".into(),
+            }
+        );
+        IdleState {
+            tracker: IdleTracker::new(idle_policy.dim_after, idle_policy.blank_after, now),
+            policy: idle_policy,
+            backlight,
+            saved_percent: None,
+            pending_power: None,
+            swallowing: false,
+        }
+    });
     // Background threads (spawned from `App::on_start`) deliver messages here; the
     // runner drains them in `on_wake`. The `Waker` half arrives via `on_start`.
     let (tx, rx) = mpsc::channel();
@@ -396,6 +462,7 @@ pub fn run<A: App>(mut app: A) -> fbui_platform::Result<()> {
         surface,
         logical,
         scale,
+        rotation,
         phys_w: phys.w as f32,
         phys_h: phys.h as f32,
         cursor: (phys.w as f32 / 2.0, phys.h as f32 / 2.0),
@@ -413,8 +480,28 @@ pub fn run<A: App>(mut app: A) -> fbui_platform::Result<()> {
         #[cfg(feature = "remote")]
         remote,
         hud: Hud::from_env(),
+        idle,
     };
     platform.run(&mut runner)
+}
+
+/// Everything the runner tracks for idle power management (see
+/// [`crate::power`]): the pure clock, the effects targets, and the state the
+/// wake path needs.
+struct IdleState<M> {
+    tracker: IdleTracker,
+    policy: IdlePolicy<M>,
+    /// The panel's backlight, if the system exposes one. Dimming is skipped
+    /// without it; blanking works regardless.
+    backlight: Option<fbui_platform::Backlight>,
+    /// Brightness percent to restore on wake, saved when dimming.
+    saved_percent: Option<u8>,
+    /// A `Display::set_power` request awaiting the event loop
+    /// ([`PlatformHandler::take_power_request`]).
+    pending_power: Option<bool>,
+    /// Input is being swallowed until the wake gesture ends, so the tap that
+    /// wakes a blanked screen can't also press what it landed on.
+    swallowing: bool,
 }
 
 struct Runner<A: App> {
@@ -423,6 +510,10 @@ struct Runner<A: App> {
     surface: Surface,
     logical: Size,
     scale: Scale,
+    /// `FBUI_ROTATE`: how the UI is turned on the panel. The surface lives in
+    /// UI orientation; the cursor (and every other panel-space rect) maps
+    /// through this at the seams.
+    rotation: Rotation,
     phys_w: f32,
     phys_h: f32,
     /// Pointer position in physical pixels (the platform tracks none itself).
@@ -464,15 +555,27 @@ struct Runner<A: App> {
     remote: Option<std::sync::Arc<Hub>>,
     /// `FBUI_HUD`: the fps/paint-cost overlay composited after copy-out.
     hud: Option<Hud>,
+    /// Idle power management (`App::idle_policy` + `FBUI_IDLE_*`), when
+    /// enabled.
+    idle: Option<IdleState<A::Message>>,
 }
 
 impl<A: App> Runner<A> {
-    /// Cursor in logical coordinates.
+    /// Cursor in logical coordinates: the panel-space pointer mapped into UI
+    /// orientation, then scaled.
     fn cursor_logical(&self) -> Point {
-        Point::new(
-            self.cursor.0 / self.scale.factor(),
-            self.cursor.1 / self.scale.factor(),
-        )
+        let (ux, uy) =
+            self.rotation
+                .map_panel_point(self.cursor.0, self.cursor.1, self.phys_w, self.phys_h);
+        Point::new(ux / self.scale.factor(), uy / self.scale.factor())
+    }
+
+    /// Map a panel-space device rect (cursor sprite, HUD box) into surface
+    /// space, for damaging shadow pixels that back panel-space overlays.
+    fn panel_to_surface_rect(&self, r: IRect) -> IRect {
+        self.rotation
+            .inverse()
+            .map_rect(r, self.phys_w as u32, self.phys_h as u32)
     }
 
     /// Milliseconds since the run started, for the gesture recognizer's
@@ -588,6 +691,11 @@ impl<A: App> Runner<A> {
     /// here, so a replay exercises exactly what a user did.
     fn handle_input(&mut self, event: InputEvent) -> Flow {
         crate::span!("input");
+        // Idle power management: every input is activity; the input that
+        // wakes a blanked screen (and the rest of that gesture) is swallowed.
+        if self.idle_note_activity(&event) {
+            return Flow::Continue;
+        }
         match event {
             InputEvent::Key(k) => {
                 if k.keysym == keysym::ESCAPE && k.state == KeyState::Pressed {
@@ -808,6 +916,11 @@ impl<A: App> Runner<A> {
                 RemoteCommand::RefreshFrame => self.publish_remote_frame(&hub),
                 other => {
                     for ev in remote_input_events(&other) {
+                        // Console coordinates are surface-space (the space of
+                        // the published frames); the input path speaks panel
+                        // space. Convert before recording so `FBUI_RECORD`
+                        // files stay uniformly panel-space.
+                        let ev = self.remote_event_to_panel(ev);
                         hub.record_input(1);
                         if let Some(rec) = &mut self.recorder {
                             rec.record(&ev);
@@ -825,6 +938,27 @@ impl<A: App> Runner<A> {
             self.publish_remote_frame(&hub);
         }
         flow
+    }
+
+    /// Map a remote-injected absolute pointer position from surface space
+    /// (what the console's frame view shows) into panel space (what
+    /// `handle_input` expects). Everything else passes through.
+    fn remote_event_to_panel(&self, ev: InputEvent) -> InputEvent {
+        match ev {
+            InputEvent::PointerMotionAbsolute { position } => {
+                let (sw, sh) = (self.surface.width() as f32, self.surface.height() as f32);
+                let (px, py) = self.rotation.inverse().map_panel_point(
+                    position.x as f32,
+                    position.y as f32,
+                    sw,
+                    sh,
+                );
+                InputEvent::PointerMotionAbsolute {
+                    position: PPoint::new(px.round() as i32, py.round() as i32),
+                }
+            }
+            other => other,
+        }
     }
 
     /// Ship the shadow surface to the console as an RGBA snapshot. The shadow
@@ -928,6 +1062,101 @@ fn remote_key_events(name: &str) -> Vec<InputEvent> {
         .collect()
 }
 
+/// Whether this input event ends a wake-swallow: the finger lifted, the
+/// button/key released, or the event is a one-shot (wheel). Motion keeps the
+/// swallow alive — the finger that woke the screen is still down.
+fn ends_wake_swallow(ev: &InputEvent) -> bool {
+    match ev {
+        InputEvent::TouchUp { .. } | InputEvent::TouchCancel | InputEvent::PointerAxis { .. } => {
+            true
+        }
+        InputEvent::PointerButton { state, .. } => !state.is_down(),
+        InputEvent::Key(k) => !k.state.is_down(),
+        _ => false,
+    }
+}
+
+/// Whether this input event *begins* a gesture that stays down (so a wake
+/// triggered by it must keep swallowing until the matching release).
+fn begins_held_gesture(ev: &InputEvent) -> bool {
+    match ev {
+        InputEvent::TouchDown { .. } => true,
+        InputEvent::PointerButton { state, .. } => state.is_down(),
+        InputEvent::Key(k) => k.state.is_down(),
+        _ => false,
+    }
+}
+
+// Idle power management (see `crate::power`): activity notes, stage
+// transitions, and the wake path.
+impl<A: App> Runner<A> {
+    /// Note input activity. Returns `true` when the event must be swallowed:
+    /// it woke a blanked screen (or belongs to the gesture that did).
+    fn idle_note_activity(&mut self, event: &InputEvent) -> bool {
+        let Some(idle) = &mut self.idle else {
+            return false;
+        };
+        let now = Instant::now();
+        if idle.swallowing {
+            idle.tracker.note_activity(now);
+            if ends_wake_swallow(event) {
+                idle.swallowing = false;
+            }
+            return true;
+        }
+        let was = idle.tracker.stage();
+        if !idle.tracker.note_activity(now) {
+            return false;
+        }
+        // Waking: restore brightness and (if blanked) panel power.
+        if let (Some(bl), Some(pct)) = (&idle.backlight, idle.saved_percent.take()) {
+            let _ = bl.set_percent(pct);
+        }
+        let swallow = was == Stage::Blanked;
+        if swallow {
+            idle.pending_power = Some(true);
+            idle.swallowing = begins_held_gesture(event);
+        }
+        if let Some(msg) = idle.policy.on_wake.clone() {
+            self.app.update(msg, &mut self.ui);
+            self.drain_messages();
+        }
+        swallow
+    }
+
+    /// Advance the idle clock, applying any stage transitions that came due.
+    fn service_idle(&mut self) {
+        let Some(idle) = &mut self.idle else {
+            return;
+        };
+        let now = Instant::now();
+        let was_active = idle.tracker.stage() == Stage::Active;
+        let mut crossed = false;
+        while let Some(tr) = idle.tracker.poll(now) {
+            crossed = true;
+            match tr {
+                Transition::Dim => {
+                    if let Some(bl) = &idle.backlight {
+                        // Save the level to restore on wake; if the current
+                        // level is unreadable, assume full.
+                        let cur = bl.percent().unwrap_or(100);
+                        idle.saved_percent.get_or_insert(cur);
+                        let _ = bl.set_percent(idle.policy.dim_percent);
+                    }
+                }
+                Transition::Blank => idle.pending_power = Some(false),
+            }
+        }
+        // `on_idle` fires once, when the screen first leaves the active state.
+        if was_active && crossed {
+            if let Some(msg) = idle.policy.on_idle.clone() {
+                self.app.update(msg, &mut self.ui);
+                self.drain_messages();
+            }
+        }
+    }
+}
+
 impl<A: App> PlatformHandler for Runner<A> {
     fn on_input(&mut self, event: InputEvent) -> Flow {
         if let Some(rec) = &mut self.recorder {
@@ -949,13 +1178,18 @@ impl<A: App> PlatformHandler for Runner<A> {
         // (the arrow itself lives only in the frame, never the shadow).
         self.cursor_sprite
             .move_absolute(PPoint::new(self.cursor.0 as i32, self.cursor.1 as i32));
+        // Sprite and HUD rects are panel-space (they composite into the back
+        // buffer after the rotated copy-out); damage the shadow pixels that
+        // map onto them so copy-out refreshes those panel pixels.
         let d = self.cursor_sprite.damage();
-        self.surface
-            .damage_device_rect(IRect::new(d.x, d.y, d.w, d.h));
+        let d = self.panel_to_surface_rect(IRect::new(d.x, d.y, d.w, d.h));
+        self.surface.damage_device_rect(d);
         // Same rule for the HUD box: it repaints with fresh numbers every
         // frame, so the pixels under its last position must refresh too.
         if let Some(hud) = &self.hud {
-            self.surface.damage_device_rect(hud.damage());
+            let d = hud.damage();
+            let d = self.panel_to_surface_rect(d);
+            self.surface.damage_device_rect(d);
         }
 
         self.ui.paint(&mut self.surface);
@@ -1041,11 +1275,13 @@ impl<A: App> PlatformHandler for Runner<A> {
         let (pw, ph) = (info.size.w, info.size.h);
         self.phys_w = pw as f32;
         self.phys_h = ph as f32;
+        let (sw, sh) = self.rotation.surface_size(pw, ph);
         self.logical = Size::new(
-            pw as f32 / self.scale.factor(),
-            ph as f32 / self.scale.factor(),
+            sw as f32 / self.scale.factor(),
+            sh as f32 / self.scale.factor(),
         );
-        self.surface = Surface::new(pw, ph, self.scale);
+        self.surface = Surface::new(sw, sh, self.scale);
+        self.surface.set_rotation(self.rotation);
         if info.format == fbui_platform::PixelFormat::Rgb565 {
             self.surface.set_dither(true);
         }
@@ -1058,9 +1294,10 @@ impl<A: App> PlatformHandler for Runner<A> {
         self.cursor_sprite = SoftwareCursor::new(info.size);
         self.cursor_dirty = true;
         self.ui.set_size(self.logical, self.scale);
+        // The console sees the UI-orientation surface, so it gets those dims.
         #[cfg(feature = "remote")]
         if let Some(hub) = &self.remote {
-            hub.set_size(pw, ph);
+            hub.set_size(sw, sh);
         }
     }
 
@@ -1093,11 +1330,18 @@ impl<A: App> PlatformHandler for Runner<A> {
         // Deliver any timer deadlines that came due while the loop slept.
         self.service_timers();
 
+        // Cross any idle-power stage boundary that came due (dim, blank).
+        self.service_idle();
+
         if self.ui.needs_paint() || replay_flow == Flow::Redraw {
             Flow::Redraw
         } else {
             Flow::Continue
         }
+    }
+
+    fn take_power_request(&mut self) -> Option<bool> {
+        self.idle.as_mut().and_then(|i| i.pending_power.take())
     }
 
     fn next_timeout(&mut self) -> Option<Duration> {
@@ -1108,6 +1352,13 @@ impl<A: App> PlatformHandler for Runner<A> {
         // This is what makes a truly idle app burn ~0% CPU.
         let frame = self.ui.is_animating() || self.gestures.is_active();
         let mut t = if frame { Some(FRAME) } else { None };
+        // An armed idle stage (dim/blank) bounds the sleep so `tick` can
+        // cross it on time; a fully idle (blanked) screen imposes no bound.
+        if let Some(idle) = &self.idle {
+            if let Some(d) = idle.tracker.next_deadline(Instant::now()) {
+                t = Some(t.map_or(d, |cur| cur.min(d)));
+            }
+        }
         if let Some(due) = self.timers.next_due() {
             let d = due.saturating_duration_since(Instant::now());
             t = Some(t.map_or(d, |cur| cur.min(d)));

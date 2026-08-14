@@ -61,10 +61,12 @@ pub mod geom;
 pub mod image;
 pub mod painter;
 pub mod path;
+pub mod rotate;
 pub mod sample;
 pub mod scale;
 pub mod surface;
 pub mod text;
+pub mod yuv;
 
 #[cfg(feature = "platform")]
 mod platform_glue;
@@ -76,6 +78,7 @@ pub use geom::{IRect, Point, Rect, Size};
 pub use image::Image;
 pub use painter::Painter;
 pub use path::{Path, PathBuilder};
+pub use rotate::Rotation;
 pub use scale::Scale;
 pub use surface::{encode_png_rgba, Surface};
 pub use text::{FontContext, FontFamily, TextLayout, TextStyle};

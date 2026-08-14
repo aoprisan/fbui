@@ -29,6 +29,7 @@
 //! [`begin_frame`]: Display::begin_frame
 //! [`present`]: Display::present
 
+pub mod backlight;
 pub mod cursor;
 pub mod display;
 pub mod error;
@@ -48,6 +49,7 @@ pub(crate) mod uevent;
 
 use std::path::PathBuf;
 
+pub use crate::backlight::Backlight;
 pub use crate::display::{BackendKind, Display, DisplayInfo, Frame};
 pub use crate::error::{Error, Result};
 pub use crate::format::PixelFormat;
