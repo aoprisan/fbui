@@ -90,6 +90,12 @@ mod fb {
     pub const FBIOPUT_VSCREENINFO: libc::c_ulong = 0x4601;
     pub const FBIOGET_FSCREENINFO: libc::c_ulong = 0x4602;
     pub const FBIOPAN_DISPLAY: libc::c_ulong = 0x4606;
+    /// Blank/unblank the framebuffer (`<linux/fb.h>` `FBIOBLANK`).
+    pub const FBIOBLANK: libc::c_ulong = 0x4611;
+    /// `FB_BLANK_UNBLANK`: panel on.
+    pub const FB_BLANK_UNBLANK: libc::c_int = 0;
+    /// `FB_BLANK_POWERDOWN`: panel fully off.
+    pub const FB_BLANK_POWERDOWN: libc::c_int = 4;
 
     #[repr(C)]
     #[derive(Default, Clone, Copy)]

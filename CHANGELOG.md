@@ -19,6 +19,50 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Added
 
+- **Display rotation** (`fbui-render` + `fbui` runner) — `FBUI_ROTATE=90|180|270`
+  turns the UI clockwise on the panel for portrait-mounted kiosk screens, in
+  software, identically on DRM/fbdev/terminal. The surface renders in UI
+  orientation (panel dims swapped) and each pixel is written to its rotated
+  position in the damage-bounded copy-out — destination rows still written
+  forward and sequentially per the write-combined-memory rule. Pointer/touch
+  input maps back through the inverse rotation; the remote console keeps UI
+  orientation for frames and injected clicks. Public pieces for custom
+  embedders: `Rotation` (surface/panel point, rect, and delta mappings),
+  `Surface::set_rotation`. See `docs/rotation.md`.
+- **`VideoView`** (`fbui-widgets`) — damage-aware presentation for externally
+  produced frames (camera preview, decoded video): the producer thread
+  converts with the new `fbui_render::yuv` helpers (`yuyv_to_rgba`,
+  `nv12_to_rgba` — BT.601 fixed point), builds an `Image` via the new
+  `Image::from_rgba_bytes`, and ships it through `Proxy` + `Ui::stream`;
+  `VideoView::push_frame` reports precise `StreamDamage::Repaint`, so a
+  60 fps feed repaints only the video rect with no relayout while the rest
+  of the UI stays idle. `Contain`/`Cover`/`Fill` object-fit (pure, tested
+  `fit_rect`), letterbox color, and a new `Painter::draw_image_scaled`
+  bilinear blit primitive.
+- **`Navigator`** (`fbui-widgets`) — a retained screen stack with slide
+  transitions for multi-page kiosk flows. Screens are ordinary subtrees laid
+  out side by side (new `Widget::position_child` hook) and slid with a
+  device-snapped tweened content offset, so transitions ride the scroll-blit
+  fast path (equivalence with a full repaint pinned by a behavior test).
+  Covered screens keep their state but leave hit-testing and the Tab order
+  (new `Widget::active_children` hook); popped screens are reaped after the
+  exit slide settles (new `Widget::take_child_removals` hook). Push remembers
+  focus, pop restores it (new `Ui::focus`/`Ui::child_ids`,
+  `EventCtx::focus_widget`), and a bubbling Escape pops with an optional
+  `on_back` message.
+- **Idle power management** (`fbui-platform` + `fbui` runner) — dim the
+  backlight after a period with no input, power the panel off a while later,
+  wake (and swallow the waking gesture) on the next input. New
+  `Display::set_power` (DRM: connector DPMS property; fbdev: `FBIOBLANK`;
+  best-effort by contract), new sysfs `Backlight` control, and a
+  `PlatformHandler::take_power_request` hook so the handler can drive power
+  without owning the display. Apps opt in via `App::idle_policy`
+  (`IdlePolicy`: dim/blank timings, dim level, `on_idle`/`on_wake`
+  messages); operators override with `FBUI_IDLE_DIM` / `FBUI_IDLE_BLANK` /
+  `FBUI_IDLE_DIM_LEVEL`. The tracker is a pure, unit-tested state machine
+  riding the loop's `next_timeout`, so idle management adds no ticking and a
+  blanked screen sleeps purely on fds. See `docs/power-management.md`.
+
 - **`TreeView`** (`fbui-widgets`) — the hierarchical counterpart to `List`:
   expand/collapse branches with disclosure triangles, per-depth indentation,
   and single selection. Nodes are plain data (`TreeNode::branch`/`leaf`)

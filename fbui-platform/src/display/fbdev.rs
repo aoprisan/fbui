@@ -185,6 +185,18 @@ impl Display for FbdevDisplay {
         Ok(false)
     }
 
+    fn set_power(&mut self, on: bool) -> Result<()> {
+        let arg = if on {
+            FB_BLANK_UNBLANK
+        } else {
+            FB_BLANK_POWERDOWN
+        };
+        // Not every fbdev driver implements blanking; a rejected ioctl means
+        // the panel just stays lit (best-effort per the trait contract).
+        let _ = ioctl_val(self.fd, FBIOBLANK, arg);
+        Ok(())
+    }
+
     fn reconfigure(&mut self) -> Result<Option<DisplayInfo>> {
         // Re-read the kernel's screeninfo; a console mode change (or a panel that
         // re-trains) updates these. Cheap ioctls, safe to poll.

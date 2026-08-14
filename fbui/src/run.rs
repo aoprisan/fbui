@@ -24,6 +24,7 @@ use fbui_widgets::gesture::{Gesture, GestureRecognizer};
 use fbui_widgets::{Theme, Ui};
 
 use crate::hud::Hud;
+use crate::power::{IdlePolicy, IdleTracker, Stage, Transition};
 use crate::record::{Recorder, Replayer};
 #[cfg(feature = "remote")]
 use crate::remote::{Command as RemoteCommand, Hub, RemoteButton};
@@ -139,6 +140,15 @@ pub trait App: 'static {
     /// won't render until you supply some).
     fn fonts(&self) -> Vec<Vec<u8>> {
         Vec::new()
+    }
+
+    /// The idle power-management policy: dim the backlight, then blank the
+    /// panel, after periods of no input; wake (and swallow the waking tap) on
+    /// the next input. Operators can override the timings per deployment with
+    /// `FBUI_IDLE_DIM` / `FBUI_IDLE_BLANK` / `FBUI_IDLE_DIM_LEVEL` — see
+    /// [`IdlePolicy::with_env`]. Default: disabled.
+    fn idle_policy(&self) -> IdlePolicy<Self::Message> {
+        IdlePolicy::disabled()
     }
 }
 
@@ -410,6 +420,39 @@ pub fn run<A: App>(mut app: A) -> fbui_platform::Result<()> {
     app.build(&mut ui);
 
     let now = Instant::now();
+    // Idle power management: the app's policy with operator env overrides.
+    let idle_policy = app
+        .idle_policy()
+        .with_env()
+        .map_err(|msg| fbui_platform::Error::Io {
+            what: msg,
+            source: std::io::Error::other("invalid idle policy"),
+        })?;
+    let idle = idle_policy.enabled().then(|| {
+        let backlight = fbui_platform::Backlight::discover();
+        let fmt = |d: Option<Duration>| match d {
+            Some(d) => format!("{:.0}s", d.as_secs_f64()),
+            None => "off".into(),
+        };
+        eprintln!(
+            "fbui: idle policy: dim {} (to {}%), blank {}, backlight {}",
+            fmt(idle_policy.dim_after),
+            idle_policy.dim_percent,
+            fmt(idle_policy.blank_after),
+            match &backlight {
+                Some(b) => b.path().display().to_string(),
+                None => "none found".into(),
+            }
+        );
+        IdleState {
+            tracker: IdleTracker::new(idle_policy.dim_after, idle_policy.blank_after, now),
+            policy: idle_policy,
+            backlight,
+            saved_percent: None,
+            pending_power: None,
+            swallowing: false,
+        }
+    });
     // Background threads (spawned from `App::on_start`) deliver messages here; the
     // runner drains them in `on_wake`. The `Waker` half arrives via `on_start`.
     let (tx, rx) = mpsc::channel();
@@ -437,8 +480,28 @@ pub fn run<A: App>(mut app: A) -> fbui_platform::Result<()> {
         #[cfg(feature = "remote")]
         remote,
         hud: Hud::from_env(),
+        idle,
     };
     platform.run(&mut runner)
+}
+
+/// Everything the runner tracks for idle power management (see
+/// [`crate::power`]): the pure clock, the effects targets, and the state the
+/// wake path needs.
+struct IdleState<M> {
+    tracker: IdleTracker,
+    policy: IdlePolicy<M>,
+    /// The panel's backlight, if the system exposes one. Dimming is skipped
+    /// without it; blanking works regardless.
+    backlight: Option<fbui_platform::Backlight>,
+    /// Brightness percent to restore on wake, saved when dimming.
+    saved_percent: Option<u8>,
+    /// A `Display::set_power` request awaiting the event loop
+    /// ([`PlatformHandler::take_power_request`]).
+    pending_power: Option<bool>,
+    /// Input is being swallowed until the wake gesture ends, so the tap that
+    /// wakes a blanked screen can't also press what it landed on.
+    swallowing: bool,
 }
 
 struct Runner<A: App> {
@@ -492,6 +555,9 @@ struct Runner<A: App> {
     remote: Option<std::sync::Arc<Hub>>,
     /// `FBUI_HUD`: the fps/paint-cost overlay composited after copy-out.
     hud: Option<Hud>,
+    /// Idle power management (`App::idle_policy` + `FBUI_IDLE_*`), when
+    /// enabled.
+    idle: Option<IdleState<A::Message>>,
 }
 
 impl<A: App> Runner<A> {
@@ -625,6 +691,11 @@ impl<A: App> Runner<A> {
     /// here, so a replay exercises exactly what a user did.
     fn handle_input(&mut self, event: InputEvent) -> Flow {
         crate::span!("input");
+        // Idle power management: every input is activity; the input that
+        // wakes a blanked screen (and the rest of that gesture) is swallowed.
+        if self.idle_note_activity(&event) {
+            return Flow::Continue;
+        }
         match event {
             InputEvent::Key(k) => {
                 if k.keysym == keysym::ESCAPE && k.state == KeyState::Pressed {
@@ -991,6 +1062,101 @@ fn remote_key_events(name: &str) -> Vec<InputEvent> {
         .collect()
 }
 
+/// Whether this input event ends a wake-swallow: the finger lifted, the
+/// button/key released, or the event is a one-shot (wheel). Motion keeps the
+/// swallow alive — the finger that woke the screen is still down.
+fn ends_wake_swallow(ev: &InputEvent) -> bool {
+    match ev {
+        InputEvent::TouchUp { .. } | InputEvent::TouchCancel | InputEvent::PointerAxis { .. } => {
+            true
+        }
+        InputEvent::PointerButton { state, .. } => !state.is_down(),
+        InputEvent::Key(k) => !k.state.is_down(),
+        _ => false,
+    }
+}
+
+/// Whether this input event *begins* a gesture that stays down (so a wake
+/// triggered by it must keep swallowing until the matching release).
+fn begins_held_gesture(ev: &InputEvent) -> bool {
+    match ev {
+        InputEvent::TouchDown { .. } => true,
+        InputEvent::PointerButton { state, .. } => state.is_down(),
+        InputEvent::Key(k) => k.state.is_down(),
+        _ => false,
+    }
+}
+
+// Idle power management (see `crate::power`): activity notes, stage
+// transitions, and the wake path.
+impl<A: App> Runner<A> {
+    /// Note input activity. Returns `true` when the event must be swallowed:
+    /// it woke a blanked screen (or belongs to the gesture that did).
+    fn idle_note_activity(&mut self, event: &InputEvent) -> bool {
+        let Some(idle) = &mut self.idle else {
+            return false;
+        };
+        let now = Instant::now();
+        if idle.swallowing {
+            idle.tracker.note_activity(now);
+            if ends_wake_swallow(event) {
+                idle.swallowing = false;
+            }
+            return true;
+        }
+        let was = idle.tracker.stage();
+        if !idle.tracker.note_activity(now) {
+            return false;
+        }
+        // Waking: restore brightness and (if blanked) panel power.
+        if let (Some(bl), Some(pct)) = (&idle.backlight, idle.saved_percent.take()) {
+            let _ = bl.set_percent(pct);
+        }
+        let swallow = was == Stage::Blanked;
+        if swallow {
+            idle.pending_power = Some(true);
+            idle.swallowing = begins_held_gesture(event);
+        }
+        if let Some(msg) = idle.policy.on_wake.clone() {
+            self.app.update(msg, &mut self.ui);
+            self.drain_messages();
+        }
+        swallow
+    }
+
+    /// Advance the idle clock, applying any stage transitions that came due.
+    fn service_idle(&mut self) {
+        let Some(idle) = &mut self.idle else {
+            return;
+        };
+        let now = Instant::now();
+        let was_active = idle.tracker.stage() == Stage::Active;
+        let mut crossed = false;
+        while let Some(tr) = idle.tracker.poll(now) {
+            crossed = true;
+            match tr {
+                Transition::Dim => {
+                    if let Some(bl) = &idle.backlight {
+                        // Save the level to restore on wake; if the current
+                        // level is unreadable, assume full.
+                        let cur = bl.percent().unwrap_or(100);
+                        idle.saved_percent.get_or_insert(cur);
+                        let _ = bl.set_percent(idle.policy.dim_percent);
+                    }
+                }
+                Transition::Blank => idle.pending_power = Some(false),
+            }
+        }
+        // `on_idle` fires once, when the screen first leaves the active state.
+        if was_active && crossed {
+            if let Some(msg) = idle.policy.on_idle.clone() {
+                self.app.update(msg, &mut self.ui);
+                self.drain_messages();
+            }
+        }
+    }
+}
+
 impl<A: App> PlatformHandler for Runner<A> {
     fn on_input(&mut self, event: InputEvent) -> Flow {
         if let Some(rec) = &mut self.recorder {
@@ -1164,11 +1330,18 @@ impl<A: App> PlatformHandler for Runner<A> {
         // Deliver any timer deadlines that came due while the loop slept.
         self.service_timers();
 
+        // Cross any idle-power stage boundary that came due (dim, blank).
+        self.service_idle();
+
         if self.ui.needs_paint() || replay_flow == Flow::Redraw {
             Flow::Redraw
         } else {
             Flow::Continue
         }
+    }
+
+    fn take_power_request(&mut self) -> Option<bool> {
+        self.idle.as_mut().and_then(|i| i.pending_power.take())
     }
 
     fn next_timeout(&mut self) -> Option<Duration> {
@@ -1179,6 +1352,13 @@ impl<A: App> PlatformHandler for Runner<A> {
         // This is what makes a truly idle app burn ~0% CPU.
         let frame = self.ui.is_animating() || self.gestures.is_active();
         let mut t = if frame { Some(FRAME) } else { None };
+        // An armed idle stage (dim/blank) bounds the sleep so `tick` can
+        // cross it on time; a fully idle (blanked) screen imposes no bound.
+        if let Some(idle) = &self.idle {
+            if let Some(d) = idle.tracker.next_deadline(Instant::now()) {
+                t = Some(t.map_or(d, |cur| cur.min(d)));
+            }
+        }
         if let Some(due) = self.timers.next_due() {
             let d = due.saturating_duration_since(Instant::now());
             t = Some(t.map_or(d, |cur| cur.min(d)));

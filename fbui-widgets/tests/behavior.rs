@@ -2451,7 +2451,7 @@ fn navigator_push_covers_and_pop_restores() {
 
     // Pop: the detail screen leaves the tree once the slide settles, and the
     // root screen is interactive again.
-    assert!(Navigator::pop(&mut ui, nav) || true);
+    assert!(Navigator::pop(&mut ui, nav), "pop from depth 1 succeeds");
     settle_anim(&mut ui);
     ui.layout_now();
     assert!(

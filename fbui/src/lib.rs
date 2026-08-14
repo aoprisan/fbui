@@ -83,3 +83,9 @@ pub use run::{run, App, Proxy};
 #[cfg_attr(not(feature = "platform"), allow(dead_code))]
 mod timer;
 pub use timer::Timer;
+
+// Idle power management: the policy + tracker are headless (the runner wires
+// them to the backlight and display), so their unit tests run everywhere.
+#[cfg_attr(not(feature = "platform"), allow(dead_code))]
+mod power;
+pub use power::IdlePolicy;

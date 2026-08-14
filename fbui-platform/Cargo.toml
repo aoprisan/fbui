@@ -54,6 +54,8 @@ libseat = { version = "0.2", optional = true }
 # they don't inherit the library's optional deps.
 libc = "0.2"
 evdev = "0.13"
+# The backlight module's unit tests fake a sysfs directory on disk.
+tempfile = "3"
 
 [[example]]
 name = "echo"
