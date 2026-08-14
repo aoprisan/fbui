@@ -68,6 +68,8 @@ pub mod remote;
 #[cfg(feature = "platform")]
 mod hud;
 #[cfg(feature = "platform")]
+mod monkey;
+#[cfg(feature = "platform")]
 mod record;
 #[cfg(feature = "platform")]
 mod run;

@@ -183,13 +183,30 @@ struct ReplayState {
     settle_frames: u16,
 }
 
-/// Build the recorder and replayer from `FBUI_RECORD` / `FBUI_REPLAY` (see
-/// `docs/record-replay.md`). A requested-but-broken recording is a hard error:
-/// silently running unrecorded (or replaying nothing) is worse than stopping.
+/// Build the recorder and replayer from `FBUI_RECORD` / `FBUI_REPLAY` /
+/// `FBUI_MONKEY` (see `docs/record-replay.md` and `docs/monkey-testing.md`).
+/// A requested-but-broken recording is a hard error: silently running
+/// unrecorded (or replaying nothing) is worse than stopping.
 fn record_replay_from_env(
     phys: fbui_platform::Size,
 ) -> fbui_platform::Result<(Option<Recorder>, Option<ReplayState>)> {
     let io_err = |what: String, e: std::io::Error| fbui_platform::Error::Io { what, source: e };
+
+    // `FBUI_REPLAY_SPEED` applies to both a loaded replay (default: real
+    // time) and a monkey session (default: max — it is an unattended stress
+    // run).
+    let speed_from_env = |default: f64| -> fbui_platform::Result<f64> {
+        match std::env::var("FBUI_REPLAY_SPEED").ok().as_deref() {
+            None => Ok(default),
+            Some("max") => Ok(f64::INFINITY),
+            Some(s) => s.parse::<f64>().ok().filter(|v| *v > 0.0).ok_or_else(|| {
+                io_err(
+                    format!("FBUI_REPLAY_SPEED {s:?}"),
+                    std::io::Error::other("expected a positive number or \"max\""),
+                )
+            }),
+        }
+    };
 
     let recorder = match std::env::var_os("FBUI_RECORD") {
         Some(path) => {
@@ -205,16 +222,7 @@ fn record_replay_from_env(
     let replay = match std::env::var_os("FBUI_REPLAY") {
         Some(path) => {
             let path = PathBuf::from(path);
-            let speed = match std::env::var("FBUI_REPLAY_SPEED").ok().as_deref() {
-                None => 1.0,
-                Some("max") => f64::INFINITY,
-                Some(s) => s.parse::<f64>().ok().filter(|v| *v > 0.0).ok_or_else(|| {
-                    io_err(
-                        format!("FBUI_REPLAY_SPEED {s:?}"),
-                        std::io::Error::other("expected a positive number or \"max\""),
-                    )
-                })?,
-            };
+            let speed = speed_from_env(1.0)?;
             let player = Replayer::load(&path, speed)
                 .map_err(|e| io_err(format!("FBUI_REPLAY {}", path.display()), e))?;
             if let Some((w, h)) = player.recorded_size {
@@ -244,6 +252,81 @@ fn record_replay_from_env(
             })
         }
         None => None,
+    };
+
+    // `FBUI_MONKEY`: synthesize a seeded chaos session, save it as a normal
+    // recording (the reproducer artifact), then play it through the replay
+    // machinery above — same gesture clock, same settle/shot/exit handling.
+    let replay = match std::env::var("FBUI_MONKEY").ok() {
+        None => replay,
+        Some(_) if replay.is_some() => {
+            return Err(io_err(
+                "FBUI_MONKEY".into(),
+                std::io::Error::other("FBUI_MONKEY and FBUI_REPLAY are mutually exclusive"),
+            ));
+        }
+        Some(spec) => {
+            let seed = if spec == "random" {
+                // A convenience for exploratory runs; the seed is printed (and
+                // baked into the script file) so the run is still refindable.
+                let nanos = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos() as u64)
+                    .unwrap_or(0);
+                nanos ^ ((std::process::id() as u64) << 32)
+            } else {
+                spec.parse::<u64>().map_err(|_| {
+                    io_err(
+                        format!("FBUI_MONKEY {spec:?}"),
+                        std::io::Error::other("expected a u64 seed or \"random\""),
+                    )
+                })?
+            };
+            let events = match std::env::var("FBUI_MONKEY_EVENTS").ok() {
+                None => 1000,
+                Some(s) => s.parse::<usize>().ok().filter(|n| *n > 0).ok_or_else(|| {
+                    io_err(
+                        format!("FBUI_MONKEY_EVENTS {s:?}"),
+                        std::io::Error::other("expected a positive event count"),
+                    )
+                })?,
+            };
+            let text = crate::monkey::script(seed, events, (phys.w, phys.h));
+            let out = std::env::var_os("FBUI_MONKEY_OUT")
+                .map(PathBuf::from)
+                .unwrap_or_else(|| PathBuf::from(format!("fbui-monkey-{seed}.rec")));
+            // The script is written *before* the first event fires: if the
+            // monkey finds a crash, the reproducer already exists on disk.
+            std::fs::write(&out, &text)
+                .map_err(|e| io_err(format!("FBUI_MONKEY_OUT {}", out.display()), e))?;
+            let player = Replayer::parse(&text, speed_from_env(f64::INFINITY)?)
+                .map_err(|m| io_err("FBUI_MONKEY".into(), std::io::Error::other(m)))?;
+            let shot = std::env::var_os("FBUI_REPLAY_SHOT").map(PathBuf::from);
+            // A monkey run is unattended by default: exit when the budget is
+            // spent. `FBUI_REPLAY_EXIT=0` hands the app back instead.
+            // "As recorded" makes no sense here — the script holds no
+            // intentional quit — so any replayed Flow::Exit is swallowed.
+            let end = match std::env::var("FBUI_REPLAY_EXIT").ok().as_deref() {
+                Some("0") | Some("false") => ReplayEnd::Stay,
+                _ => ReplayEnd::Exit,
+            };
+            let n = text.lines().filter(|l| l.starts_with('@')).count();
+            eprintln!(
+                "fbui: monkey: seed {seed}, {n} events on {}x{}; script saved to {} — \
+                 reproduce with FBUI_REPLAY={}",
+                phys.w,
+                phys.h,
+                out.display(),
+                out.display()
+            );
+            Some(ReplayState {
+                player,
+                shot,
+                end,
+                finish_frames: None,
+                settle_frames: 0,
+            })
+        }
     };
 
     Ok((recorder, replay))
