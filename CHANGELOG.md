@@ -19,6 +19,21 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Added
 
+- **Bootable kiosk ISO tooling** (`scripts/iso/`, `docs/linux-iso.md`) —
+  `build-iso.sh` packages a static-musl fbui app (default: the `showcase`
+  example with the bundled font) into a 31 MB hybrid BIOS+UEFI ISO: GRUB, a
+  stock Ubuntu kernel from the build host's apt archive, and a ~3 MB busybox
+  initramfs whose `/init` loads a dep-ordered display/input module set and
+  execs the app — no distro, no init system, no display server. simpledrm
+  (built into the stock kernel) is the zero-module display baseline; bundled
+  `virtio-gpu`/`bochs`/`virtio_input`/USB-HID/PS-2 modules cover VMs and
+  common input hardware. `test-iso.sh` boot-tests the ISO headlessly under
+  QEMU (BIOS and `--uefi` OVMF, `--gpu std|virtio`), waiting for fbui's
+  display line on serial and QMP-screendumping the rendered UI; verified
+  end-to-end including injected keyboard/pointer input. The assessment —
+  design trade-offs, alternatives, and what remains unverified (real
+  hardware, Secure Boot) — is in `docs/linux-iso.md`.
+
 - **Display rotation** (`fbui-render` + `fbui` runner) — `FBUI_ROTATE=90|180|270`
   turns the UI clockwise on the panel for portrait-mounted kiosk screens, in
   software, identically on DRM/fbdev/terminal. The surface renders in UI
