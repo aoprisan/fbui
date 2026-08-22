@@ -8,6 +8,10 @@ fbdev), with **no X server and no Wayland compositor**.
 > One process owns the whole screen, fullscreen. fbui is not a compositor; if you
 > need multiple windowed apps, run one fbui app under a kiosk compositor instead.
 
+This guide assumes an existing Linux install. To boot an fbui app as a
+self-contained appliance instead — GRUB straight into the app, no distro —
+see [`linux-iso.md`](linux-iso.md) and `scripts/iso/build-iso.sh`.
+
 ## 1. What the kernel must provide
 
 - **DRM/KMS** — the primary, vsynced path. You need a card node at
