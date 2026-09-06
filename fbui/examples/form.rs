@@ -1,16 +1,20 @@
-//! A form with validation: a text field, a checkbox, a slider, and a submit
-//! button that reports the entered values (or asks for a name).
+//! A form with validation: a text field, a multi-line notes box, a checkbox,
+//! a slider, and a submit button that reports the entered values (or asks for
+//! a name). The fields support selection (drag, Shift+arrows), word jumps
+//! (Ctrl+arrows), and cut/copy/paste between each other (Ctrl+X/C/V) — see
+//! `docs/text-editing.md`.
 //!
 //! ```text
 //! cargo run -p fbui --example form --features platform
 //! ```
 
-use fbui::widgets::{Align, Button, Checkbox, Container, Label, Slider, TextInput};
+use fbui::widgets::{Align, Button, Checkbox, Container, Label, Slider, TextArea, TextInput};
 use fbui::{App, Ui, WidgetId};
 
 #[derive(Clone)]
 enum Msg {
     Name(String),
+    Notes(String),
     Subscribe(bool),
     Volume(f32),
     Submit,
@@ -19,6 +23,7 @@ enum Msg {
 #[derive(Default)]
 struct Form {
     name: String,
+    notes: String,
     subscribe: bool,
     volume: f32,
     status: Option<WidgetId>,
@@ -43,6 +48,15 @@ impl App for Form {
                 .on_change(Msg::Name),
         );
 
+        ui.add_child(root, Label::new("Notes").color(muted));
+        ui.add_child(
+            root,
+            TextArea::new()
+                .rows(3)
+                .placeholder("anything else? (multi-line)")
+                .on_change(Msg::Notes),
+        );
+
         let row = ui.add_child(root, Container::row().gap(10.0).align(Align::Center));
         ui.add_child(
             row,
@@ -61,17 +75,24 @@ impl App for Form {
     fn update(&mut self, msg: Msg, ui: &mut Ui<Msg>) {
         match msg {
             Msg::Name(s) => self.name = s,
+            Msg::Notes(s) => self.notes = s,
             Msg::Subscribe(b) => self.subscribe = b,
             Msg::Volume(v) => self.volume = v,
             Msg::Submit => {
                 let text = if self.name.trim().is_empty() {
                     "Please enter a name.".to_string()
                 } else {
+                    let lines = self.notes.lines().filter(|l| !l.trim().is_empty()).count();
                     format!(
-                        "Thanks, {}! volume {:.0}{}",
+                        "Thanks, {}! volume {:.0}{}{}",
                         self.name.trim(),
                         self.volume,
-                        if self.subscribe { ", subscribed" } else { "" }
+                        if self.subscribe { ", subscribed" } else { "" },
+                        if lines > 0 {
+                            format!(", {lines} line(s) of notes")
+                        } else {
+                            String::new()
+                        }
                     )
                 };
                 if let Some(id) = self.status {

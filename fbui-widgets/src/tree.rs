@@ -206,6 +206,8 @@ pub struct Ui<Msg> {
     animating: bool,
     /// A pending [`request_screenshot`](Self::request_screenshot) destination.
     screenshot: Option<std::path::PathBuf>,
+    /// The process clipboard (see [`clipboard`](Self::clipboard)).
+    clipboard: String,
 }
 
 impl<Msg: 'static> Ui<Msg> {
@@ -240,6 +242,7 @@ impl<Msg: 'static> Ui<Msg> {
             pending_stream: false,
             animating: false,
             screenshot: None,
+            clipboard: String::new(),
         }
     }
 
@@ -711,6 +714,23 @@ impl<Msg: 'static> Ui<Msg> {
 
     pub fn theme(&self) -> &Theme {
         &self.theme
+    }
+
+    /// The process clipboard: the text the last cut/copy in a text widget
+    /// stored (Ctrl+X / Ctrl+C), which Ctrl+V pastes back.
+    ///
+    /// There is no display server and therefore no system clipboard on an
+    /// fbui target; the `Ui` owns the one clipboard the process has. An app
+    /// that wants to bridge it elsewhere (a remote console, a serial link, a
+    /// file) reads it here and installs incoming text with
+    /// [`set_clipboard`](Self::set_clipboard).
+    pub fn clipboard(&self) -> &str {
+        &self.clipboard
+    }
+
+    /// Replace the process clipboard contents.
+    pub fn set_clipboard(&mut self, text: impl Into<String>) {
+        self.clipboard = text.into();
     }
 
     /// Swap the theme and repaint everything.
@@ -1234,6 +1254,7 @@ impl<Msg: 'static> Ui<Msg> {
             fonts,
             theme,
             out,
+            clipboard,
             ..
         } = self;
         let Some(node) = nodes.get_mut(id) else {
@@ -1248,6 +1269,7 @@ impl<Msg: 'static> Ui<Msg> {
             hovered,
             focused,
             self_id: id,
+            clipboard,
             out,
         };
         node.widget.event(&mut ctx);

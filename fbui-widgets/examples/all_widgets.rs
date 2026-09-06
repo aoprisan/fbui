@@ -2,8 +2,8 @@
 //! toolkit composes and paints with no device.
 //!
 //! Unlike `gallery_png` (a curated subset), this exercises *all* widgets:
-//! Label, TextInput, Checkbox, Switch, Slider, ProgressBar, Button (every
-//! variant), ImageView, List, ScrollView, and the Container/Align layout.
+//! Label, TextInput, TextArea, Checkbox, Switch, Slider, ProgressBar, Button
+//! (every variant), ImageView, List, ScrollView, and the Container/Align layout.
 //!
 //! ```text
 //! cargo run -p fbui-widgets --example all_widgets -- /tmp/all_widgets.png
@@ -13,7 +13,7 @@ use fbui_render::geom::Size;
 use fbui_render::{Image, Scale, Surface};
 use fbui_widgets::widgets::{
     Align, Button, Checkbox, Container, ImageView, Label, List, ProgressBar, ScrollView, Slider,
-    Switch, TextInput,
+    Switch, TextArea, TextInput,
 };
 use fbui_widgets::{Theme, Ui};
 
@@ -38,7 +38,7 @@ fn main() {
     let path = std::env::args()
         .nth(1)
         .unwrap_or_else(|| "all_widgets.png".into());
-    let (w, h) = (560u32, 760u32);
+    let (w, h) = (560u32, 820u32);
 
     let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
     let muted = ui.theme().palette.muted;
@@ -53,6 +53,12 @@ fn main() {
         Label::new("one of every fbui widget, painted headlessly").color(muted),
     );
     ui.add_child(root, TextInput::new().value("editable text"));
+    ui.add_child(
+        root,
+        TextArea::new()
+            .rows(2)
+            .value("a multi-line text area\nwith paragraphs that wrap"),
+    );
 
     // Toggles: checkboxes and animated switches (shown at their settled state).
     let toggles = ui.add_child(root, Container::row().gap(16.0).align(Align::Center));

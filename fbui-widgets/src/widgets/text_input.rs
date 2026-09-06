@@ -1,16 +1,21 @@
 //! [`TextInput`] — a single-line editable field with a caret and selection.
 //!
-//! v1 scope per PLAN: cursor + selection + basic editing, **no IME**, no
-//! clipboard, single line. Caret hit-testing measures substring widths, which is
-//! O(n) per click but fine for the short strings a field holds.
+//! Editing semantics come from the shared [`EditState`] core (character and
+//! word deletion, word jumps, select-all, cut/copy/paste against the
+//! [`Ui`](crate::Ui)'s clipboard); this widget adds the single-line specifics:
+//! pointer placement and drag-selection via the shaped layout's hit-testing, a
+//! long-press selecting the word under the finger, and a horizontal scroll that
+//! keeps the caret inside the box when the value outgrows it. See
+//! `docs/text-editing.md` for the key table. Still **no IME**.
 
 use std::any::Any;
 
 use fbui_render::geom::{Point, Rect};
-use fbui_render::{FontContext, TextStyle};
+use fbui_render::{FontContext, TextLayout, TextStyle};
 
+use super::edit::EditState;
 use crate::ctx::{EventCtx, PaintCtx};
-use crate::event::{Event, Key, PointerButton};
+use crate::event::{Event, Key, Modifiers, PointerButton};
 use crate::style::{self, Style};
 use crate::theme::Theme;
 use crate::util::text_style;
@@ -21,21 +26,23 @@ const HEIGHT: f32 = 36.0;
 
 /// A single-line text field.
 pub struct TextInput<Msg> {
-    text: String,
+    edit: EditState,
     placeholder: String,
-    cursor: usize,
-    anchor: usize,
     on_change: Option<Box<dyn Fn(String) -> Msg>>,
+    /// Horizontal scroll (logical px) so the caret stays visible in a long value.
+    scroll_x: f32,
+    /// A press is down and motion extends the selection.
+    dragging: bool,
 }
 
 impl<Msg> TextInput<Msg> {
     pub fn new() -> Self {
         TextInput {
-            text: String::new(),
+            edit: EditState::default(),
             placeholder: String::new(),
-            cursor: 0,
-            anchor: 0,
             on_change: None,
+            scroll_x: 0.0,
+            dragging: false,
         }
     }
 
@@ -45,9 +52,7 @@ impl<Msg> TextInput<Msg> {
     }
 
     pub fn value(mut self, text: impl Into<String>) -> Self {
-        self.text = text.into();
-        self.cursor = self.text.len();
-        self.anchor = self.cursor;
+        self.edit = EditState::new(text);
         self
     }
 
@@ -58,130 +63,59 @@ impl<Msg> TextInput<Msg> {
 
     /// The current text.
     pub fn text(&self) -> &str {
-        &self.text
+        &self.edit.text
     }
 
     /// Replace the text (call via [`Ui::with`](crate::Ui::with)).
     pub fn set_text(&mut self, text: impl Into<String>) {
-        self.text = text.into();
-        self.cursor = self.cursor.min(self.text.len());
-        self.anchor = self.anchor.min(self.text.len());
+        self.edit.set_text(text);
+    }
+
+    /// The selected byte range (`start..end`, empty when nothing is selected).
+    pub fn selection(&self) -> std::ops::Range<usize> {
+        let (a, b) = self.edit.selection();
+        a..b
+    }
+
+    /// Select `range` (clamped to char boundaries), caret at its end.
+    pub fn select(&mut self, range: std::ops::Range<usize>) {
+        self.edit.select(range.start, range.end);
+    }
+
+    /// Select everything.
+    pub fn select_all(&mut self) {
+        self.edit.select_all();
+    }
+
+    /// The caret's byte offset.
+    pub fn cursor(&self) -> usize {
+        self.edit.cursor
+    }
+
+    /// How far the text is scrolled left (logical px) to keep the caret
+    /// visible in a value wider than the box; `0` while it fits.
+    pub fn scroll_offset(&self) -> f32 {
+        self.scroll_x
     }
 
     fn style_for(&self, theme: &Theme) -> TextStyle {
         text_style(theme, theme.metrics.font_size, theme.palette.text)
     }
 
-    fn selection(&self) -> (usize, usize) {
-        (self.cursor.min(self.anchor), self.cursor.max(self.anchor))
-    }
-
-    fn has_selection(&self) -> bool {
-        self.cursor != self.anchor
-    }
-
-    fn delete_selection(&mut self) -> bool {
-        if !self.has_selection() {
-            return false;
-        }
-        let (a, b) = self.selection();
-        self.text.replace_range(a..b, "");
-        self.cursor = a;
-        self.anchor = a;
-        true
-    }
-
-    fn insert(&mut self, s: &str) {
-        self.delete_selection();
-        self.text.insert_str(self.cursor, s);
-        self.cursor += s.len();
-        self.anchor = self.cursor;
-    }
-
-    fn prev_boundary(&self, i: usize) -> usize {
-        self.text[..i]
-            .char_indices()
-            .next_back()
-            .map(|(idx, _)| idx)
-            .unwrap_or(0)
-    }
-
-    fn next_boundary(&self, i: usize) -> usize {
-        self.text[i..]
-            .char_indices()
-            .nth(1)
-            .map(|(idx, _)| i + idx)
-            .unwrap_or(self.text.len())
-    }
-
-    fn move_cursor(&mut self, to: usize, extend: bool) {
-        self.cursor = to;
-        if !extend {
-            self.anchor = to;
-        }
+    fn layout(&self, fonts: &mut FontContext, theme: &Theme) -> TextLayout {
+        fonts.layout(&self.edit.text, &self.style_for(theme), None)
     }
 
     fn fire(&self, ctx: &mut EventCtx<Msg>) {
         if let Some(f) = &self.on_change {
-            ctx.emit(f(self.text.clone()));
-        }
-    }
-
-    /// Apply an editing/navigation key at the caret. `extend` grows the
-    /// selection on cursor moves (Shift held). Returns whether the text changed
-    /// (navigation returns `false`). Shared by hardware-key events and
-    /// [`apply_key`](Self::apply_key) so the two paths can never diverge.
-    fn edit(&mut self, key: Key, extend: bool) -> bool {
-        match key {
-            Key::Char(c) => {
-                self.insert(&c.to_string());
-                true
-            }
-            Key::Space => {
-                self.insert(" ");
-                true
-            }
-            Key::Backspace => {
-                if !self.delete_selection() && self.cursor > 0 {
-                    let prev = self.prev_boundary(self.cursor);
-                    self.text.replace_range(prev..self.cursor, "");
-                    self.cursor = prev;
-                    self.anchor = prev;
-                }
-                true
-            }
-            Key::Delete => {
-                if !self.delete_selection() && self.cursor < self.text.len() {
-                    let next = self.next_boundary(self.cursor);
-                    self.text.replace_range(self.cursor..next, "");
-                }
-                true
-            }
-            Key::Left => {
-                let to = self.prev_boundary(self.cursor);
-                self.move_cursor(to, extend);
-                false
-            }
-            Key::Right => {
-                let to = self.next_boundary(self.cursor);
-                self.move_cursor(to, extend);
-                false
-            }
-            Key::Home => {
-                self.move_cursor(0, extend);
-                false
-            }
-            Key::End => {
-                self.move_cursor(self.text.len(), extend);
-                false
-            }
-            _ => false,
+            ctx.emit(f(self.edit.text.clone()));
         }
     }
 
     /// Apply a key directly to this field, bypassing the event system —
     /// insert/backspace/delete/cursor semantics match hardware typing (no
-    /// Shift-extend). Returns whether the text changed.
+    /// modifiers, so no Shift-extend and no Ctrl chords). Returns whether the
+    /// text changed.
     ///
     /// **This does *not* fire `on_change`** — it is a plain state mutation for
     /// programmatic edits (call it via [`Ui::with`](crate::Ui::with); read
@@ -191,35 +125,31 @@ impl<Msg> TextInput<Msg> {
     /// through the real event path, so `on_change` fires and repaint is
     /// requested exactly as if the key had been typed on hardware.
     pub fn apply_key(&mut self, key: Key) -> bool {
-        self.edit(key, false)
+        let mut scratch = String::new();
+        self.edit
+            .apply(key, Modifiers::default(), false, &mut scratch)
+            .changed
     }
 
-    /// Logical x of the caret/byte boundary `idx`, measured from the text origin.
-    fn x_of(&self, fonts: &mut FontContext, style: &TextStyle, idx: usize) -> f32 {
-        if idx == 0 {
-            return 0.0;
-        }
-        fonts.layout(&self.text[..idx], style, None).size().w
+    /// Byte offset under surface point `pos`, honoring the scroll offset.
+    fn hit(&self, fonts: &mut FontContext, theme: &Theme, bounds: Rect, pos: Point) -> usize {
+        let layout = self.layout(fonts, theme);
+        let local_x = pos.x - (bounds.x + PAD) + self.scroll_x;
+        layout.hit(local_x, layout.line_height() / 2.0)
     }
 
-    /// Nearest byte boundary to local x (measured from the text origin).
-    fn idx_at_x(&self, fonts: &mut FontContext, style: &TextStyle, x: f32) -> usize {
-        let mut best = 0usize;
-        let mut best_d = f32::MAX;
-        let mut idx = 0usize;
-        loop {
-            let cx = self.x_of(fonts, style, idx);
-            let d = (cx - x).abs();
-            if d < best_d {
-                best_d = d;
-                best = idx;
-            }
-            if idx >= self.text.len() {
-                break;
-            }
-            idx = self.next_boundary(idx);
+    /// Scroll horizontally so the caret is inside the visible text box.
+    fn keep_caret_visible(&mut self, fonts: &mut FontContext, theme: &Theme, bounds: Rect) {
+        let layout = self.layout(fonts, theme);
+        let visible = (bounds.w - 2.0 * PAD).max(1.0);
+        let caret_x = layout.caret(self.edit.cursor).x;
+        let max_scroll = (layout.size().w - visible + 2.0).max(0.0);
+        if caret_x - self.scroll_x > visible {
+            self.scroll_x = caret_x - visible + 1.0;
+        } else if caret_x - self.scroll_x < 0.0 {
+            self.scroll_x = caret_x;
         }
-        best
+        self.scroll_x = self.scroll_x.clamp(0.0, max_scroll);
     }
 }
 
@@ -262,10 +192,10 @@ impl<Msg: 'static> Widget<Msg> for TextInput<Msg> {
             theme.palette.line,
             theme.palette.accent.with_alpha(0x55),
         );
-        let (text, cursor, sel) = (self.text.clone(), self.cursor, self.selection());
+        let (cursor, sel) = (self.edit.cursor, self.edit.selection());
         let placeholder = self.placeholder.clone();
 
-        let text_origin = Point::new(b.x + PAD, b.y + (b.h - st.size) / 2.0 - 1.0);
+        let text_origin = Point::new(b.x + PAD - self.scroll_x, b.y + (b.h - st.size) / 2.0 - 1.0);
         let (p, fonts) = ctx.painter_and_fonts();
 
         p.fill_rounded_rect(b, radius, surface);
@@ -278,42 +208,74 @@ impl<Msg: 'static> Widget<Msg> for TextInput<Msg> {
 
         p.push_clip(Rect::new(b.x + PAD, b.y, b.w - 2.0 * PAD, b.h));
 
-        if text.is_empty() && !placeholder.is_empty() {
-            fonts.draw_text(p, &placeholder, &placeholder_style, text_origin, None);
+        if self.edit.text.is_empty() && !placeholder.is_empty() {
+            fonts.draw_text(
+                p,
+                &placeholder,
+                &placeholder_style,
+                Point::new(b.x + PAD, text_origin.y),
+                None,
+            );
         } else {
-            // Selection highlight.
+            let layout = fonts.layout(&self.edit.text, &st, None);
             if sel.0 != sel.1 {
-                let x0 = self.x_of(fonts, &st, sel.0);
-                let x1 = self.x_of(fonts, &st, sel.1);
-                p.fill_rect(
-                    Rect::new(text_origin.x + x0, b.y + 4.0, x1 - x0, b.h - 8.0),
-                    accent_sel,
-                );
+                for r in layout.selection_rects(sel.0, sel.1) {
+                    p.fill_rect(
+                        Rect::new(text_origin.x + r.x, b.y + 4.0, r.w, b.h - 8.0),
+                        accent_sel,
+                    );
+                }
             }
-            fonts.draw_text(p, &text, &st, text_origin, None);
-        }
-
-        // Caret.
-        if focused {
-            let cx = text_origin.x + self.x_of(fonts, &st, cursor);
-            p.fill_rect(Rect::new(cx, b.y + 6.0, 1.5, b.h - 12.0), accent);
+            fonts.draw(p, &layout, st.color, text_origin);
+            if focused {
+                let cx = text_origin.x + layout.caret(cursor).x;
+                p.fill_rect(Rect::new(cx, b.y + 6.0, 1.5, b.h - 12.0), accent);
+            }
         }
         p.pop_clip();
     }
 
     fn event(&mut self, ctx: &mut EventCtx<Msg>) {
         let ev = ctx.event().clone();
+        let b = ctx.bounds();
         match ev {
             Event::PointerDown {
                 button: PointerButton::Left,
                 pos,
             } => {
                 ctx.request_focus();
-                let b = ctx.bounds();
-                let st = self.style_for(ctx.theme());
-                let local_x = pos.x - (b.x + PAD);
-                let idx = self.idx_at_x(ctx.fonts(), &st, local_x);
-                self.move_cursor(idx, false);
+                let theme = ctx.theme().clone();
+                let idx = self.hit(ctx.fonts(), &theme, b, pos);
+                self.edit.move_cursor(idx, false);
+                self.dragging = true;
+                ctx.capture_pointer();
+                ctx.request_paint();
+                ctx.set_handled();
+            }
+            Event::PointerMove { pos } if self.dragging => {
+                let theme = ctx.theme().clone();
+                let idx = self.hit(ctx.fonts(), &theme, b, pos);
+                if idx != self.edit.cursor {
+                    self.edit.move_cursor(idx, true);
+                    self.keep_caret_visible(ctx.fonts(), &theme, b);
+                    ctx.request_paint();
+                }
+                ctx.set_handled();
+            }
+            Event::PointerUp {
+                button: PointerButton::Left,
+                ..
+            } if self.dragging => {
+                self.dragging = false;
+                ctx.release_pointer();
+                ctx.set_handled();
+            }
+            Event::LongPress { pos } => {
+                // Touch has no double-click: a long-press selects the word.
+                let theme = ctx.theme().clone();
+                let idx = self.hit(ctx.fonts(), &theme, b, pos);
+                let (a, w) = self.edit.word_at(idx);
+                self.edit.select(a, w);
                 ctx.request_paint();
                 ctx.set_handled();
             }
@@ -322,14 +284,31 @@ impl<Msg: 'static> Widget<Msg> for TextInput<Msg> {
                 pressed: true,
                 mods,
             } if ctx.is_focused() => {
-                if self.edit(key, mods.shift) {
-                    self.fire(ctx);
+                let mut clipboard = ctx.clipboard().to_string();
+                let applied = self.edit.apply(key, mods, false, &mut clipboard);
+                if applied.handled {
+                    if clipboard != ctx.clipboard() {
+                        ctx.set_clipboard(clipboard);
+                    }
+                    let theme = ctx.theme().clone();
+                    self.keep_caret_visible(ctx.fonts(), &theme, b);
+                    if applied.changed {
+                        self.fire(ctx);
+                    }
+                    ctx.request_paint();
+                    ctx.set_handled();
                 }
+            }
+            Event::FocusLost => {
+                self.dragging = false;
                 ctx.request_paint();
-                ctx.set_handled();
             }
             _ => {}
         }
+    }
+
+    fn debug_name(&self) -> &'static str {
+        "TextInput"
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
