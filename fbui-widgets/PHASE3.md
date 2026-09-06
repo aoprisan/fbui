@@ -104,8 +104,12 @@ FBUI_UPDATE_SNAPSHOTS=1 cargo test -p fbui-widgets --test snapshot
   the examples need; `DESIGN.md` §7 notes the approach.
 - **Kinetic/fling scrolling** and **touch gesture recognition** (tap/long-press)
   are Phase 4 per PLAN; `ScrollView`/`List` do wheel + drag now.
-- **`TextInput`** is single-line, cursor + selection + basic editing, **no IME /
-  clipboard** (explicitly v1 scope). Caret hit-testing measures substring widths.
+- ~~**`TextInput`** is single-line, cursor + selection + basic editing, **no IME /
+  clipboard** (explicitly v1 scope). Caret hit-testing measures substring widths.~~
+  **Closed post-0.2**: a `Ui`-owned clipboard (Ctrl+X/C/V), word navigation,
+  drag/long-press selection, caret-follow scrolling, and the multi-line
+  `TextArea` (`docs/text-editing.md`); hit-testing now uses the shaped
+  layout's geometry. IME stays out of scope.
 - The Pi-class **performance** and **on-device input** criteria await ARM
   hardware / a real VT, exactly as Phase 1's VT/DRM and Phase 2's perf gate did.
 

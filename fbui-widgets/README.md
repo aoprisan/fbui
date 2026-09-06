@@ -13,7 +13,10 @@ Every widget below is built and painted headlessly to a PNG by the
 ![All fbui widgets, painted headlessly](docs/assets/all_widgets.png)
 
 - **Label** — static text, with size/weight/color styling.
-- **TextInput** — an editable single-line text field.
+- **TextInput** — an editable single-line text field (selection, word
+  navigation, clipboard chords, caret-follow scrolling).
+- **TextArea** — a multi-line, word-wrapped text box that scrolls to follow
+  the caret.
 - **Checkbox** — a labelled boolean toggle.
 - **Switch** — an animated on/off toggle.
 - **Slider** — a draggable continuous range input.

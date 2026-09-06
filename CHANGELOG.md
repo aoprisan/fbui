@@ -19,6 +19,47 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Added
 
+- **Text editing: `TextArea`, the clipboard, and a fuller `TextInput`** —
+  closing the "clipboard-less, single-line" v1 scope from Phase 3.
+  - **`TextArea`** (`fbui-widgets`): a multi-line text box with word-wrapped
+    paragraphs, a caret that moves by *visual* line (`Up`/`Down` keep the
+    goal column across shorter lines, `Home`/`End` are per line,
+    `Ctrl+Home`/`End` document-wide, `PageUp`/`PageDown` by viewport), `Enter`
+    inserting a line break, selection across lines (drawn per line with a
+    line-end tail), and a vertical scroll that follows the caret with a thumb
+    when content overflows — the wheel scrolls it and bubbles at its bounds
+    so an enclosing `ScrollView` still moves. `rows(n)` fixes the height,
+    `grow(f)` fills a column.
+  - **The process clipboard** — `Ui::clipboard()` / `Ui::set_clipboard(..)`
+    and `EventCtx::clipboard()` / `EventCtx::set_clipboard(..)`. There is no
+    system clipboard without a display server, so the `Ui` owns the one the
+    process has; text widgets cut/copy/paste through it and an app bridges
+    it wherever it likes (the remote console, a serial link, a file).
+  - **`TextInput`** now does `Ctrl+A` select-all, `Ctrl+C`/`X`/`V` (paste
+    flattens line breaks to spaces), `Ctrl+Left`/`Right` word jumps,
+    `Ctrl+Backspace`/`Delete` word deletion, `Shift`-extended moves that
+    collapse correctly, **drag selection** (pointer captured), a
+    **long-press selects the word** under it (the touch stand-in for
+    double-click), and a **horizontal scroll that keeps the caret visible**
+    in a value wider than the box. Caret placement and selection painting
+    now use the shaped layout's geometry rather than measuring substrings
+    (O(n) per click instead of O(n²)). `Enter` is left unhandled so a form
+    can act on it. New `selection()` / `select(..)` / `select_all()` /
+    `cursor()` / `scroll_offset()` accessors. Both widgets share one
+    unit-tested editing core so the key table can't drift between them.
+  - **`TextLayout` geometry** (`fbui-render`): `hit(x, y)` → byte offset,
+    `caret(idx)` → caret box, `selection_rects(a, b)`, `line_height()`,
+    `line_count()` — what any text-editing widget needs from a shaped
+    paragraph, pinned by a caret↔hit round-trip test on the bundled Inter
+    face across explicit and wrapped lines.
+  - **Ctrl chords reach widgets on every backend**: the runner now falls back
+    to the character keysym when a key arrives with no printable text
+    (xkbcommon reports `\x03` for Ctrl+C, the terminal parser reports
+    nothing), so `Key::Char('c')` + `mods.ctrl` is what a field sees
+    everywhere. Behavior tests in `fbui-widgets/tests/text_editing.rs`
+    drive both widgets through the real event path with the bundled font.
+    See `docs/text-editing.md`; the `form` example gained a notes box.
+
 - **Bootable kiosk ISO tooling** (`scripts/iso/`, `docs/linux-iso.md`) —
   `build-iso.sh` packages a static-musl fbui app (default: the `showcase`
   example with the bundled font) into a 31 MB hybrid BIOS+UEFI ISO: GRUB, a

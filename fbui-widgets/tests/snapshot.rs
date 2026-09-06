@@ -9,7 +9,9 @@
 use fbui_render::geom::Size;
 use fbui_render::{Color, Image, Scale, Surface};
 use fbui_testkit::{assert_snapshot_in, Tolerance};
-use fbui_widgets::widgets::{Container, Keyboard, Slider, Spinner, Stack, TabBar, VideoView};
+use fbui_widgets::widgets::{
+    Container, Keyboard, Slider, Spinner, Stack, TabBar, TextArea, VideoView,
+};
 use fbui_widgets::{Theme, Ui};
 
 #[derive(Clone)]
@@ -495,6 +497,42 @@ fn navigator_mid_slide() {
     assert_snapshot_in(
         "tests/snapshots",
         "navigator_mid_slide",
+        surface.pixmap(),
+        Tolerance::FUZZY,
+    );
+}
+
+/// Two empty `TextArea`s (no text, no placeholder, so no glyphs): the box
+/// geometry `rows` produces, the focus ring on the clicked one, and the
+/// caret drawn at the top-left of the focused, empty box.
+#[test]
+fn text_area_boxes() {
+    use fbui_render::geom::Point;
+    use fbui_widgets::event::{Event, PointerButton};
+
+    let (w, h) = (300u32, 220u32);
+    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+    let root = ui.set_root(Container::column().fill().padding(16.0).gap(12.0));
+    let first = ui.add_child(root, TextArea::new().rows(3));
+    ui.add_child(root, TextArea::new().rows(2));
+    ui.layout_now();
+
+    let b = ui.bounds(first).unwrap();
+    let at = Point::new(b.x + 20.0, b.y + 20.0);
+    ui.event(Event::PointerDown {
+        pos: at,
+        button: PointerButton::Left,
+    });
+    ui.event(Event::PointerUp {
+        pos: at,
+        button: PointerButton::Left,
+    });
+
+    let mut surface = Surface::new(w, h, Scale::ONE);
+    ui.paint(&mut surface);
+    assert_snapshot_in(
+        "tests/snapshots",
+        "text_area_boxes",
         surface.pixmap(),
         Tolerance::FUZZY,
     );

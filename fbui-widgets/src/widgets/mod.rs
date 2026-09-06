@@ -6,6 +6,10 @@
 //! popup layer ([`Ui::open_popup`](crate::Ui::open_popup)): [`Dialog`] (modal
 //! scrim + focus trap), [`Select`] (dropdown menu), [`Menu`] / [`ContextMenu`]
 //! (floating action menus), [`Toasts`] (transient notifications).
+//!
+//! Text editing — [`TextInput`] (single line) and [`TextArea`] (multi-line) —
+//! shares one editing core and the [`Ui`](crate::Ui)'s process clipboard; see
+//! `docs/text-editing.md` for the key table.
 
 mod button;
 mod calendar;
@@ -14,6 +18,7 @@ mod checkbox;
 mod container;
 mod context_menu;
 mod dialog;
+mod edit;
 mod gauge;
 mod image;
 mod keyboard;
@@ -30,6 +35,7 @@ mod spinner;
 mod stack;
 mod switch;
 mod tabbar;
+mod text_area;
 mod text_input;
 mod toast;
 mod tree_view;
@@ -58,6 +64,7 @@ pub use spinner::Spinner;
 pub use stack::Stack;
 pub use switch::Switch;
 pub use tabbar::TabBar;
+pub use text_area::TextArea;
 pub use text_input::TextInput;
 pub use toast::{ToastKind, Toasts};
 pub use tree_view::{NodeId, TreeNode, TreeView};

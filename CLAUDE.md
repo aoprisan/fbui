@@ -31,8 +31,8 @@ exit criteria (cross-crate phases live at the repo root):
 - **Phase 3** (`fbui-widgets/` + `fbui/` umbrella, `fbui-widgets/PHASE3.md`,
   `fbui-widgets/DESIGN.md`) — retained widget tree generic over an app `Msg`
   type: layout, focus, theming, and the v1 widget set (Button, Checkbox,
-  RadioGroup, Switch, Slider, ProgressBar, TextInput, Label, ImageView, List,
-  ScrollView, Container, Stack). `fbui-testkit/` provides golden-PNG snapshot
+  RadioGroup, Switch, Slider, ProgressBar, TextInput, TextArea, Label, ImageView,
+  List, ScrollView, Container, Stack). `fbui-testkit/` provides golden-PNG snapshot
   testing (`FBUI_UPDATE_SNAPSHOTS=1` regenerates goldens).
 - **Phase 4** (`PHASE4.md`, tagged **0.1.0**) — hardening: unified mouse/touch
   gestures (`GestureRecognizer`), kinetic scrolling, hotplug/mode-change without

@@ -94,6 +94,7 @@ pub struct EventCtx<'a, Msg> {
     pub(crate) hovered: bool,
     pub(crate) focused: bool,
     pub(crate) self_id: WidgetId,
+    pub(crate) clipboard: &'a mut String,
     pub(crate) out: &'a mut Outputs<Msg>,
 }
 
@@ -122,6 +123,18 @@ impl<'a, Msg> EventCtx<'a, Msg> {
     /// Font context, for hit-testing against shaped text (e.g. caret placement).
     pub fn fonts(&mut self) -> &mut FontContext {
         self.fonts
+    }
+
+    /// The process-wide text clipboard the [`Ui`](crate::Ui) owns — what
+    /// Ctrl+C in a text field wrote, or the app installed via
+    /// [`Ui::set_clipboard`](crate::Ui::set_clipboard).
+    pub fn clipboard(&self) -> &str {
+        self.clipboard
+    }
+
+    /// Replace the clipboard contents (a cut or copy).
+    pub fn set_clipboard(&mut self, text: impl Into<String>) {
+        *self.clipboard = text.into();
     }
 
     /// Whether the pointer is currently over this widget.

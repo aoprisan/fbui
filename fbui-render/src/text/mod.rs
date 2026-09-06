@@ -13,10 +13,10 @@
 
 mod atlas;
 
-use cosmic_text::{Attrs, Buffer, Family, FontSystem, Metrics, Shaping, Style, Weight};
+use cosmic_text::{Attrs, Buffer, Cursor, Family, FontSystem, Metrics, Shaping, Style, Weight};
 
 use crate::color::Color;
-use crate::geom::{IRect, Point, Size};
+use crate::geom::{IRect, Point, Rect, Size};
 use crate::painter::Painter;
 use atlas::GlyphAtlas;
 
@@ -105,6 +105,148 @@ impl TextLayout {
     /// total height of all lines).
     pub fn size(&self) -> Size {
         self.measured
+    }
+
+    /// The logical height of one line (font size × line-height factor), the
+    /// vertical step between wrapped or explicit lines.
+    pub fn line_height(&self) -> f32 {
+        self.buffer.metrics().line_height
+    }
+
+    /// Number of *visual* lines after wrapping (at least 1, even for empty text).
+    pub fn line_count(&self) -> usize {
+        self.buffer.layout_runs().count().max(1)
+    }
+
+    /// Byte offset in the source text of the start of paragraph `line`
+    /// (cosmic-text splits the text on line endings; each piece is a
+    /// paragraph that may wrap into several visual lines).
+    fn paragraph_start(&self, line: usize) -> usize {
+        self.buffer
+            .lines
+            .iter()
+            .take(line)
+            .map(|l| l.text().len() + l.ending().as_str().len())
+            .sum()
+    }
+
+    /// The source text's total byte length as the buffer sees it.
+    fn text_len(&self) -> usize {
+        self.paragraph_start(self.buffer.lines.len())
+    }
+
+    /// Split a source byte offset into (paragraph, byte offset within it).
+    fn cursor_at(&self, idx: usize) -> Cursor {
+        let mut start = 0usize;
+        for (i, l) in self.buffer.lines.iter().enumerate() {
+            let len = l.text().len();
+            if idx <= start + len {
+                return Cursor::new(i, idx - start);
+            }
+            start += len + l.ending().as_str().len();
+        }
+        let last = self.buffer.lines.len().saturating_sub(1);
+        let last_len = self.buffer.lines.last().map_or(0, |l| l.text().len());
+        Cursor::new(last, last_len)
+    }
+
+    /// The byte offset (a char boundary in the source text) nearest to logical
+    /// point (`x`, `y`) measured from the layout's top-left. Points above the
+    /// first line map to its start, below the last line to its end, and
+    /// beyond a line's ends to that line's ends — what a click or drag into
+    /// text should resolve to.
+    pub fn hit(&self, x: f32, y: f32) -> usize {
+        match self.buffer.hit(x, y) {
+            Some(c) => (self.paragraph_start(c.line) + c.index).min(self.text_len()),
+            None => 0,
+        }
+    }
+
+    /// The caret box for the boundary before byte `idx`: zero-width, at the
+    /// glyph edge, spanning the line's height. Falls back to the start of the
+    /// first line (or the line's end for an offset past the text) so a caret
+    /// always has somewhere to draw — including in empty text.
+    pub fn caret(&self, idx: usize) -> Rect {
+        let idx = idx.min(self.text_len());
+        let cursor = self.cursor_at(idx);
+        let lh = self.line_height();
+        // A wrapped paragraph has several runs with the same `line_i`; the
+        // boundary at a wrap point belongs to the *later* run (that's where
+        // typing continues), so prefer the last run that claims the cursor —
+        // except at index 0 of the paragraph, which is the first run's start.
+        let mut best: Option<Rect> = None;
+        for run in self.buffer.layout_runs() {
+            if run.line_i != cursor.line {
+                continue;
+            }
+            let run_start = run.glyphs.iter().map(|g| g.start).min().unwrap_or(0);
+            let run_end = run.glyphs.iter().map(|g| g.end).max().unwrap_or(0);
+            let claims =
+                run.glyphs.is_empty() || (cursor.index >= run_start && cursor.index <= run_end);
+            if !claims {
+                continue;
+            }
+            if let Some(x) = run.cursor_position(&cursor) {
+                let r = Rect::new(x, run.line_top, 0.0, run.line_height.max(lh));
+                let at_wrap_start = cursor.index == run_start && cursor.index != 0;
+                if best.is_none() || at_wrap_start || cursor.index == run_end {
+                    best = Some(r);
+                }
+            }
+        }
+        best.unwrap_or_else(|| {
+            // No run for this paragraph (empty text, or a font-less layout):
+            // stack empty paragraphs by line height.
+            Rect::new(0.0, cursor.line as f32 * lh, 0.0, lh)
+        })
+    }
+
+    /// Highlight boxes covering the source byte range `a..b` (either order),
+    /// one per visual line touched — plus a thin marker at a line's end when
+    /// the selection continues onto the next line, so a selected line break
+    /// is visible. Empty when `a == b`.
+    pub fn selection_rects(&self, a: usize, b: usize) -> Vec<Rect> {
+        let (a, b) = (a.min(b), a.max(b));
+        let len = self.text_len();
+        let (a, b) = (a.min(len), b.min(len));
+        if a == b {
+            return Vec::new();
+        }
+        let (ca, cb) = (self.cursor_at(a), self.cursor_at(b));
+        let mut out = Vec::new();
+        for run in self.buffer.layout_runs() {
+            if run.line_i < ca.line || run.line_i > cb.line {
+                continue;
+            }
+            let mut any = false;
+            for (x, w) in run.highlight(ca, cb) {
+                any = true;
+                out.push(Rect::new(x, run.line_top, w, run.line_height));
+            }
+            // A run wholly inside the selection but with nothing highlighted
+            // (an empty line, or a wrap boundary) still shows as selected.
+            let run_end = run.glyphs.iter().map(|g| g.end).max().unwrap_or(0);
+            let continues = run.line_i < cb.line
+                || (run.line_i == cb.line && cb.index > run_end && !run.glyphs.is_empty());
+            if !any && run.line_i > ca.line && continues {
+                out.push(Rect::new(0.0, run.line_top, 0.0, run.line_height));
+            }
+            if continues && run.line_i < cb.line {
+                // Mark the selected line ending with a small tail.
+                let x = out
+                    .last()
+                    .filter(|r| (r.y - run.line_top).abs() < 0.01)
+                    .map(|r| r.right())
+                    .unwrap_or(0.0);
+                out.push(Rect::new(
+                    x,
+                    run.line_top,
+                    run.line_height * 0.3,
+                    run.line_height,
+                ));
+            }
+        }
+        out
     }
 }
 

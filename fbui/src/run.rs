@@ -1415,8 +1415,27 @@ fn map_key(sym: Keysym, text: Option<&str>) -> Option<Key> {
     }
     match text {
         Some(" ") => Some(Key::Space),
-        Some(t) => t.chars().next().filter(|c| !c.is_control()).map(Key::Char),
-        None => None,
+        Some(t) if t.chars().next().is_some_and(|c| !c.is_control()) => {
+            t.chars().next().map(Key::Char)
+        }
+        // No printable text — a Ctrl chord (xkbcommon reports "\x03" for
+        // Ctrl+C, the terminal parser reports nothing) — so fall back to the
+        // keysym itself when it names a character: `Key::Char('c')` with
+        // `mods.ctrl` set is what a text field's shortcut table matches.
+        _ => keysym_char(sym).map(Key::Char),
+    }
+}
+
+/// The character a keysym stands for, if it is a character keysym: Latin-1
+/// keysyms are their code point, and Unicode keysyms carry the code point
+/// under the `0x0100_0000` flag. Function keys (`0xFF00..`) map to nothing.
+fn keysym_char(sym: Keysym) -> Option<char> {
+    match sym.0 {
+        0x20..=0x7E | 0xA0..=0xFF => char::from_u32(sym.0),
+        0x0100_0000..=0x0110_FFFF => {
+            char::from_u32(sym.0 - 0x0100_0000).filter(|c| !c.is_control())
+        }
+        _ => None,
     }
 }
 
@@ -1433,6 +1452,28 @@ mod tests {
         assert_send::<Waker>();
         assert_send::<Proxy<i32>>();
         assert_clone::<Proxy<i32>>();
+    }
+
+    /// A Ctrl chord arrives with no printable text (xkbcommon: a control
+    /// character; the terminal parser: nothing) — the character keysym must
+    /// still land as `Key::Char` so text fields see Ctrl+C / Ctrl+V.
+    #[test]
+    fn ctrl_chords_map_to_the_letter_key() {
+        assert_eq!(map_key(Keysym('c' as u32), None), Some(Key::Char('c')));
+        assert_eq!(
+            map_key(Keysym('c' as u32), Some("\u{3}")),
+            Some(Key::Char('c'))
+        );
+        assert_eq!(
+            map_key(Keysym('V' as u32), Some("\u{16}")),
+            Some(Key::Char('V'))
+        );
+        // Unicode keysyms carry their code point; function keys stay named.
+        assert_eq!(
+            map_key(Keysym(0x0100_0000 | 'é' as u32), None),
+            Some(Key::Char('é'))
+        );
+        assert_eq!(map_key(keysym::F1, None), None);
     }
 
     /// The remote console's key names must land on the same widget `Key`s the

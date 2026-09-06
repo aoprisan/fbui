@@ -229,8 +229,13 @@ No global mutable state — the theme lives in the `Ui`.
 | `List` | windowed: only visible rows are laid out/painted (10k-row target) |
 | `Image` | blits a decoded `fbui_render::Image`, object-fit contain |
 
-Editing niceties (clipboard, multi-line, kinetic fling) are explicitly out of v1
-per PLAN; the structure leaves room for them.
+Editing niceties (clipboard, multi-line, kinetic fling) were explicitly out of
+v1 per PLAN; all three have since landed — kinetic fling in Phase 4, and the
+clipboard + multi-line `TextArea` post-0.2 (see `docs/text-editing.md`). The
+`Ui` owns the process clipboard (there is no system one without a display
+server), reachable from widgets through `EventCtx::clipboard`; `TextInput` and
+`TextArea` share one editing core (`widgets/edit.rs`) and take caret/hit/
+selection geometry from `fbui_render::TextLayout`. IME remains out of scope.
 
 ### Beyond the v1 set
 
