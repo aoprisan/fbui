@@ -22,6 +22,11 @@ slotmap = "1"
 tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
 
 [dev-dependencies]
+# The tests pull in the compiled-in font so text metrics — and therefore the
+# laid-out bounds a tree dump prints — are identical on every host. Without a
+# pinned font a golden dump would be a golden of whatever fonts CI happens to
+# have installed.
+fbui-render = { path = "../fbui-render", features = ["bundled-font"] }
 fbui-testkit = { path = "../fbui-testkit" }
 criterion = { version = "0.5", default-features = false }
 # Used by the `all_widgets` example to build a procedural bitmap for ImageView.

@@ -32,6 +32,7 @@ use fbui_render::geom::{Rect, Size};
 use fbui_render::{Color, Image};
 
 use crate::ctx::PaintCtx;
+use crate::describe::Describe;
 use crate::style::{self, Style};
 use crate::theme::Theme;
 use crate::tree::StreamDamage;
@@ -181,6 +182,14 @@ impl<Msg: 'static> Widget<Msg> for VideoView {
             }
         }
         p.pop_clip();
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        match &self.frame {
+            Some(f) => out.prop("frame", format!("{}x{}", f.width(), f.height())),
+            None => out.prop("frame", "none"),
+        }
+        out.prop("fit", format!("{:?}", self.fit).to_lowercase());
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

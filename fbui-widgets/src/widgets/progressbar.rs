@@ -5,6 +5,7 @@ use std::any::Any;
 use fbui_render::geom::Rect;
 
 use crate::ctx::PaintCtx;
+use crate::describe::{num, Describe};
 use crate::style::{self, Style};
 use crate::theme::Theme;
 use crate::widget::Widget;
@@ -68,6 +69,11 @@ impl<Msg: 'static> Widget<Msg> for ProgressBar {
             // Cap the radius so a sliver of fill stays a sane rounded shape.
             p.fill_rounded_rect(Rect::new(b.x, b.y, w, b.h), r.min(w / 2.0), accent);
         }
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        out.value(num(self.fraction));
+        out.prop("percent", (self.fraction * 100.0).round() as i32);
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

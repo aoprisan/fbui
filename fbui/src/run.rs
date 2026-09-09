@@ -183,6 +183,10 @@ struct ReplayState {
     player: Replayer,
     /// PNG of the end state, written after the last event has settled.
     shot: Option<PathBuf>,
+    /// Tree dump of the end state (`Ui::inspect_text`), written beside the
+    /// shot. This is the artifact an author actually reads: it says what each
+    /// widget holds, not just where it sits.
+    tree: Option<PathBuf>,
     /// What to do when playback finishes.
     end: ReplayEnd,
     /// Frames still to render after settling (or its bounded wait expires), so
@@ -191,6 +195,11 @@ struct ReplayState {
     /// Animation frames observed after playback ended. Bounded so perpetual
     /// animations cannot prevent an unattended screenshot/exit forever.
     settle_frames: u16,
+}
+
+/// `FBUI_REPLAY_TREE`: where to write the end-state tree dump, if anywhere.
+fn tree_path() -> Option<PathBuf> {
+    std::env::var_os("FBUI_REPLAY_TREE").map(PathBuf::from)
 }
 
 /// Build the recorder and replayer from `FBUI_RECORD` / `FBUI_REPLAY` /
@@ -248,14 +257,16 @@ fn record_replay_from_env(
             let end = match std::env::var("FBUI_REPLAY_EXIT").ok().as_deref() {
                 Some("0") | Some("false") => ReplayEnd::Stay,
                 Some(_) => ReplayEnd::Exit,
-                // A shot implies an unattended run; default to exiting then.
-                None if shot.is_some() => ReplayEnd::Exit,
+                // A requested artifact implies an unattended run; default to
+                // exiting once it has been written.
+                None if shot.is_some() || tree_path().is_some() => ReplayEnd::Exit,
                 None => ReplayEnd::AsRecorded,
             };
             eprintln!("fbui: replaying input from {}", path.display());
             Some(ReplayState {
                 player,
                 shot,
+                tree: tree_path(),
                 end,
                 finish_frames: None,
                 settle_frames: 0,
@@ -332,6 +343,7 @@ fn record_replay_from_env(
             Some(ReplayState {
                 player,
                 shot,
+                tree: tree_path(),
                 end,
                 finish_frames: None,
                 settle_frames: 0,
@@ -788,6 +800,16 @@ impl<A: App> Runner<A> {
         }
     }
 
+    /// Write the settled tree dump to `path` — the text an author reads
+    /// instead of opening the screenshot. Diagnostics must not kill the app,
+    /// so a failure is a line on stderr.
+    fn write_tree_dump(&mut self, path: &std::path::Path) {
+        let text = self.ui.inspect_text();
+        if let Err(e) = std::fs::write(path, text) {
+            eprintln!("fbui: tree dump to {} failed: {e}", path.display());
+        }
+    }
+
     /// Feed the replayer's due events through the normal input path. Returns
     /// the flow the replay wants (redraws while playing, and — once finished,
     /// settled, and screenshotted — an exit if configured).
@@ -843,6 +865,9 @@ impl<A: App> Runner<A> {
                     }
                     if let Some(path) = rs.shot.take() {
                         self.ui.request_screenshot(path);
+                    }
+                    if let Some(path) = rs.tree.take() {
+                        self.write_tree_dump(&path);
                     }
                     rs.finish_frames = Some(2);
                     flow = Flow::Redraw;

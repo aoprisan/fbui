@@ -8,6 +8,7 @@ use std::any::Any;
 use fbui_render::Color;
 
 use crate::ctx::PaintCtx;
+use crate::describe::{num, Describe};
 use crate::style::{self, Style};
 use crate::theme::Theme;
 use crate::widget::Widget;
@@ -166,6 +167,16 @@ impl<Msg: 'static> Widget<Msg> for Container {
         if let Some(bg) = self.background {
             let b = ctx.bounds();
             ctx.painter().fill_rounded_rect(b, self.radius, bg);
+        }
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        out.prop("direction", if self.column { "column" } else { "row" });
+        if self.gap != 0.0 {
+            out.prop("gap", num(self.gap));
+        }
+        if self.padding != 0.0 {
+            out.prop("padding", num(self.padding));
         }
     }
 

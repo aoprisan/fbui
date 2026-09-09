@@ -13,6 +13,7 @@ use std::any::Any;
 use fbui_render::geom::{Point, Rect};
 
 use crate::ctx::{EventCtx, PaintCtx};
+use crate::describe::Describe;
 use crate::event::{Event, Key, PointerButton};
 use crate::kinetic::Kinetic;
 use crate::style::{self, Style};
@@ -351,6 +352,21 @@ impl<Msg: 'static> Widget<Msg> for List<Msg> {
             None
         } else {
             Some(std::mem::take(&mut self.blit_dy))
+        }
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        // The selected row is what a person would read off the list.
+        if let Some(label) = self.selected.and_then(|i| self.rows.get(i)) {
+            out.text(label);
+        }
+        out.prop("rows", self.rows.len());
+        match self.selected {
+            Some(i) => out.prop("selected", i),
+            None => out.prop("selected", "none"),
+        }
+        if self.row_h > 0.0 {
+            out.prop("first_visible", (self.offset / self.row_h).floor() as i64);
         }
     }
 

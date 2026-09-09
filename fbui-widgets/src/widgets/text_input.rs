@@ -15,6 +15,7 @@ use fbui_render::{FontContext, TextLayout, TextStyle};
 
 use super::edit::EditState;
 use crate::ctx::{EventCtx, PaintCtx};
+use crate::describe::Describe;
 use crate::event::{Event, Key, Modifiers, PointerButton};
 use crate::style::{self, Style};
 use crate::theme::Theme;
@@ -309,6 +310,18 @@ impl<Msg: 'static> Widget<Msg> for TextInput<Msg> {
 
     fn debug_name(&self) -> &'static str {
         "TextInput"
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        out.text(&self.edit.text);
+        if !self.placeholder.is_empty() {
+            out.prop("placeholder", &self.placeholder);
+        }
+        out.prop("cursor", self.edit.cursor);
+        if self.edit.has_selection() {
+            let (a, b) = self.edit.selection();
+            out.prop("selection", format!("{a}..{b}"));
+        }
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

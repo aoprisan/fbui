@@ -54,6 +54,7 @@ use fbui_render::Scale;
 
 use crate::anim::{Easing, Tween};
 use crate::ctx::EventCtx;
+use crate::describe::Describe;
 use crate::event::{Event, Key};
 use crate::style::{self, Style};
 use crate::theme::Theme;
@@ -377,6 +378,12 @@ impl<Msg: Clone + 'static> Widget<Msg> for Navigator<Msg> {
     fn paint(&self, _ctx: &mut PaintCtx) {
         // Chrome-free: the screens paint everything. (The Ui's region clear
         // paints the theme background behind a not-yet-covered area.)
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        out.prop("depth", self.top);
+        out.prop("top", self.top);
+        out.flag("transitioning", self.is_transitioning());
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

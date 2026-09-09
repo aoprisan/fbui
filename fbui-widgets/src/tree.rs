@@ -20,6 +20,7 @@ use slotmap::{SecondaryMap, SlotMap};
 use taffy::{AvailableSpace, TaffyTree};
 
 use crate::ctx::{AnimCtx, CaptureOp, EventCtx, FocusOp, Outputs, PaintCtx, PopupOp};
+use crate::describe::Describe;
 use crate::event::{Event, Key, Modifiers, PointerButton};
 use crate::popup::{place_anchored, Alignment, AnchorSpec, Placement};
 use crate::style::Style;
@@ -124,15 +125,109 @@ pub struct InspectNode {
     pub id: String,
     /// The widget's [`debug_name`](Widget::debug_name), shortened to the bare
     /// type name (`Button`, `ScrollView`, …).
-    pub name: String,
+    pub kind: String,
+    /// The app-assigned name, if [`Ui::name`] gave this widget one. This is
+    /// what a flow script's `#name` reference resolves against.
+    pub name: Option<String>,
+    /// The widget's user-visible text, from [`Widget::describe`] — a label's
+    /// words, a button's caption, an input's content.
+    pub text: Option<String>,
+    /// Everything else [`Widget::describe`] reported (`checked`, `value`,
+    /// `offset`, …), in the order the widget reported it.
+    pub props: Vec<(&'static str, String)>,
     /// Absolute logical bounds after layout.
     pub bounds: Rect,
     pub focusable: bool,
     pub focused: bool,
     pub hovered: bool,
+    /// Whether any of this widget is actually on screen: `false` when it has
+    /// no area, sits outside the surface, or is entirely clipped away by a
+    /// scrolling ancestor. This is what "can I tap it" needs, and what a flow
+    /// reference checks before acting.
+    pub visible: bool,
     /// The floating overlay rect the widget currently reports, if any.
     pub overlay: Option<Rect>,
     pub children: Vec<InspectNode>,
+}
+
+impl InspectNode {
+    /// The value this widget reported under `key` in [`Widget::describe`]
+    /// (`"text"` included).
+    pub fn prop(&self, key: &str) -> Option<&str> {
+        if key == crate::describe::TEXT {
+            return self.text.as_deref();
+        }
+        self.props
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// This node and every descendant, in tree (depth-first, pre) order —
+    /// the order a dump prints and the order a `Kind "text"` reference
+    /// resolves in.
+    pub fn iter(&self) -> impl Iterator<Item = &InspectNode> {
+        let mut out = Vec::new();
+        collect_nodes(self, &mut out);
+        out.into_iter()
+    }
+
+    /// Render this node and its subtree one widget per line, indented by
+    /// depth — the text an author reads instead of looking at the screen.
+    /// See [`Ui::inspect_text`].
+    pub fn to_text(&self) -> String {
+        let mut out = String::new();
+        write_node_text(self, 0, &mut out);
+        out
+    }
+}
+
+fn collect_nodes<'a>(n: &'a InspectNode, out: &mut Vec<&'a InspectNode>) {
+    out.push(n);
+    for c in &n.children {
+        collect_nodes(c, out);
+    }
+}
+
+/// One dump line: `Kind #name [x,y wxh] "text" prop=value flags`.
+fn write_node_text(n: &InspectNode, depth: usize, out: &mut String) {
+    use std::fmt::Write as _;
+    for _ in 0..depth {
+        out.push_str("  ");
+    }
+    out.push_str(&n.kind);
+    if let Some(name) = &n.name {
+        let _ = write!(out, " #{name}");
+    }
+    let _ = write!(
+        out,
+        " [{},{} {}x{}]",
+        n.bounds.x.round() as i32,
+        n.bounds.y.round() as i32,
+        n.bounds.w.round() as i32,
+        n.bounds.h.round() as i32,
+    );
+    if let Some(t) = &n.text {
+        let _ = write!(out, " {:?}", t);
+    }
+    for (k, v) in &n.props {
+        let _ = write!(out, " {k}={v}");
+    }
+    // Live tree state, after the widget's own description: bare words, so a
+    // dump reads the way the example in TOOLING.md does.
+    if n.focused {
+        out.push_str(" focused");
+    }
+    if n.hovered {
+        out.push_str(" hovered");
+    }
+    if !n.visible {
+        out.push_str(" hidden");
+    }
+    out.push('\n');
+    for c in &n.children {
+        write_node_text(c, depth + 1, out);
+    }
 }
 
 /// `fbui_widgets::widgets::button::Button<app::Msg>` → `Button`: drop generic
@@ -190,6 +285,11 @@ pub struct Ui<Msg> {
     popups: Vec<PopupEntry>,
     /// Hover tooltips by owner (see [`set_tooltip`](Ui::set_tooltip)).
     tooltips: SecondaryMap<WidgetId, Tooltip>,
+    /// App-assigned names (see [`name`](Ui::name)), and the reverse index
+    /// [`find`](Ui::find) resolves through. Both are cleared on removal, so a
+    /// name never resolves to a dead widget.
+    names: SecondaryMap<WidgetId, String>,
+    by_name: std::collections::HashMap<String, WidgetId>,
     tip: TipState,
     /// Scratch sink lent to each `EventCtx`; drained after every dispatch.
     out: Outputs<Msg>,
@@ -234,6 +334,8 @@ impl<Msg: 'static> Ui<Msg> {
             capture: None,
             popups: Vec::new(),
             tooltips: SecondaryMap::new(),
+            names: SecondaryMap::new(),
+            by_name: std::collections::HashMap::new(),
             tip: TipState::default(),
             out: Outputs::default(),
             messages: Vec::new(),
@@ -258,6 +360,8 @@ impl<Msg: 'static> Ui<Msg> {
         self.capture = None;
         self.popups.clear();
         self.tooltips.clear();
+        self.names.clear();
+        self.by_name.clear();
         self.tip = TipState::default();
         let id = self.insert(Box::new(widget), None);
         self.root = Some(id);
@@ -276,6 +380,99 @@ impl<Msg: 'static> Ui<Msg> {
         self.apply_style(id);
         self.mark_full();
         id
+    }
+
+    /// Append `widget` as the last child of `parent` under the tree-unique
+    /// `name` — [`add_child`](Self::add_child) plus [`name`](Self::name) in
+    /// one call, which is how most named widgets get built.
+    pub fn add_named(
+        &mut self,
+        parent: WidgetId,
+        name: impl Into<String>,
+        widget: impl Widget<Msg>,
+    ) -> WidgetId {
+        let id = self.add_child(parent, widget);
+        self.name(id, name);
+        id
+    }
+
+    /// Give `id` a tree-unique name, so a flow script can say `#name`, a tree
+    /// dump can identify it, and [`find`](Self::find) can resolve it.
+    ///
+    /// Names are optional and purely additive: nothing in the tree behaves
+    /// differently for having one, and a widget without one is still
+    /// addressable by kind and text. Naming the same widget twice replaces
+    /// the old name; reusing a name that belongs to a *different* live widget
+    /// is a bug — the last writer wins, a `debug_assert` fires in debug
+    /// builds, and the `duplicate-name` lint reports it in release.
+    pub fn name(&mut self, id: WidgetId, name: impl Into<String>) {
+        if !self.nodes.contains_key(id) {
+            return;
+        }
+        let name = name.into();
+        if let Some(prev) = self.by_name.get(&name).copied() {
+            debug_assert!(
+                prev == id || !self.nodes.contains_key(prev),
+                "duplicate widget name {name:?}: already held by {prev:?}"
+            );
+            self.names.remove(prev);
+        }
+        // Renaming: drop the old reverse entry so it stops resolving.
+        if let Some(old) = self.names.insert(id, name.clone()) {
+            if old != name {
+                self.by_name.remove(&old);
+            }
+        }
+        self.by_name.insert(name, id);
+    }
+
+    /// The widget called `name`, if one is alive.
+    ///
+    /// A `#screen/field` path is sugar: the last segment is the name and any
+    /// earlier segments must appear, in order, among the widget's named
+    /// ancestors. That is what scopes a field name to the screen or dialog it
+    /// lives in without a second namespace.
+    pub fn find(&self, name: &str) -> Option<WidgetId> {
+        let (ancestors, leaf) = match name.rsplit_once('/') {
+            Some((path, leaf)) => (path.split('/').collect::<Vec<_>>(), leaf),
+            None => (Vec::new(), name),
+        };
+        let id = *self.by_name.get(leaf)?;
+        if !self.nodes.contains_key(id) {
+            return None;
+        }
+        if ancestors.is_empty() {
+            return Some(id);
+        }
+        // Walk up collecting named ancestors, then check the path appears in
+        // order (nearest last), so `#form/name` matches `name` inside `form`
+        // however deeply it is nested.
+        let mut named = Vec::new();
+        let mut cur = self.nodes[id].parent;
+        while let Some(p) = cur {
+            if let Some(n) = self.names.get(p) {
+                named.push(n.as_str());
+            }
+            cur = self.nodes[p].parent;
+        }
+        let mut want = ancestors.into_iter().rev();
+        let mut next = want.next();
+        for got in named {
+            if next == Some(got) {
+                next = want.next();
+            }
+        }
+        next.is_none().then_some(id)
+    }
+
+    /// The name given to `id`, if any.
+    pub fn name_of(&self, id: WidgetId) -> Option<&str> {
+        self.names.get(id).map(|s| s.as_str())
+    }
+
+    /// Every live (name, widget) pair, in no particular order.
+    pub fn names(&self) -> impl Iterator<Item = (&str, WidgetId)> {
+        self.by_name.iter().map(|(n, &id)| (n.as_str(), id))
     }
 
     /// Remove a widget and its whole subtree from the tree, damaging whatever
@@ -333,6 +530,9 @@ impl<Msg: 'static> Ui<Msg> {
             let _ = self.taffy.remove(t);
             self.nodes.remove(n);
             self.tooltips.remove(n);
+            if let Some(old) = self.names.remove(n) {
+                self.by_name.remove(&old);
+            }
             if self.focus == Some(n) {
                 self.focus = None;
             }
@@ -1444,20 +1644,69 @@ impl<Msg: 'static> Ui<Msg> {
         self.root.map(|r| self.inspect_node(r))
     }
 
+    /// Render the live tree as text, one widget per line, indented by depth:
+    ///
+    /// ```text
+    /// Container [0,0 1024x600] direction=column
+    ///   Label [24,24 976x34] "Counter"
+    ///   Label #count [24,74 976x58] "3"
+    ///   Container [24,148 976x40] direction=row
+    ///     Button #dec [24,148 60x40] "−"
+    ///     Button #inc [96,148 60x40] "+" focused
+    /// ```
+    ///
+    /// This is what an author who cannot see the screen reads instead of the
+    /// screenshot, nine times out of ten: it is greppable, diffable in
+    /// review, and says what each widget holds rather than only where it sits.
+    /// Empty (`""`) when there is no root.
+    pub fn inspect_text(&mut self) -> String {
+        match self.inspect() {
+            Some(root) => root.to_text(),
+            None => String::new(),
+        }
+    }
+
     fn inspect_node(&self, id: WidgetId) -> InspectNode {
+        // The visible region a widget must intersect: the surface, narrowed
+        // by every clipping ancestor's box.
+        self.inspect_node_clipped(id, Rect::new(0.0, 0.0, self.size.w, self.size.h))
+    }
+
+    fn inspect_node_clipped(&self, id: WidgetId, clip: Rect) -> InspectNode {
         let node = &self.nodes[id];
+        let mut desc = Describe::new();
+        node.widget.describe(&mut desc);
+        let mut pairs = desc.into_pairs();
+        // `text` is lifted out of the pair list: it is the one field scripts
+        // and dumps treat specially, so it should not need a lookup.
+        let text = pairs
+            .iter()
+            .position(|(k, _)| *k == crate::describe::TEXT)
+            .map(|i| pairs.remove(i).1);
+        let visible = !clip.intersect(node.layout).is_empty();
+        // A clipping widget (a scroll viewport) narrows what its children can
+        // be seen through.
+        let child_clip = if node.widget.clips() {
+            clip.intersect(node.layout)
+        } else {
+            clip
+        };
         InspectNode {
             id: format!("{id:?}"),
-            name: short_type_name(node.widget.debug_name()).to_string(),
+            kind: short_type_name(node.widget.debug_name()).to_string(),
+            name: self.names.get(id).cloned(),
+            text,
+            props: pairs,
             bounds: node.layout,
             focusable: node.widget.focusable(),
             focused: self.focus == Some(id),
             hovered: self.hover == Some(id),
+            visible,
             overlay: node.widget.overlay_rect(node.layout, self.size),
             children: node
                 .children
                 .iter()
-                .map(|&c| self.inspect_node(c))
+                .map(|&c| self.inspect_node_clipped(c, child_clip))
                 .collect(),
         }
     }

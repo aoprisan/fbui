@@ -19,6 +19,36 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Added
 
+- **Widget names, `Widget::describe`, and the tree as text** — the widget
+  tree becomes readable without looking at the screen.
+  - **`Widget::describe`** (`fbui-widgets`) reports a widget's user-visible
+    content and state as ordered key/value pairs — a label's words, a text
+    field's content and caret, `checked`/`open`/`selected`, a slider's value
+    and range, a scroll offset. Every built-in widget implements it; the
+    default is empty, so third-party widgets keep compiling. It runs **only**
+    on `Ui::inspect`, never on the paint or event path.
+  - **Names**: `Ui::name`, `Ui::add_named`, `Ui::find`, `Ui::name_of`,
+    `Ui::names`. A name is tree-unique, optional, and dies with its widget;
+    `find("form/name")` scopes a name by its named ancestors.
+  - **`Ui::inspect_text()`** renders the laid-out tree one widget per line —
+    `Kind #name [x,y wxh] "text" prop=value focused` — which is what an
+    author reads instead of a screenshot, and what a review diff shows when
+    the screen changes.
+  - **`FBUI_REPLAY_TREE=path`** writes that dump at the end of a replay,
+    beside `FBUI_REPLAY_SHOT`. An **empty** replay file is now a valid empty
+    recording, so `FBUI_REPLAY=/dev/null` renders the first screen, writes
+    the artifacts and exits.
+
+### Changed
+
+- **`InspectNode.name` is now `InspectNode.kind`** (the widget type), and
+  `name` holds the app-assigned name from `Ui::name` (`Option<String>`). The
+  node also grows `text`, `props` and `visible`. The remote console's
+  `GET /tree` JSON follows: `kind` replaces `name`, and nodes gain optional
+  `name`, `text`, `props` and a `visible` flag. The built-in console UI shows
+  all of them. Pre-1.0 rename, in one change, with the only in-repo consumer
+  updated.
+
 - **A headless display backend** (`fbui-platform`, feature `headless`, on by
   default) — `FBUI_BACKEND=headless` runs the *unmodified* runner against two
   RAM back buffers that present nowhere: no display device, no tty, no seat,

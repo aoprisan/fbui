@@ -44,6 +44,7 @@ pub(crate) use span;
 
 pub mod anim;
 pub mod ctx;
+pub mod describe;
 pub mod event;
 pub mod gesture;
 pub mod kinetic;
@@ -57,6 +58,7 @@ pub mod widgets;
 
 pub use anim::{Easing, Lerp, Spring, Tween};
 pub use ctx::{AnimCtx, EventCtx, PaintCtx};
+pub use describe::Describe;
 pub use event::{Event, Key, Modifiers, PointerButton};
 pub use gesture::{Gesture, GestureConfig, GestureRecognizer};
 pub use popup::{place_anchored, Alignment, AnchorSpec, Placement};

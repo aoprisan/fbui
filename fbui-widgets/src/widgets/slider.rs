@@ -5,6 +5,7 @@ use std::any::Any;
 use fbui_render::geom::Rect;
 
 use crate::ctx::{EventCtx, PaintCtx};
+use crate::describe::{num, Describe};
 use crate::event::{Event, Key, PointerButton};
 use crate::style::{self, Style};
 use crate::theme::Theme;
@@ -184,6 +185,15 @@ impl<Msg: 'static> Widget<Msg> for Slider<Msg> {
                 ctx.set_handled();
             }
             _ => {}
+        }
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        out.value(num(self.value));
+        out.prop("min", num(self.min));
+        out.prop("max", num(self.max));
+        if self.dragging {
+            out.flag("dragging", true);
         }
     }
 

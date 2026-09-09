@@ -64,7 +64,11 @@
   }
   .node > .row:hover { background: var(--panel); }
   .row .nm { color: var(--text); }
+  .row .id { color: var(--accent); }
+  .row .txt { color: var(--text); opacity: .85; }
+  .row .props { color: var(--dim); font-size: 11px; }
   .row .geo { color: var(--dim); font-size: 11px; }
+  .row.hidden { opacity: .45; }
   .row .tag {
     font-size: 10px; color: var(--accent); border: 1px solid var(--accent);
     border-radius: 3px; padding: 0 3px;
@@ -209,14 +213,31 @@ function renderNode(n) {
   const row = document.createElement("div");
   row.className = "row";
   const nm = document.createElement("span");
-  nm.className = "nm"; nm.textContent = n.name;
+  nm.className = "nm"; nm.textContent = n.kind;
   row.appendChild(nm);
+  if (n.name) {
+    const id = document.createElement("span");
+    id.className = "id"; id.textContent = "#" + n.name;
+    row.appendChild(id);
+  }
   const geo = document.createElement("span");
   geo.className = "geo";
   geo.textContent = n.bounds.map(v => Math.round(v)).join(",");
   row.appendChild(geo);
+  if (n.text !== undefined) {
+    const t = document.createElement("span");
+    t.className = "txt"; t.textContent = JSON.stringify(n.text);
+    row.appendChild(t);
+  }
+  if (n.props) {
+    const pr = document.createElement("span");
+    pr.className = "props";
+    pr.textContent = Object.entries(n.props).map(([k, v]) => k + "=" + v).join(" ");
+    row.appendChild(pr);
+  }
   if (n.focused) row.appendChild(tag("focus"));
   else if (n.focusable) row.appendChild(tag("focusable"));
+  if (n.visible === false) row.classList.add("hidden");
   row.addEventListener("mouseenter", () => highlight(n.bounds));
   row.addEventListener("mouseleave", () => { hl.style.display = "none"; });
   el.appendChild(row);

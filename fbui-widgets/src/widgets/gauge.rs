@@ -17,6 +17,7 @@ use fbui_render::{Color, FontContext};
 
 use crate::anim::{Easing, Tween};
 use crate::ctx::PaintCtx;
+use crate::describe::{num, Describe};
 use crate::style::Style;
 use crate::theme::Theme;
 use crate::tree::StreamDamage;
@@ -318,6 +319,20 @@ impl<Msg: 'static> Widget<Msg> for Gauge {
                 Point::new(cx - w / 2.0, cy + r * 0.28 + value_style.line_height),
                 None,
             );
+        }
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        if let Some(label) = &self.label {
+            out.text(label);
+        }
+        out.value(num(self.value));
+        out.prop("min", num(self.min));
+        out.prop("max", num(self.max));
+        // The needle lags the value while it animates; a flow that asserts a
+        // settled reading needs to see that it hasn't arrived yet.
+        if !self.shown.is_done() {
+            out.prop("shown", num(self.shown.value()));
         }
     }
 

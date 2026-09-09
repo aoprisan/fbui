@@ -33,10 +33,21 @@ screenshots (settled UI; see "Determinism" below).
 | `FBUI_REPLAY=path` | Load and play a recording. Live input still works during playback (Esc still quits). |
 | `FBUI_REPLAY_SPEED=n\|max` | Wall-clock multiplier (default `1`). `max` delivers everything as fast as frames render. |
 | `FBUI_REPLAY_SHOT=path.png` | After the last event, wait up to 300 animation frames for settling, then write a PNG of the end state. |
-| `FBUI_REPLAY_EXIT=0\|1` | What happens when playback ends. Unset: *as recorded* — a replayed Esc exits exactly as it did live (unless a shot is requested, which implies `1`). `1`: the replayer owns the ending — the recording's quit keystroke is swallowed, the shot (if any) is captured, then the app exits. `0`: same swallow, but the app stays running interactively after playback. |
+| `FBUI_REPLAY_TREE=path.txt` | Same timing as the shot, but writes `Ui::inspect_text()` — the widget tree as text, one widget per line with its name, bounds, text and state. This is the artifact to read first; open the PNG only when geometry is in question. |
+| `FBUI_REPLAY_EXIT=0\|1` | What happens when playback ends. Unset: *as recorded* — a replayed Esc exits exactly as it did live (unless a shot or tree dump is requested, which implies `1`). `1`: the replayer owns the ending — the recording's quit keystroke is swallowed, the shot (if any) is captured, then the app exits. `0`: same swallow, but the app stays running interactively after playback. |
 
 A recording notes the surface size it was made on; replaying on a different
 size logs a warning — absolute coordinates may land on different widgets.
+
+An **empty** file is a valid, already-finished recording, which makes
+
+```sh
+FBUI_BACKEND=headless FBUI_REPLAY=/dev/null FBUI_REPLAY_TREE=t.txt \
+    FBUI_REPLAY_SHOT=s.png ./app
+```
+
+the shortest way to see what an app looks like with no screen at all: it
+builds the tree, renders the first frame, writes both artifacts, and exits.
 
 ## File format (`fbui-rec` v1)
 

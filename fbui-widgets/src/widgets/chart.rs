@@ -31,6 +31,7 @@ use fbui_render::path::PathBuilder;
 use fbui_render::{Color, FontContext, Scale};
 
 use crate::ctx::PaintCtx;
+use crate::describe::{num, Describe};
 use crate::style::Style;
 use crate::theme::Theme;
 use crate::tree::StreamDamage;
@@ -569,6 +570,14 @@ impl<Msg: 'static> Widget<Msg> for Chart {
         }
 
         p.pop_clip();
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        out.prop("series", self.series.len());
+        out.prop("samples", self.len());
+        if let Some((lo, hi)) = self.range() {
+            out.prop("range", format!("{}..{}", num(lo), num(hi)));
+        }
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

@@ -27,10 +27,12 @@ pub(crate) fn escape_json(s: &str) -> String {
 }
 
 /// The `/tree` document: `{"scale":N,"tree":{...}}`, where each node carries
-/// `id`, `name`, `bounds` (`[x,y,w,h]`, logical px), the focus flags, an
-/// optional `overlay` rect, and `children`. `scale` converts logical bounds to
-/// the device pixels of `/screen.png`. Public so a custom embedder can serve
-/// the same document the built-in runner does.
+/// `kind` (the widget type), an optional app-assigned `name`, `id`, `bounds`
+/// (`[x,y,w,h]`, logical px), the focus/visibility flags, the widget's own
+/// `text` and `props` from [`Widget::describe`](fbui_widgets::Widget::describe),
+/// an optional `overlay` rect, and `children`. `scale` converts logical bounds
+/// to the device pixels of `/screen.png`. Public so a custom embedder can
+/// serve the same document the built-in runner does.
 pub fn tree_json(root: &InspectNode, scale: f32) -> String {
     let mut out = String::with_capacity(1024);
     out.push_str(&format!("{{\"scale\":{scale},\"tree\":"));
@@ -41,10 +43,10 @@ pub fn tree_json(root: &InspectNode, scale: f32) -> String {
 
 fn node_json(n: &InspectNode, out: &mut String) {
     out.push_str(&format!(
-        "{{\"id\":\"{}\",\"name\":\"{}\",\"bounds\":[{},{},{},{}],\
-         \"focusable\":{},\"focused\":{},\"hovered\":{}",
+        "{{\"id\":\"{}\",\"kind\":\"{}\",\"bounds\":[{},{},{},{}],\
+         \"focusable\":{},\"focused\":{},\"hovered\":{},\"visible\":{}",
         escape_json(&n.id),
-        escape_json(&n.name),
+        escape_json(&n.kind),
         n.bounds.x,
         n.bounds.y,
         n.bounds.w,
@@ -52,7 +54,24 @@ fn node_json(n: &InspectNode, out: &mut String) {
         n.focusable,
         n.focused,
         n.hovered,
+        n.visible,
     ));
+    if let Some(name) = &n.name {
+        out.push_str(&format!(",\"name\":\"{}\"", escape_json(name)));
+    }
+    if let Some(text) = &n.text {
+        out.push_str(&format!(",\"text\":\"{}\"", escape_json(text)));
+    }
+    if !n.props.is_empty() {
+        out.push_str(",\"props\":{");
+        for (i, (k, v)) in n.props.iter().enumerate() {
+            if i > 0 {
+                out.push(',');
+            }
+            out.push_str(&format!("\"{}\":\"{}\"", escape_json(k), escape_json(v)));
+        }
+        out.push('}');
+    }
     if let Some(o) = n.overlay {
         out.push_str(&format!(",\"overlay\":[{},{},{},{}]", o.x, o.y, o.w, o.h));
     }
@@ -112,14 +131,18 @@ mod tests {
     use super::*;
     use fbui_render::geom::Rect;
 
-    fn leaf(name: &str) -> InspectNode {
+    fn leaf(kind: &str) -> InspectNode {
         InspectNode {
             id: "WidgetId(1v1)".into(),
-            name: name.into(),
+            kind: kind.into(),
+            name: None,
+            text: None,
+            props: Vec::new(),
             bounds: Rect::new(1.0, 2.0, 3.0, 4.0),
             focusable: true,
             focused: false,
             hovered: false,
+            visible: true,
             overlay: None,
             children: Vec::new(),
         }
@@ -139,12 +162,29 @@ mod tests {
         root.children.push(leaf("Label"));
         let j = tree_json(&root, 2.0);
         assert!(j.starts_with("{\"scale\":2,\"tree\":{"), "{j}");
-        assert!(j.contains("\"name\":\"Container\""));
+        assert!(j.contains("\"kind\":\"Container\""));
         assert!(j.contains("\"overlay\":[5,6,7,8]"));
         assert!(j.contains("\"bounds\":[1,2,3,4]"));
+        assert!(j.contains("\"visible\":true"));
         // Two children, comma-separated.
-        assert!(j.contains("\"name\":\"Button\"") && j.contains("\"name\":\"Label\""));
+        assert!(j.contains("\"kind\":\"Button\"") && j.contains("\"kind\":\"Label\""));
         assert_eq!(j.matches("\"children\":[").count(), 3);
+    }
+
+    /// A named, described widget carries its name, its text and its props —
+    /// the whole point of the `describe` pass reaching the console.
+    #[test]
+    fn tree_json_carries_names_text_and_props() {
+        let mut n = leaf("Checkbox");
+        n.name = Some("agree".into());
+        n.text = Some("I \"agree\"".into());
+        n.props = vec![("checked", "true".into())];
+        n.visible = false;
+        let j = tree_json(&n, 1.0);
+        assert!(j.contains("\"name\":\"agree\""), "{j}");
+        assert!(j.contains("\"text\":\"I \\\"agree\\\"\""), "{j}");
+        assert!(j.contains("\"props\":{\"checked\":\"true\"}"), "{j}");
+        assert!(j.contains("\"visible\":false"), "{j}");
     }
 
     #[test]

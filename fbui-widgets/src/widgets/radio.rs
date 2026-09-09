@@ -13,6 +13,7 @@ use fbui_render::geom::{Point, Rect, Size};
 use fbui_render::FontContext;
 
 use crate::ctx::{EventCtx, PaintCtx};
+use crate::describe::Describe;
 use crate::event::{Event, Key, PointerButton};
 use crate::style::Style;
 use crate::theme::Theme;
@@ -189,6 +190,15 @@ impl<Msg: 'static> Widget<Msg> for RadioGroup<Msg> {
             }
             _ => {}
         }
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        // The chosen option is the widget's user-visible answer.
+        if let Some(label) = self.options.get(self.selected) {
+            out.text(label);
+        }
+        out.prop("selected", self.selected);
+        out.prop("options", self.options.len());
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

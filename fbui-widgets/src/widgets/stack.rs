@@ -22,6 +22,7 @@ use std::any::Any;
 use fbui_render::Color;
 
 use crate::ctx::PaintCtx;
+use crate::describe::Describe;
 use crate::style::{self, Style};
 use crate::theme::Theme;
 use crate::widget::Widget;
@@ -99,6 +100,10 @@ impl<Msg: 'static> Widget<Msg> for Stack {
             let b = ctx.bounds();
             ctx.painter().fill_rounded_rect(b, self.radius, bg);
         }
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        out.prop("direction", "stack");
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {
