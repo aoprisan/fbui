@@ -96,11 +96,17 @@ impl App for Showcase {
         ui.add_child(media, Label::new("ImageView").color(muted));
 
         // A windowed List beside a ScrollView, each filling half the row.
-        let panels = ui.add_child(root, Container::row().gap(12.0).grow(1.0));
+        // `shrink()` is the flexbox `min-height: 0` idiom: the row takes the
+        // space that is *left*, so the 50-row List windows inside it instead
+        // of demanding its full 2000px and pushing the page off the screen.
+        let panels = ui.add_child(root, Container::row().gap(12.0).grow(1.0).shrink());
 
         let list_panel = ui.add_child(
             panels,
-            Container::column().grow(1.0).background(surface, 10.0),
+            Container::column()
+                .grow(1.0)
+                .shrink()
+                .background(surface, 10.0),
         );
         let rows: Vec<String> = (0..50).map(|i| format!("Row #{i:02}")).collect();
         ui.add_child(list_panel, List::new(rows).on_select(Msg::Select));
@@ -109,6 +115,7 @@ impl App for Showcase {
             panels,
             Container::column()
                 .grow(1.0)
+                .shrink()
                 .padding(8.0)
                 .background(surface, 10.0),
         );

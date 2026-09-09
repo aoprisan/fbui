@@ -241,11 +241,19 @@ impl Recorder {
         })
     }
 
-    pub(crate) fn record(&mut self, ev: &InputEvent) {
+    /// Append one event. `note` is an optional trailing comment — the runner
+    /// passes the semantic step a press stands for (`# tap #inc`), so a
+    /// recorded session can be read, and hand-converted into a flow script,
+    /// without replaying it to find out what was touched.
+    pub(crate) fn record(&mut self, ev: &InputEvent, note: Option<&str>) {
         let Some(body) = event_line(ev) else { return };
         let ms = self.start.elapsed().as_millis();
+        let line = match note {
+            Some(n) => format!("@{ms} {body}  # {n}"),
+            None => format!("@{ms} {body}"),
+        };
         // Recording failures must never take down the app; the kiosk log sees it.
-        if writeln!(self.out, "@{ms} {body}")
+        if writeln!(self.out, "{line}")
             .and_then(|_| self.out.flush())
             .is_err()
         {
@@ -268,12 +276,19 @@ pub(crate) struct Replayer {
 }
 
 impl Replayer {
-    pub(crate) fn load(path: &std::path::Path, speed: f64) -> std::io::Result<Self> {
-        let text = std::fs::read_to_string(path)?;
-        Self::parse(&text, speed).map_err(std::io::Error::other)
-    }
-
     pub(crate) fn parse(text: &str, speed: f64) -> Result<Self, String> {
+        // An empty file is an empty recording, not a malformed one. That is
+        // what makes `FBUI_REPLAY=/dev/null` the idiom for "render the first
+        // screen, write the artifacts, exit" — the shortest way to see what
+        // an app looks like with no screen.
+        if text.trim().is_empty() {
+            return Ok(Replayer {
+                events: std::collections::VecDeque::new(),
+                start: Instant::now(),
+                speed,
+                recorded_size: None,
+            });
+        }
         let mut lines = text.lines();
         let header = lines.next().unwrap_or_default();
         let mut parts = header.split_ascii_whitespace();
@@ -461,9 +476,42 @@ mod tests {
         assert_eq!(r.due_at(60).len(), 1);
     }
 
+    /// A recorded press carries the semantic step it stands for as a
+    /// trailing comment, so a session can be read — and hand-converted into a
+    /// flow — without replaying it to find out what was touched. The comment
+    /// must not disturb the parse.
+    #[test]
+    fn an_annotated_line_still_parses_as_the_event() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("s.rec");
+        let mut r = Recorder::create(&path, (100, 50)).unwrap();
+        let ev = InputEvent::PointerButton {
+            button: Button::Left,
+            state: KeyState::Pressed,
+        };
+        r.record(&ev, Some("tap #inc"));
+        r.record(&ev, None);
+        drop(r);
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("b l p  # tap #inc"), "{text}");
+        let mut player = Replayer::parse(&text, f64::INFINITY).unwrap();
+        assert_eq!(player.due_events().len(), 2, "the comment is ignored");
+    }
+
     #[test]
     fn bad_header_is_rejected() {
         assert!(Replayer::parse("not a recording\n@0 m 1 1\n", 1.0).is_err());
+    }
+
+    /// `FBUI_REPLAY=/dev/null` is the "just render the first screen" idiom, so
+    /// an empty file must load as an empty, already-finished recording.
+    #[test]
+    fn an_empty_file_is_an_empty_recording() {
+        let r = Replayer::parse("", 1.0).expect("empty is valid");
+        assert!(r.finished());
+        assert_eq!(r.recorded_size, None);
+        assert!(Replayer::parse("\n  \n", 1.0).is_ok());
     }
 
     #[test]

@@ -6,6 +6,7 @@ use fbui_render::geom::{Point, Size};
 use fbui_render::{Color, FontContext};
 
 use crate::ctx::{EventCtx, PaintCtx};
+use crate::describe::Describe;
 use crate::event::{Event, Key, PointerButton};
 use crate::style::{self, Style};
 use crate::theme::Theme;
@@ -180,6 +181,16 @@ impl<Msg: 'static> Widget<Msg> for Button<Msg> {
                 }
             }
             _ => {}
+        }
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        out.text(&self.label);
+        if self.variant != ButtonVariant::default() {
+            out.prop("variant", format!("{:?}", self.variant).to_lowercase());
+        }
+        if self.pressed {
+            out.flag("pressed", true);
         }
     }
 

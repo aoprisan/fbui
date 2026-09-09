@@ -385,6 +385,7 @@ dependencies = [
  "fbui-render",
  "fbui-widgets",
  "image",
+ "tempfile",
  "tracing",
 ]
 

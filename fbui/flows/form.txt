@@ -1,0 +1,22 @@
+# The form example: fill it in, submit, and read the confirmation.
+fbui-rec 2
+
+expect #name text ""
+expect #subscribe checked false
+expect #volume value 50
+
+tap #name
+type "Ann"
+expect #name text "Ann"
+
+tap #notes
+type "two"
+key Enter
+type "lines"
+
+tap #subscribe
+expect #subscribe checked
+
+tap #submit
+wait settle
+expect Label "Thanks, Ann! volume 50, subscribed, 2 line(s) of notes"

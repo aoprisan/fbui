@@ -1946,10 +1946,10 @@ fn inspect_reports_the_tree_with_names_bounds_and_focus() {
     }); // focus the first focusable (the button)
 
     let snap = ui.inspect().expect("a root exists");
-    assert_eq!(snap.name, "Container");
+    assert_eq!(snap.kind, "Container");
     assert_eq!(snap.children.len(), 2);
-    assert_eq!(snap.children[0].name, "Button");
-    assert_eq!(snap.children[1].name, "TextInput");
+    assert_eq!(snap.children[0].kind, "Button");
+    assert_eq!(snap.children[1].kind, "TextInput");
 
     // Bounds match what the Ui itself reports.
     assert_eq!(snap.children[0].bounds, ui.bounds(a).unwrap());

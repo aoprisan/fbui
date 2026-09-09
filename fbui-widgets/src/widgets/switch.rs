@@ -13,6 +13,7 @@ use fbui_render::FontContext;
 
 use crate::anim::{Easing, Lerp, Tween};
 use crate::ctx::{EventCtx, PaintCtx};
+use crate::describe::Describe;
 use crate::event::{Event, Key, PointerButton};
 use crate::style::Style;
 use crate::theme::Theme;
@@ -170,6 +171,11 @@ impl<Msg: 'static> Widget<Msg> for Switch<Msg> {
         } else {
             Anim::IDLE
         }
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        out.text(&self.label);
+        out.flag("on", self.on);
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

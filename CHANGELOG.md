@@ -19,6 +19,151 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Added
 
+- **`fbui-ctl` and the remote console's text endpoints** — the third flow
+  executor, and the field-support loop.
+  - **`fbui-ctl`** (a binary in `fbui`, `--features remote`, `std::net` only):
+    `tree`, `json`, `shot`, `tap`/`press`/`release`/`move`/`wheel`, `type`,
+    `key`, `trace [--follow]`, `metrics`, and `run <flow.txt>` — which resolves
+    a flow's references against the live device via `GET /tree` and injects
+    through `POST /input`. `FBUI_CTL` picks the console; `FBUI_REMOTE_TOKEN`
+    authenticates.
+  - **`GET /tree.txt`** serves `Ui::inspect_text()`, and **`GET /trace`** the
+    last 500 trace lines — which the console records whenever it is enabled,
+    even without `FBUI_TRACE`.
+  - **`fbui::remote::parse_tree`** reads the `/tree` document back into an
+    `InspectNode`, pinned to the writer by a round-trip test.
+  - `docs/tooling.md` documents the whole track; `PHASE-TOOLING.md` records
+    verified-vs-pending status and every deviation from the design;
+    `CLAUDE.md` gains the no-screen workflow.
+  - CI gains a `headless` job: every committed flow, every example lint-checked,
+    and a monkey session on three examples — no `sudo`, no `modprobe`.
+
+- **Traces, diagnostics and lints** — reading *why*, and catching what an eye
+  would catch.
+  - **`FBUI_TRACE=path` (or `-`)** writes one line per notable event on the
+    replay/wall clock: `start`, `input` (with the named widget under the
+    pointer), `msg`, `mutate` (ops and damage), `frame`, `timer`, `proxy`,
+    `expect`, `lint`. That is the causal chain input → message → mutation →
+    damage → frame, which makes "the button did nothing" a one-line
+    diagnosis: no `msg` after the `input` means the callback is missing; a
+    `msg` with no `mutate` means `update` matched the wrong arm.
+  - **`App::describe_message`** (default `None`) gives the trace the app's own
+    vocabulary; a `#[derive(Debug)]` message type is a one-line impl.
+  - **`Ui::diagnostics()` / `take_diagnostics()`** — mutations, damage rects
+    and area, layouts, paints, messages, events. A few integer increments per
+    operation, always on, so a test can assert *cost* rather than only pixels.
+  - **`Ui::lint()`** reports what a tree dump never will: `touch-target`,
+    `truncated-text`, `unreachable-focus`, `off-surface`, `overflow`,
+    `empty-scroll`, `stacked-modals`, `duplicate-name`, `undescribed`, and
+    (from the script resolver) `ambiguous-ref`. `Ui::allow_lint` suppresses
+    one rule on one widget and `Ui::set_touch_target` sets the tappable
+    minimum (default 24 logical px; a touch-only kiosk should set 44).
+    `FBUI_LINT=1` runs the pass after every layout and reports each finding
+    once; `expect no-lints` makes it a flow failure.
+  - All ten shipped examples are lint-clean. Getting there fixed two real
+    bugs the pass found: the `showcase`'s panels row pushed its content off a
+    1024x600 screen, and `custom_widget`'s `Dot` described nothing.
+
+### Changed
+
+- **`Container::shrink()`** — the flexbox `min-size: 0` idiom, so a growing
+  container bounded by its parent wins over an oversized child. Without it a
+  windowing child (a `List` of 50 rows) demands its full content height and
+  pushes the page off the screen, which is what the new `overflow` lint found
+  in the `showcase` example.
+
+- **Flow scripts (`fbui-rec 2`) and two executors** — a UI interaction
+  written as steps and expectations, meaning the same thing in a `cargo test`
+  and under the runner.
+
+  ```
+  fbui-rec 2
+  tap #inc
+  type "milk"
+  key Enter
+  wait settle
+  expect #count text "1 item"
+  ```
+
+  - **`fbui_widgets::script`** holds everything that decides *meaning*: the
+    parser, the reference resolver (`#name`, `#screen/field`, `Kind "text"`,
+    `@x,y`), and expectation evaluation. References resolve against the live
+    tree **at the moment their step runs**, so a flow follows the layout; a
+    reference that matches nothing — or matches a widget that is not on
+    screen — fails the step instead of tapping the void.
+  - **`fbui_widgets::harness`** runs a flow in-process against a `Ui`
+    (`run_text`, `assert_flow`), feeding widget events through the same path
+    the behavior tests use and calling the caller's `update` for every
+    message. A failure panics with the failing line, the actual value, and
+    the tree.
+  - **The runner plays v2 flows** wherever `FBUI_REPLAY` takes a recording;
+    the header picks the format. Input goes through the real gesture
+    recognizer, a flow exits 0 when every expectation held and non-zero when
+    one did not, and a failure writes `<flow>.fail.txt` and `.fail.png`
+    beside the flow. `FBUI_REPLAY_STEP` (default 50 ms) paces the steps.
+    Raw `@ms` lines may be mixed in and keep their own timestamps.
+  - Committed flows for three shipped examples under `fbui/flows/`, which run
+    headless with no display, tty or privileges.
+  - `Ui::name`-based addressing means the examples no longer keep
+    `Option<WidgetId>` fields for their own labels.
+  - **Recordings are annotated**: a live press is written with the named
+    widget under it (`@120 b l p  # tap #inc`), so a recorded session can be
+    read — and hand-converted into a flow — without replaying it.
+
+- **Widget names, `Widget::describe`, and the tree as text** — the widget
+  tree becomes readable without looking at the screen.
+  - **`Widget::describe`** (`fbui-widgets`) reports a widget's user-visible
+    content and state as ordered key/value pairs — a label's words, a text
+    field's content and caret, `checked`/`open`/`selected`, a slider's value
+    and range, a scroll offset. Every built-in widget implements it; the
+    default is empty, so third-party widgets keep compiling. It runs **only**
+    on `Ui::inspect`, never on the paint or event path.
+  - **Names**: `Ui::name`, `Ui::add_named`, `Ui::find`, `Ui::name_of`,
+    `Ui::names`. A name is tree-unique, optional, and dies with its widget;
+    `find("form/name")` scopes a name by its named ancestors.
+  - **`Ui::inspect_text()`** renders the laid-out tree one widget per line —
+    `Kind #name [x,y wxh] "text" prop=value focused` — which is what an
+    author reads instead of a screenshot, and what a review diff shows when
+    the screen changes.
+  - **`FBUI_REPLAY_TREE=path`** writes that dump at the end of a replay,
+    beside `FBUI_REPLAY_SHOT`. An **empty** replay file is now a valid empty
+    recording, so `FBUI_REPLAY=/dev/null` renders the first screen, writes
+    the artifacts and exits.
+
+### Changed
+
+- **`InspectNode.name` is now `InspectNode.kind`** (the widget type), and
+  `name` holds the app-assigned name from `Ui::name` (`Option<String>`). The
+  node also grows `text`, `props` and `visible`. The remote console's
+  `GET /tree` JSON follows: `kind` replaces `name`, and nodes gain optional
+  `name`, `text`, `props` and a `visible` flag. The built-in console UI shows
+  all of them. Pre-1.0 rename, in one change, with the only in-repo consumer
+  updated.
+
+- **A headless display backend** (`fbui-platform`, feature `headless`, on by
+  default) — `FBUI_BACKEND=headless` runs the *unmodified* runner against two
+  RAM back buffers that present nowhere: no display device, no tty, no seat,
+  no input devices, no privileges. This is what lets CI and an author who
+  cannot see the screen drive a real app (`FBUI_REPLAY`, `FBUI_MONKEY`,
+  `FBUI_REPLAY_SHOT`, the remote console) and get artifacts back. It is a
+  backend rather than a test runner on purpose: the frame clock, gestures,
+  timers, `Proxy`, power policy and record/replay are the real ones, so a
+  headless result is evidence about the real app.
+  - `FBUI_HEADLESS_SIZE=WxH` sets the surface (default `1024x600`); a
+    malformed value is a hard error like the other `FBUI_*` knobs.
+  - Buffer ages follow the DRM double-buffered sequence exactly, so the
+    *partial* redraw path runs headless rather than the `age = 0`
+    repaint-everything path a single buffer would force.
+  - Rows are padded to 64 bytes, so `stride != width * bpp` and any code that
+    recomputes the stride breaks loudly in CI instead of quietly on a device.
+  - Presents complete synchronously, so the event loop needs no pacing timer
+    and an idle headless app still burns ~0% CPU.
+  - `SIGUSR1` (or `display::headless::request_mode`) simulates a hotplug /
+    mode change, giving `on_display_changed` an off-device test for the first
+    time.
+  - `NullSeat` (`fbui-platform`) is the shared device-less seat behind the
+    terminal and headless backends.
+
 - **Text editing: `TextArea`, the clipboard, and a fuller `TextInput`** —
   closing the "clipboard-less, single-line" v1 scope from Phase 3.
   - **`TextArea`** (`fbui-widgets`): a multi-line text box with word-wrapped

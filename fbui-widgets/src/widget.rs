@@ -13,6 +13,7 @@ use fbui_render::geom::{Point, Rect, Size};
 use fbui_render::FontContext;
 
 use crate::ctx::{AnimCtx, EventCtx, PaintCtx};
+use crate::describe::Describe;
 use crate::style::Style;
 use crate::theme::Theme;
 
@@ -306,6 +307,19 @@ pub trait Widget<Msg>: Any {
     /// [`Ui::stream`](crate::Ui::stream) push can decide between a scroll-blit
     /// and a full repaint without a paint context. Default: ignore.
     fn placed(&mut self, _bounds: Rect, _scale: fbui_render::Scale) {}
+
+    /// Report this widget's user-visible content and state — what it reads,
+    /// what it holds, whether it is checked/open/selected — for inspectors,
+    /// flow scripts and traces. Called **only** from
+    /// [`Ui::inspect`](crate::Ui::inspect), never on the paint or event path,
+    /// so it costs nothing in a normal frame.
+    ///
+    /// Default: report nothing, so a third-party widget keeps compiling. It
+    /// is worth implementing even for a custom widget: without it the widget
+    /// is a bare type name and a box in every tree dump, and a flow script
+    /// can neither address it by text nor assert anything about it. See
+    /// [`Describe`] for what belongs in `text` versus a prop.
+    fn describe(&self, _out: &mut Describe) {}
 
     /// A human-readable name for diagnostics — what
     /// [`Ui::inspect`](crate::Ui::inspect) reports for this node. The default

@@ -81,6 +81,11 @@ pub enum Command {
     Inspect {
         reply: SyncSender<String>,
     },
+    /// Snapshot the widget tree as *text* (`Ui::inspect_text`) — the form a
+    /// person or an agent reads, and what `fbui-ctl tree` prints.
+    InspectText {
+        reply: SyncSender<String>,
+    },
     /// Publish a frame from the current surface even if nothing repainted —
     /// how a freshly connected client gets pixels from an idle app.
     RefreshFrame,
@@ -132,8 +137,14 @@ struct Inner {
 }
 
 /// The rendezvous point. See the module docs.
+/// How many trace lines the console keeps for `GET /trace`. Enough to cover
+/// the last few interactions; a full trace goes to `FBUI_TRACE` instead.
+const TRACE_TAIL: usize = 500;
+
 pub struct Hub {
     inner: Mutex<Inner>,
+    /// The tail of the event trace, for `GET /trace`.
+    trace: Mutex<std::collections::VecDeque<String>>,
     frame_cv: Condvar,
     /// Open HTTP connections (bounds accepted connections; see `http.rs`).
     pub(crate) clients: AtomicUsize,
@@ -153,10 +164,33 @@ impl Hub {
                 waker: None,
                 metrics: Metrics::default(),
             }),
+            trace: Mutex::new(std::collections::VecDeque::new()),
             frame_cv: Condvar::new(),
             clients: AtomicUsize::new(0),
             started: Instant::now(),
         })
+    }
+
+    /// Record one trace line for `GET /trace`, dropping the oldest once the
+    /// tail is full. Called by the runner for every event it traces, so the
+    /// console shows the causal chain even when `FBUI_TRACE` is unset.
+    pub fn push_trace(&self, line: String) {
+        let mut t = self.trace.lock().unwrap();
+        if t.len() == TRACE_TAIL {
+            t.pop_front();
+        }
+        t.push_back(line);
+    }
+
+    /// The recorded tail, oldest first.
+    pub fn trace_tail(&self) -> String {
+        let t = self.trace.lock().unwrap();
+        let mut out = String::new();
+        for l in t.iter() {
+            out.push_str(l);
+            out.push('\n');
+        }
+        out
     }
 
     /// Install the callback that wakes the UI event loop (the runner passes

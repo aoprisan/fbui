@@ -6,6 +6,7 @@ use fbui_render::geom::{Point, Size};
 use fbui_render::{Color, FontContext};
 
 use crate::ctx::PaintCtx;
+use crate::describe::Describe;
 use crate::style::Style;
 use crate::theme::Theme;
 use crate::util::text_style;
@@ -101,6 +102,16 @@ impl<Msg: 'static> Widget<Msg> for Label {
         let max_w = if self.wrap { Some(b.w) } else { None };
         let (p, fonts) = ctx.painter_and_fonts();
         fonts.draw_text(p, &self.text, &style, Point::new(b.x, b.y), max_w);
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        out.text(&self.text);
+        if self.wrap {
+            out.flag("wrap", true);
+        }
+        if self.bold {
+            out.flag("bold", true);
+        }
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

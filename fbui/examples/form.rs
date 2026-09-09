@@ -9,7 +9,7 @@
 //! ```
 
 use fbui::widgets::{Align, Button, Checkbox, Container, Label, Slider, TextArea, TextInput};
-use fbui::{App, Ui, WidgetId};
+use fbui::{App, Ui};
 
 #[derive(Clone)]
 enum Msg {
@@ -26,7 +26,6 @@ struct Form {
     notes: String,
     subscribe: bool,
     volume: f32,
-    status: Option<WidgetId>,
 }
 
 impl App for Form {
@@ -41,16 +40,18 @@ impl App for Form {
         ui.add_child(root, Label::new("Sign up").size(24.0).bold());
 
         ui.add_child(root, Label::new("Name").color(muted));
-        ui.add_child(
+        ui.add_named(
             root,
+            "name",
             TextInput::new()
                 .placeholder("your name")
                 .on_change(Msg::Name),
         );
 
         ui.add_child(root, Label::new("Notes").color(muted));
-        ui.add_child(
+        ui.add_named(
             root,
+            "notes",
             TextArea::new()
                 .rows(3)
                 .placeholder("anything else? (multi-line)")
@@ -58,17 +59,26 @@ impl App for Form {
         );
 
         let row = ui.add_child(root, Container::row().gap(10.0).align(Align::Center));
-        ui.add_child(
+        ui.add_named(
             row,
+            "subscribe",
             Checkbox::new("Email me updates", false).on_toggle(Msg::Subscribe),
         );
 
         ui.add_child(root, Label::new("Volume").color(muted));
-        ui.add_child(root, Slider::new(0.0, 100.0, 50.0).on_change(Msg::Volume));
+        ui.add_named(
+            root,
+            "volume",
+            Slider::new(0.0, 100.0, 50.0).on_change(Msg::Volume),
+        );
 
-        ui.add_child(root, Button::new("Submit").on_press(|| Msg::Submit));
+        ui.add_named(
+            root,
+            "submit",
+            Button::new("Submit").on_press(|| Msg::Submit),
+        );
 
-        self.status = Some(ui.add_child(root, Label::new(" ").color(accent)));
+        ui.add_named(root, "status", Label::new(" ").color(accent));
         self.volume = 50.0;
     }
 
@@ -95,7 +105,7 @@ impl App for Form {
                         }
                     )
                 };
-                if let Some(id) = self.status {
+                if let Some(id) = ui.find("status") {
                     ui.with::<Label, _>(id, |l| l.set_text(text));
                 }
             }

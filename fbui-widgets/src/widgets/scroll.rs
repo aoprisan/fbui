@@ -18,6 +18,7 @@ use std::any::Any;
 use fbui_render::geom::{Point, Rect, Size};
 
 use crate::ctx::{EventCtx, PaintCtx};
+use crate::describe::{num, Describe};
 use crate::event::{Event, PointerButton};
 use crate::kinetic::Kinetic;
 use crate::style::{self, Style};
@@ -234,6 +235,12 @@ impl<Msg: 'static> Widget<Msg> for ScrollView {
         } else {
             Some(std::mem::take(&mut self.blit_dy))
         }
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        out.prop("offset", num(self.offset));
+        out.prop("content", num(self.content_h));
+        out.prop("viewport", num(self.viewport_h));
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

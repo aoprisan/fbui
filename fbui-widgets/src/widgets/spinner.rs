@@ -5,6 +5,7 @@ use std::any::Any;
 use fbui_render::geom::Rect;
 
 use crate::ctx::PaintCtx;
+use crate::describe::Describe;
 use crate::style::{self, Style};
 use crate::theme::Theme;
 use crate::widget::{Anim, Widget};
@@ -125,6 +126,10 @@ impl<Msg: 'static> Widget<Msg> for Spinner {
             running: true,
             ..Anim::IDLE
         }
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        out.flag("running", self.running);
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

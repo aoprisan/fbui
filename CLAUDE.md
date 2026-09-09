@@ -42,10 +42,14 @@ exit criteria (cross-crate phases live at the repo root):
   damage-aware animation API, scroll-blit fast path (`Surface::scroll_region` +
   `Widget::scroll_blit`), `tracing` spans behind the `profile` feature
   (`docs/profiling.md`), cross-thread `Waker`/`Proxy`, uevent hotplug trigger.
-- **Phases 6+** (GPU path, ecosystem backlog) — plan only. The developer
-  tooling track (headless backend, widget names + `describe`, flow scripts,
-  traces, lints, `fbui-ctl`) is designed in `TOOLING.md`: read it before
-  touching `Ui::inspect`, record/replay, or the remote console.
+- **Developer tooling** (`TOOLING.md` designs it, `PHASE-TOOLING.md` records
+  what is verified, `docs/tooling.md` is the user-facing guide) — the headless
+  backend, widget names + `Widget::describe` + `Ui::inspect_text`, flow scripts
+  (`fbui-rec 2`) with three executors, `FBUI_TRACE`, `Ui::diagnostics`,
+  `Ui::lint`, and `fbui-ctl`. **Read `docs/tooling.md` before touching
+  `Ui::inspect`, record/replay, or the remote console** — and use it to see
+  what you changed (below).
+- **Phases 6+** (GPU path, ecosystem backlog) — plan only.
 
 Remaining known gaps are tracked honestly in each `PHASEn.md` and
 `CHANGELOG.md`; most are hardware-gated (DRM cursor plane, on-device Pi-class
@@ -73,6 +77,39 @@ cargo run -p fbui-platform --example echo   # platform-layer smoke test
 ```
 
 The Phase 0 spike builds separately (`cd spikes && cargo build --release`).
+
+### Seeing what you changed, with no screen
+
+This is how to check a UI change without a display, a tty, or root — the loop
+`docs/tooling.md` documents in full.
+
+```sh
+cargo build -p fbui --features platform,bundled-font --examples
+
+# 1. Look: render the first screen and read it as text.
+FBUI_BACKEND=headless FBUI_REPLAY=/dev/null \
+    FBUI_REPLAY_TREE=t.txt FBUI_REPLAY_SHOT=s.png \
+    ./target/debug/examples/counter
+cat t.txt      # one widget per line: kind, #name, bounds, text, state
+               # open s.png only when geometry is in question
+
+# 2. Interact: a flow script is steps + expectations; exit 0 means it held.
+FBUI_BACKEND=headless FBUI_REPLAY_SPEED=max \
+    FBUI_REPLAY=fbui/flows/counter.txt ./target/debug/examples/counter
+
+# 3. Understand: the causal chain input → msg → mutate → damage → frame.
+FBUI_TRACE=- FBUI_BACKEND=headless ... ./target/debug/examples/counter
+
+# 4. Check: what an eye would catch (all examples must stay lint-clean).
+FBUI_LINT=1 FBUI_BACKEND=headless FBUI_REPLAY=/dev/null FBUI_REPLAY_EXIT=1 \
+    ./target/debug/examples/counter
+```
+
+A flow failure prints the failing line, the actual value, and writes
+`<flow>.fail.txt` / `.fail.png` beside the flow. In-process, the same flow text
+drives `fbui_widgets::harness::assert_flow` against a `Ui` a test builds; over
+HTTP, `fbui-ctl run flow.txt` drives a live device. Committed flows live in
+`fbui/flows/`, one per shipped example, and CI runs all of them headless.
 
 MSRV: `fbui-platform` is **1.76**; the render/widget stack is **1.89** (tracks
 cosmic-text/image). An MSRV raise is a breaking change for the affected crate.
@@ -110,7 +147,8 @@ fbui-platform  Display / InputSource / Seat traits, VT, event loop  [PHASE1.md]
 fbui-testkit   golden-PNG snapshot harness (dev-dependency only)
 ```
 
-- **`fbui-platform/src/`** — `display/` (`drm.rs` primary, `fbdev.rs` fallback),
+- **`fbui-platform/src/`** — `display/` (`drm.rs` primary, `fbdev.rs` fallback,
+  `headless.rs` for CI/agents),
   `input/` (`evdev.rs` default, `libinput.rs` feature, `keymap.rs`), `seat/`
   (`noseat.rs`, `libseat.rs`), `vt.rs` (`VtGuard` — restore on every exit path),
   `term/` (terminal backend: kitty-graphics/half-block display + ANSI input,
@@ -124,7 +162,10 @@ fbui-testkit   golden-PNG snapshot harness (dev-dependency only)
   `scroll_region`), `painter.rs`, `text/` (cosmic-text + glyph atlas),
   `copyout.rs` (XRGB/RGB565+dither), `platform_glue.rs` (the only
   render↔platform coupling, behind the `platform` feature).
-- **`fbui-widgets/src/`** — `tree.rs` (`Ui`: event→update→layout→paint→animate),
+- **`fbui-widgets/src/`** — `tree.rs` (`Ui`: event→update→layout→paint→animate,
+  plus `inspect`/`inspect_text`, names, `diagnostics`, `lint`), `describe.rs`,
+  `script.rs` (flow parser/resolver), `harness.rs` (in-process executor),
+  `lint.rs`,
   `widget.rs` (the `Widget<Msg>` trait — `measure`/`paint`/`event`/`animate`/
   `scroll_blit`), `ctx.rs`, `gesture.rs`, `kinetic.rs`, `anim.rs`, `theme.rs`,
   `widgets/*`. Widgets are headless and deterministic; tests live in
@@ -140,10 +181,13 @@ the runner (examples require it), `bundled-font` compiles in Inter (~300 KB),
 `profile` emits `tracing` spans, `remote` adds the remote console (an embedded
 HTTP server — live screen view, input injection, widget-tree inspector,
 Prometheus metrics — activated by `FBUI_REMOTE`; see `docs/remote-console.md`;
-the module is headless-testable, the runner wiring needs `platform`).
+the module is headless-testable, the runner wiring needs `platform`) **and the
+`fbui-ctl` binary**, the shell client and third flow executor.
 
 `fbui-platform`: the **default set is everything that builds with no system C
-libraries**: `drm-backend fbdev evdev noseat event-loop term`. The C-library backends
+libraries**: `drm-backend fbdev evdev noseat event-loop term headless`
+(`headless` = RAM buffers presenting nowhere, `FBUI_BACKEND=headless`).
+`fbui-widgets` defaults to `harness` (the flow parser and in-process executor). The C-library backends
 (`libinput`, `xkbcommon`, `libseat`) are gated off and **have not been built or
 run in the dev environment** (the box lacks the libs) — treat them as
 written-against-docs and validate on a host with the headers installed.

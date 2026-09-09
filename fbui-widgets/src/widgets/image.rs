@@ -11,6 +11,7 @@ use fbui_render::geom::{Point, Size};
 use fbui_render::{FontContext, Image};
 
 use crate::ctx::PaintCtx;
+use crate::describe::Describe;
 use crate::style::Style;
 use crate::theme::Theme;
 use crate::widget::{AvailableSize, KnownDims, Widget};
@@ -55,6 +56,13 @@ impl<Msg: 'static> Widget<Msg> for ImageView {
         p.push_clip(b);
         p.draw_image(&img, Point::new(b.x, b.y));
         p.pop_clip();
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        out.prop(
+            "source",
+            format!("{}x{}", self.image.width(), self.image.height()),
+        );
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

@@ -21,6 +21,7 @@ use fbui_render::geom::{Point, Rect, Size};
 use fbui_render::Color;
 
 use crate::ctx::PaintCtx;
+use crate::describe::Describe;
 use crate::style::{self, Style};
 use crate::theme::Theme;
 use crate::util::text_style;
@@ -200,6 +201,13 @@ impl<Msg: 'static> Widget<Msg> for Toasts {
             running: !self.entries.is_empty(),
             damage: None,
         }
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        if let Some(latest) = self.entries.last() {
+            out.text(&latest.text);
+        }
+        out.prop("count", self.entries.len());
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

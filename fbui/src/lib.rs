@@ -58,13 +58,16 @@ pub(crate) use span;
 // [`Widget`] trait — and size/animate their own widgets — without reaching past
 // the umbrella into `fbui_widgets`.
 pub use fbui_widgets::{
-    anim, ctx, event, style, theme, tree, widget, widgets, Anim, AnimCtx, Event, InspectNode, Key,
-    Modifiers, PaintCtx, PointerButton, StreamDamage, Style, Theme, Ui, Widget, WidgetId,
+    anim, ctx, describe, event, harness, lint, script, style, theme, tree, widget, widgets, Anim,
+    AnimCtx, Describe, Diagnostics, Event, InspectNode, Key, Lint, Modifiers, PaintCtx,
+    PointerButton, Rule, StreamDamage, Style, Theme, Ui, Widget, WidgetId,
 };
 
 #[cfg(feature = "remote")]
 pub mod remote;
 
+#[cfg(feature = "platform")]
+mod flow;
 #[cfg(feature = "platform")]
 mod hud;
 #[cfg(feature = "platform")]
@@ -73,6 +76,8 @@ mod monkey;
 mod record;
 #[cfg(feature = "platform")]
 mod run;
+#[cfg(feature = "platform")]
+mod trace;
 #[cfg(feature = "platform")]
 pub use fbui_platform::Result;
 #[cfg(feature = "platform")]

@@ -33,6 +33,7 @@ use std::any::Any;
 use fbui_render::Color;
 
 use crate::ctx::{EventCtx, PaintCtx};
+use crate::describe::Describe;
 use crate::event::{Event, Key};
 use crate::style::{self, Style};
 use crate::theme::Theme;
@@ -145,6 +146,13 @@ impl<Msg: 'static> Widget<Msg> for Dialog<Msg> {
             }
             _ => {}
         }
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        // A `Dialog` in the tree *is* an open modal — the app removes it to
+        // close it — which is what the `stacked-modals` lint counts.
+        out.flag("modal", true);
+        out.flag("dismiss_on_scrim", self.dismiss_on_scrim);
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

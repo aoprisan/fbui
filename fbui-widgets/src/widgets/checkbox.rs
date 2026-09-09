@@ -6,6 +6,7 @@ use fbui_render::geom::{Point, Rect, Size};
 use fbui_render::{FontContext, PathBuilder};
 
 use crate::ctx::{EventCtx, PaintCtx};
+use crate::describe::Describe;
 use crate::event::{Event, Key, PointerButton};
 use crate::style::Style;
 use crate::theme::Theme;
@@ -134,6 +135,11 @@ impl<Msg: 'static> Widget<Msg> for Checkbox<Msg> {
             }
             _ => {}
         }
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        out.text(&self.label);
+        out.flag("checked", self.checked);
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

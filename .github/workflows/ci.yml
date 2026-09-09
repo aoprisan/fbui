@@ -61,6 +61,10 @@ jobs:
           cargo test -p fbui --features remote
           cargo clippy -p fbui --all-targets --features "platform remote"
           cargo test -p fbui --features "platform remote" --lib
+          # The widget layer without the flow parser / harness.
+          cargo check -p fbui-widgets --no-default-features
+          # The platform layer's headless backend on its own.
+          cargo check -p fbui-platform --no-default-features --features "headless event-loop"
       # Docs must build clean (warnings = errors): broken intra-doc links fail the
       # build. The umbrella's `run` lives behind `platform`, so document it with
       # the feature on.
@@ -76,6 +80,54 @@ jobs:
         run: |
           cargo bench -p fbui-render --no-run
           cargo bench -p fbui-widgets --no-run
+
+  # The developer-tooling track's exit criterion (docs/tooling.md): the shipped
+  # examples driven through the *real* runner with no display, no tty and no
+  # root — a monkey session and every committed flow, each of which must exit 0.
+  headless:
+    name: headless examples + flows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # Flows assert text, not pixels, but the examples still need *a* font to
+      # lay out; `bundled-font` compiles one in so the run is host-independent.
+      - name: build the examples
+        run: cargo build -p fbui --features platform,bundled-font --examples --bins
+      - name: every flow, headless
+        run: |
+          set -e
+          for f in fbui/flows/*.txt; do
+            app="target/debug/examples/$(basename "$f" .txt)"
+            echo "== $f"
+            timeout 120 env FBUI_BACKEND=headless FBUI_REPLAY_SPEED=max \
+              FBUI_REPLAY="$f" "$app"
+          done
+      # Every fbui example: build its tree, render one frame, run the lint
+      # pass, write nothing, exit. A finding fails the job — the tooling
+      # track's promise is that the shipped examples stay lint-clean.
+      - name: every example is lint-clean and settles
+        run: |
+          set -e
+          for src in fbui/examples/*.rs; do
+            ex=$(basename "$src" .rs)
+            echo "== $ex"
+            out=$(timeout 60 env FBUI_BACKEND=headless FBUI_LINT=1 \
+                  FBUI_REPLAY=/dev/null FBUI_REPLAY_EXIT=1 \
+                  FBUI_REPLAY_TREE=/dev/null "target/debug/examples/$ex" 2>&1)
+            echo "$out"
+            ! echo "$out" | grep -q "fbui: lint:"
+          done
+      - name: a monkey session on a pinned seed
+        run: |
+          set -e
+          for ex in counter form showcase; do
+            timeout 180 env FBUI_BACKEND=headless FBUI_MONKEY=1 \
+              FBUI_MONKEY_EVENTS=400 FBUI_MONKEY_OUT=/tmp/monkey-$ex.rec \
+              FBUI_REPLAY_SHOT=/tmp/shot-$ex.png \
+              "target/debug/examples/$ex"
+          done
 
   # MSRV gate: the crate claims rust-version 1.76; prove it builds there.
   msrv:

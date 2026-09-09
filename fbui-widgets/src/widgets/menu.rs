@@ -28,6 +28,7 @@ use fbui_render::geom::{Point, Rect, Size};
 use fbui_render::FontContext;
 
 use crate::ctx::{EventCtx, PaintCtx};
+use crate::describe::Describe;
 use crate::event::{Event, Key, PointerButton};
 use crate::popup::{place_anchored, AnchorSpec, Placement};
 use crate::style::{self, Style};
@@ -98,6 +99,12 @@ pub(crate) struct MenuCore<Msg> {
 }
 
 impl<Msg> MenuCore<Msg> {
+    /// How many entries the menu holds (separators included) — what
+    /// `describe` reports for both menu widgets.
+    pub(crate) fn item_count(&self) -> usize {
+        self.items.len()
+    }
+
     pub(crate) fn new(items: Vec<MenuItem>) -> Self {
         MenuCore {
             items,
@@ -538,6 +545,11 @@ impl<Msg: 'static> Widget<Msg> for Menu<Msg> {
             }
             MenuAction::None => {}
         }
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        out.prop("items", self.core.item_count());
+        out.flag("open", self.is_open());
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

@@ -69,6 +69,15 @@ impl Rect {
         p.x >= self.x && p.x < self.right() && p.y >= self.y && p.y < self.bottom()
     }
 
+    /// The overlap of two rects, empty (zero-extent) when they don't touch.
+    pub fn intersect(&self, other: Rect) -> Rect {
+        let x = self.x.max(other.x);
+        let y = self.y.max(other.y);
+        let r = self.right().min(other.right());
+        let b = self.bottom().min(other.bottom());
+        Rect::new(x, y, (r - x).max(0.0), (b - y).max(0.0))
+    }
+
     /// Shrink (positive) or grow (negative) by `d` on every side.
     pub fn inset(&self, d: f32) -> Rect {
         Rect::new(

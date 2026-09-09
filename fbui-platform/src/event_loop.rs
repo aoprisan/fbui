@@ -328,12 +328,12 @@ pub(crate) fn run_loop(
     let vt_fd: Option<RawFd> = vt.switch_fd();
     let seat_fd: Option<RawFd> = seat.session_fd();
     let uevent_fd: Option<RawFd> = uevent.as_ref().map(|m| m.fd());
-    // fbdev has no flip fd, so pace it with a timer instead. The terminal
-    // backend also has no fd but needs no pacing either — its presents
-    // complete synchronously and a buffer is always free — so it skips the
-    // timer and a fully idle app stays asleep in poll (the ~0%-CPU rule).
-    let needs_timer =
-        display_fd.is_none() && display.info().backend != crate::display::BackendKind::Terminal;
+    // fbdev has no flip fd, so pace it with a timer instead. The software
+    // backends (terminal, headless) also have no fd but need no pacing
+    // either — their presents complete synchronously and a buffer is always
+    // free — so they skip the timer and a fully idle app stays asleep in poll
+    // (the ~0%-CPU rule).
+    let needs_timer = display_fd.is_none() && !display.info().backend.presents_synchronously();
 
     let mut event_loop: Calloop<LoopState> =
         Calloop::try_new().map_err(|e| Error::io("calloop new", std::io::Error::other(e)))?;

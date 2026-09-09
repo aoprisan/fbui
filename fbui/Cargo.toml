@@ -37,6 +37,12 @@ fbui-widgets = { path = "../fbui-widgets" }
 fbui-platform = { path = "../fbui-platform", optional = true }
 tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
 
+# The remote-console CLI: the third flow executor (see `docs/tooling.md`).
+# `std::net` only, like the console it talks to.
+[[bin]]
+name = "fbui-ctl"
+required-features = ["remote"]
+
 [[example]]
 name = "counter"
 required-features = ["platform"]
@@ -80,3 +86,5 @@ required-features = ["platform"]
 [dev-dependencies]
 # Used by the `showcase` example to build a procedural bitmap for ImageView.
 image = { version = "0.25", default-features = false, features = ["png"] }
+# The recorder's tests write a recording to a scratch directory.
+tempfile = "3"

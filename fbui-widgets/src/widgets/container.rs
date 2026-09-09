@@ -8,6 +8,7 @@ use std::any::Any;
 use fbui_render::Color;
 
 use crate::ctx::PaintCtx;
+use crate::describe::{num, Describe};
 use crate::style::{self, Style};
 use crate::theme::Theme;
 use crate::widget::Widget;
@@ -33,6 +34,8 @@ pub struct Container {
     fill: bool,
     width: Option<f32>,
     height: Option<f32>,
+    /// Allow flex to shrink this below its content size (`min-size: 0`).
+    shrink: bool,
 }
 
 impl Container {
@@ -48,6 +51,7 @@ impl Container {
             fill: false,
             width: None,
             height: None,
+            shrink: false,
         }
     }
 
@@ -75,6 +79,18 @@ impl Container {
 
     pub fn align(mut self, align: Align) -> Self {
         self.align = align;
+        self
+    }
+
+    /// Let flex shrink this container **below its content size**
+    /// (`min-size: 0`), so a growing item bounded by its parent wins over an
+    /// oversized child that would otherwise push the whole column past the
+    /// screen. This is the flexbox `min-height: 0` idiom: a windowing or
+    /// scrolling child (a [`List`](crate::widgets::List), a
+    /// [`ScrollView`](crate::widgets::ScrollView)) should be given the space
+    /// that is *left*, not the space it would like.
+    pub fn shrink(mut self) -> Self {
+        self.shrink = true;
         self
     }
 
@@ -142,6 +158,14 @@ impl<Msg: 'static> Widget<Msg> for Container {
             // rows inside a ScrollView must overflow, not compress).
             (size, size)
         };
+        let min_size = if self.shrink {
+            taffy::Size {
+                width: style::length(0.0),
+                height: style::length(0.0),
+            }
+        } else {
+            min_size
+        };
         Style {
             display: taffy::Display::Flex,
             flex_direction: if self.column {
@@ -166,6 +190,16 @@ impl<Msg: 'static> Widget<Msg> for Container {
         if let Some(bg) = self.background {
             let b = ctx.bounds();
             ctx.painter().fill_rounded_rect(b, self.radius, bg);
+        }
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        out.prop("direction", if self.column { "column" } else { "row" });
+        if self.gap != 0.0 {
+            out.prop("gap", num(self.gap));
+        }
+        if self.padding != 0.0 {
+            out.prop("padding", num(self.padding));
         }
     }
 

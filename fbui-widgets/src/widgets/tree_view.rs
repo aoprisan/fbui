@@ -18,6 +18,7 @@ use fbui_render::geom::{Point, Rect};
 use fbui_render::PathBuilder;
 
 use crate::ctx::{EventCtx, PaintCtx};
+use crate::describe::Describe;
 use crate::event::{Event, Key, PointerButton};
 use crate::kinetic::Kinetic;
 use crate::style::{self, Style};
@@ -637,6 +638,20 @@ impl<Msg: 'static> Widget<Msg> for TreeView<Msg> {
             None
         } else {
             Some(std::mem::take(&mut self.blit_dy))
+        }
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        if let Some(label) = self.selected.and_then(|id| self.nodes.get(id)) {
+            out.text(&label.label);
+        }
+        out.prop("rows", self.visible.len());
+        match self.selected {
+            Some(i) => out.prop("selected", i),
+            None => out.prop("selected", "none"),
+        }
+        if self.row_h > 0.0 {
+            out.prop("first_visible", (self.offset / self.row_h).floor() as i64);
         }
     }
 

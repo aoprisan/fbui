@@ -23,6 +23,7 @@ use fbui_widgets::event::{Event, Key, Modifiers, PointerButton};
 use fbui_widgets::gesture::{Gesture, GestureRecognizer};
 use fbui_widgets::{Theme, Ui};
 
+use crate::flow::{FlowDriver, Pending};
 use crate::hud::Hud;
 use crate::power::{IdlePolicy, IdleTracker, Stage, Transition};
 use crate::record::{Recorder, Replayer};
@@ -142,6 +143,19 @@ pub trait App: 'static {
         Vec::new()
     }
 
+    /// A textual form of `msg`, for `FBUI_TRACE`. `Self::Message` has no
+    /// `Debug` bound (adding one would be a breaking change), so tracing asks
+    /// the app instead: a message type that derives `Debug` returns
+    /// `Some(format!("{msg:?}"))` and the trace reads as the app's own
+    /// vocabulary. Default: `None`, traced as `<msg>`.
+    ///
+    /// This is what turns a trace into a causal chain — `input` → `msg` →
+    /// `mutate` → `damage` → `frame` — instead of a list of frames.
+    fn describe_message(&self, msg: &Self::Message) -> Option<String> {
+        let _ = msg;
+        None
+    }
+
     /// The idle power-management policy: dim the backlight, then blank the
     /// panel, after periods of no input; wake (and swallow the waking tap) on
     /// the next input. Operators can override the timings per deployment with
@@ -178,11 +192,43 @@ enum ReplayEnd {
     Exit,
 }
 
+/// Where replayed input comes from: a v1 recording of raw events, or a v2
+/// flow script. Both are paced on the same clock and share the same
+/// settle/shot/exit machinery — only the pump differs.
+enum ReplaySource {
+    Rec(Replayer),
+    // Boxed because a flow driver is several times the size of a replayer,
+    // and exactly one `ReplayState` exists per process.
+    Flow(Box<FlowDriver>),
+}
+
+impl ReplaySource {
+    fn finished(&self) -> bool {
+        match self {
+            ReplaySource::Rec(r) => r.finished(),
+            // A flow is finished when every step has run *and* the input its
+            // last step queued has been delivered.
+            ReplaySource::Flow(f) => f.is_done() && !f.has_pending(),
+        }
+    }
+
+    fn next_due_in(&self) -> Option<Duration> {
+        match self {
+            ReplaySource::Rec(r) => r.next_due_in(),
+            ReplaySource::Flow(f) => f.next_due_in(),
+        }
+    }
+}
+
 /// Everything the runner tracks while a recording is being played back.
 struct ReplayState {
-    player: Replayer,
+    source: ReplaySource,
     /// PNG of the end state, written after the last event has settled.
     shot: Option<PathBuf>,
+    /// Tree dump of the end state (`Ui::inspect_text`), written beside the
+    /// shot. This is the artifact an author actually reads: it says what each
+    /// widget holds, not just where it sits.
+    tree: Option<PathBuf>,
     /// What to do when playback finishes.
     end: ReplayEnd,
     /// Frames still to render after settling (or its bounded wait expires), so
@@ -191,6 +237,11 @@ struct ReplayState {
     /// Animation frames observed after playback ended. Bounded so perpetual
     /// animations cannot prevent an unattended screenshot/exit forever.
     settle_frames: u16,
+}
+
+/// `FBUI_REPLAY_TREE`: where to write the end-state tree dump, if anywhere.
+fn tree_path() -> Option<PathBuf> {
+    std::env::var_os("FBUI_REPLAY_TREE").map(PathBuf::from)
 }
 
 /// Build the recorder and replayer from `FBUI_RECORD` / `FBUI_REPLAY` /
@@ -233,29 +284,58 @@ fn record_replay_from_env(
         Some(path) => {
             let path = PathBuf::from(path);
             let speed = speed_from_env(1.0)?;
-            let player = Replayer::load(&path, speed)
+            let text = std::fs::read_to_string(&path)
                 .map_err(|e| io_err(format!("FBUI_REPLAY {}", path.display()), e))?;
-            if let Some((w, h)) = player.recorded_size {
-                if (w, h) != (phys.w, phys.h) {
-                    eprintln!(
-                        "fbui: replay: recorded on {w}x{h}, display is {}x{} — \
-                         coordinates may land on different widgets",
-                        phys.w, phys.h
-                    );
+            // A v2 flow and a v1 recording are told apart by their header, so
+            // one variable plays either.
+            let source = if fbui_widgets::script::is_v2(&text) {
+                let script = fbui_widgets::script::parse(&text).map_err(|e| {
+                    io_err(
+                        format!("FBUI_REPLAY {}", path.display()),
+                        std::io::Error::other(e.to_string()),
+                    )
+                })?;
+                let n = script.len();
+                let driver = FlowDriver::new(script, path.clone(), speed)
+                    .map_err(|e| io_err(format!("FBUI_REPLAY {}", path.display()), e))?;
+                eprintln!("fbui: flow: {n} step(s) from {}", path.display());
+                ReplaySource::Flow(Box::new(driver))
+            } else {
+                let player = Replayer::parse(&text, speed).map_err(|m| {
+                    io_err(
+                        format!("FBUI_REPLAY {}", path.display()),
+                        std::io::Error::other(m),
+                    )
+                })?;
+                if let Some((w, h)) = player.recorded_size {
+                    if (w, h) != (phys.w, phys.h) {
+                        eprintln!(
+                            "fbui: replay: recorded on {w}x{h}, display is {}x{} — \
+                             coordinates may land on different widgets",
+                            phys.w, phys.h
+                        );
+                    }
                 }
-            }
+                ReplaySource::Rec(player)
+            };
             let shot = std::env::var_os("FBUI_REPLAY_SHOT").map(PathBuf::from);
             let end = match std::env::var("FBUI_REPLAY_EXIT").ok().as_deref() {
                 Some("0") | Some("false") => ReplayEnd::Stay,
                 Some(_) => ReplayEnd::Exit,
-                // A shot implies an unattended run; default to exiting then.
-                None if shot.is_some() => ReplayEnd::Exit,
+                // A requested artifact implies an unattended run; default to
+                // exiting once it has been written.
+                None if shot.is_some() || tree_path().is_some() => ReplayEnd::Exit,
+                // A *flow* is a test, not a session: its steps are the whole
+                // run, it holds no intentional quit, and its exit code is the
+                // result. "As recorded" would mean hanging after the last
+                // expectation, so a flow exits when it finishes.
+                None if matches!(source, ReplaySource::Flow(_)) => ReplayEnd::Exit,
                 None => ReplayEnd::AsRecorded,
             };
-            eprintln!("fbui: replaying input from {}", path.display());
             Some(ReplayState {
-                player,
+                source,
                 shot,
+                tree: tree_path(),
                 end,
                 finish_frames: None,
                 settle_frames: 0,
@@ -330,8 +410,9 @@ fn record_replay_from_env(
                 out.display()
             );
             Some(ReplayState {
-                player,
+                source: ReplaySource::Rec(player),
                 shot,
+                tree: tree_path(),
                 end,
                 finish_frames: None,
                 settle_frames: 0,
@@ -453,6 +534,25 @@ pub fn run<A: App>(mut app: A) -> fbui_platform::Result<()> {
             swallowing: false,
         }
     });
+    // `FBUI_TRACE`: a requested-but-unopenable trace is a hard error, like
+    // every other `FBUI_*` toggle.
+    let mut trace = crate::trace::Trace::from_env().map_err(|e| fbui_platform::Error::Io {
+        what: "FBUI_TRACE".into(),
+        source: e,
+    })?;
+    if let Some(t) = &mut trace {
+        t.line(
+            0,
+            "start",
+            &format!(
+                "{:?} {}x{} scale={}",
+                platform.info().backend,
+                sw,
+                sh,
+                scale.factor()
+            ),
+        );
+    }
     // Background threads (spawned from `App::on_start`) deliver messages here; the
     // runner drains them in `on_wake`. The `Waker` half arrives via `on_start`.
     let (tx, rx) = mpsc::channel();
@@ -475,14 +575,34 @@ pub fn run<A: App>(mut app: A) -> fbui_platform::Result<()> {
         rx,
         timers: TimerQueue::new(),
         recorder,
+        // A replay owns the clock from the first line of the trace, so
+        // timestamps are monotonic on the recording's timeline rather than
+        // starting on the wall clock and jumping back.
+        replay_now_ms: replay.is_some().then_some(0),
         replay,
-        replay_now_ms: None,
         #[cfg(feature = "remote")]
         remote,
         hud: Hud::from_env(),
+        trace,
+        lint: matches!(
+            std::env::var("FBUI_LINT").ok().as_deref(),
+            Some("1") | Some("true")
+        ),
+        reported_lints: std::collections::HashSet::new(),
+        last_diag: fbui_widgets::Diagnostics::default(),
+        flow_failure: None,
         idle,
     };
-    platform.run(&mut runner)
+    // The console is restored by the guard's `Drop`/panic hook, so a failing
+    // flow must return an error rather than `process::exit` past it.
+    platform.run(&mut runner)?;
+    match runner.flow_failure.take() {
+        Some(msg) => Err(fbui_platform::Error::Io {
+            what: "flow".into(),
+            source: std::io::Error::other(msg),
+        }),
+        None => Ok(()),
+    }
 }
 
 /// Everything the runner tracks for idle power management (see
@@ -555,6 +675,19 @@ struct Runner<A: App> {
     remote: Option<std::sync::Arc<Hub>>,
     /// `FBUI_HUD`: the fps/paint-cost overlay composited after copy-out.
     hud: Option<Hud>,
+    /// `FBUI_TRACE`: one line per notable event on the replay/wall clock.
+    trace: Option<crate::trace::Trace>,
+    /// `FBUI_LINT`: run the lint pass after every layout and report findings
+    /// once each (a finding repeated every frame is noise, not a report).
+    lint: bool,
+    /// Lint findings already reported, so each is said once.
+    reported_lints: std::collections::HashSet<String>,
+    /// Counter snapshot the trace's deltas are measured from.
+    last_diag: fbui_widgets::Diagnostics,
+    /// A flow (`fbui-rec 2`) that failed: the message [`run`] returns as an
+    /// error, so the process exits non-zero and a directory of flows behaves
+    /// like a test suite.
+    flow_failure: Option<String>,
     /// Idle power management (`App::idle_policy` + `FBUI_IDLE_*`), when
     /// enabled.
     idle: Option<IdleState<A::Message>>,
@@ -568,6 +701,33 @@ impl<A: App> Runner<A> {
             self.rotation
                 .map_panel_point(self.cursor.0, self.cursor.1, self.phys_w, self.phys_h);
         Point::new(ux / self.scale.factor(), uy / self.scale.factor())
+    }
+
+    /// The inverse of [`cursor_logical`](Self::cursor_logical) for a point:
+    /// surface (device) coordinates back into panel space, which is what
+    /// `handle_input` speaks. Injected input — from the remote console, from
+    /// a flow script — is authored in the space of what the operator sees, so
+    /// it converts here rather than every caller re-deriving the rotation.
+    fn surface_point_to_panel(&self, x: f32, y: f32) -> PPoint {
+        let (sw, sh) = (self.surface.width() as f32, self.surface.height() as f32);
+        let (px, py) = self.rotation.inverse().map_panel_point(x, y, sw, sh);
+        PPoint::new(px.round() as i32, py.round() as i32)
+    }
+
+    /// Map an event authored in *logical* coordinates (a flow script resolves
+    /// references against the laid-out tree, which is logical) into the panel
+    /// space `handle_input` expects.
+    fn logical_event_to_panel(&self, ev: InputEvent) -> InputEvent {
+        match ev {
+            InputEvent::PointerMotionAbsolute { position } => {
+                let k = self.scale.factor();
+                InputEvent::PointerMotionAbsolute {
+                    position: self
+                        .surface_point_to_panel(position.x as f32 * k, position.y as f32 * k),
+                }
+            }
+            other => other,
+        }
     }
 
     /// Map a panel-space device rect (cursor sprite, HUD box) into surface
@@ -634,6 +794,119 @@ impl<A: App> Runner<A> {
         self.cursor_dirty = true;
     }
 
+    /// The semantic step a press stands for (`tap #inc`), for the recorder's
+    /// trailing comment. Only presses are annotated, and only while
+    /// recording — it costs an `inspect` per press, which is nothing next to
+    /// the file write it decorates.
+    fn tap_note(&mut self, ev: &InputEvent) -> Option<String> {
+        let down = match ev {
+            InputEvent::PointerButton {
+                button: Button::Left,
+                state,
+            } => state.is_down(),
+            InputEvent::TouchDown { .. } => true,
+            _ => false,
+        };
+        if !down {
+            return None;
+        }
+        let pos = self.cursor_logical();
+        let tree = self.ui.inspect()?;
+        fbui_widgets::script::name_at(&tree, pos).map(|n| format!("tap #{n}"))
+    }
+
+    /// Run the lint pass and report each finding once, to the trace when one
+    /// is open and to stderr otherwise. Repeating a finding every frame would
+    /// be noise rather than a report.
+    fn report_lints(&mut self) {
+        for l in self.ui.lint() {
+            let text = l.to_string();
+            if self.reported_lints.insert(text.clone()) {
+                if self.trace.is_some() {
+                    self.trace("lint", &text);
+                } else {
+                    eprintln!("fbui: lint: {text}");
+                }
+            }
+        }
+    }
+
+    /// Counters since the previous call. The trace reports *deltas* — what
+    /// this message or this frame cost — so nothing may reset the `Ui`'s own
+    /// running totals out from under another reader.
+    fn diag_delta(&mut self) -> fbui_widgets::Diagnostics {
+        let now = self.ui.diagnostics();
+        let last = self.last_diag;
+        self.last_diag = now;
+        fbui_widgets::Diagnostics {
+            mutations: now.mutations - last.mutations,
+            damage_rects: now.damage_rects - last.damage_rects,
+            damage_area: now.damage_area - last.damage_area,
+            layouts: now.layouts - last.layouts,
+            paints: now.paints - last.paints,
+            messages: now.messages - last.messages,
+            events: now.events - last.events,
+        }
+    }
+
+    /// Whether anything is listening: `FBUI_TRACE`, or the remote console
+    /// (whose `GET /trace` serves the tail). The expensive parts of a trace
+    /// line — an `inspect` to name the widget under the pointer — are guarded
+    /// on this, so an app with neither pays nothing.
+    fn tracing(&self) -> bool {
+        #[cfg(feature = "remote")]
+        if self.remote.is_some() {
+            return true;
+        }
+        self.trace.is_some()
+    }
+
+    /// Write one trace line on the current clock (the recording's timeline
+    /// during replay, so a trace lines up with the flow that produced it).
+    fn trace(&mut self, kind: &'static str, detail: &str) {
+        let ms = self.now_ms();
+        if let Some(t) = &mut self.trace {
+            t.line(ms, kind, detail);
+        }
+        #[cfg(feature = "remote")]
+        if let Some(hub) = &self.remote {
+            hub.push_trace(format!("@{ms}\t{kind}\t{detail}"));
+        }
+    }
+
+    /// Run one message through `App::update`, tracing the message and what it
+    /// changed — the `msg` → `mutate` half of the causal chain.
+    fn apply_message(&mut self, kind: &'static str, msg: A::Message) {
+        if self.tracing() {
+            let text = self
+                .app
+                .describe_message(&msg)
+                .unwrap_or_else(|| "<msg>".to_string());
+            self.trace(kind, &text);
+            self.diag_delta(); // start from here
+            self.app.update(msg, &mut self.ui);
+            let d = self.diag_delta();
+            if d.mutations == 0 {
+                // The single most useful line in the file: the message
+                // arrived and `update` changed nothing.
+                self.trace(
+                    "mutate",
+                    "nothing (update matched no arm that touches the tree)",
+                );
+            } else {
+                let detail = format!(
+                    "{} op(s), damage {} rect(s) / {} px²",
+                    d.mutations,
+                    d.damage_rects,
+                    d.damage_area.round() as i64
+                );
+                self.trace("mutate", &detail);
+            }
+        } else {
+            self.app.update(msg, &mut self.ui);
+        }
+    }
+
     /// Feed a widget event and run any resulting messages.
     fn dispatch(&mut self, event: Event) {
         self.ui.event(event);
@@ -647,7 +920,7 @@ impl<A: App> Runner<A> {
             return;
         }
         for m in due {
-            self.app.update(m, &mut self.ui);
+            self.apply_message("timer", m);
         }
         self.drain_messages();
     }
@@ -663,7 +936,7 @@ impl<A: App> Runner<A> {
                 break;
             }
             for m in msgs {
-                self.app.update(m, &mut self.ui);
+                self.apply_message("msg", m);
             }
         }
         self.fulfill_screenshot();
@@ -691,6 +964,23 @@ impl<A: App> Runner<A> {
     /// here, so a replay exercises exactly what a user did.
     fn handle_input(&mut self, event: InputEvent) -> Flow {
         crate::span!("input");
+        if self.tracing() {
+            if let Some(detail) = crate::trace::input_detail(&event) {
+                // Name the widget under the pointer: "button down" alone
+                // never answers "did I hit the thing I meant to?".
+                let at = self.cursor_logical();
+                let target = self.ui.inspect().and_then(|t| {
+                    fbui_widgets::script::name_at(&t, at).map(|n| format!(" → #{n}"))
+                });
+                let detail = format!(
+                    "{detail} at {},{}{}",
+                    at.x.round() as i32,
+                    at.y.round() as i32,
+                    target.unwrap_or_default()
+                );
+                self.trace("input", &detail);
+            }
+        }
         // Idle power management: every input is activity; the input that
         // wakes a blanked screen (and the rest of that gesture) is swallowed.
         if self.idle_note_activity(&event) {
@@ -788,15 +1078,22 @@ impl<A: App> Runner<A> {
         }
     }
 
-    /// Feed the replayer's due events through the normal input path. Returns
-    /// the flow the replay wants (redraws while playing, and — once finished,
-    /// settled, and screenshotted — an exit if configured).
-    fn service_replay(&mut self) -> Flow {
-        let Some(mut rs) = self.replay.take() else {
-            return Flow::Continue;
-        };
+    /// Write the settled tree dump to `path` — the text an author reads
+    /// instead of opening the screenshot. Diagnostics must not kill the app,
+    /// so a failure is a line on stderr.
+    fn write_tree_dump(&mut self, path: &std::path::Path) {
+        let text = self.ui.inspect_text();
+        if let Err(e) = std::fs::write(path, text) {
+            eprintln!("fbui: tree dump to {} failed: {e}", path.display());
+        }
+    }
+
+    /// Deliver replayed events through the normal input path, on the
+    /// recording's own timeline. Returns the flow they want and whether the
+    /// run must end now (a recorded quit, when the ending is "as recorded").
+    fn deliver_replayed(&mut self, events: Vec<(u64, InputEvent)>, end: ReplayEnd) -> (Flow, bool) {
         let mut flow = Flow::Continue;
-        for (ms, ev) in rs.player.due_events() {
+        for (ms, ev) in events {
             // Replay the *timeline*, not just the events: advance the gesture
             // clock to this event's recorded time first, so a held long-press
             // fires between a down and an up even at FBUI_REPLAY_SPEED=max.
@@ -806,18 +1103,168 @@ impl<A: App> Runner<A> {
             }
             match self.handle_input(ev) {
                 // The recording's own quit keystroke ends the run only when
-                // the end is "as recorded"; a managed run (Stay / Exit /
-                // shot) owns its ending.
-                Flow::Exit if rs.end == ReplayEnd::AsRecorded => {
+                // the end is "as recorded"; a managed run (Stay / Exit / a
+                // requested artifact) owns its ending.
+                Flow::Exit if end == ReplayEnd::AsRecorded => {
                     self.replay_now_ms = None;
-                    return Flow::Exit; // replay state dropped here
+                    return (Flow::Exit, true);
                 }
                 Flow::Exit => {}
                 Flow::Redraw => flow = Flow::Redraw,
                 Flow::Continue => {}
             }
         }
-        if rs.player.finished() {
+        (flow, false)
+    }
+
+    /// Whether the UI has stopped animating, counting frames against the
+    /// settle budget so a perpetual animation cannot stall a flow forever.
+    fn settled(&mut self, frames: &mut u16) -> bool {
+        if self.ui.is_animating() && *frames < REPLAY_MAX_SETTLE_FRAMES {
+            *frames += 1;
+            return false;
+        }
+        *frames = 0;
+        true
+    }
+
+    /// Report a failed flow: the failing steps on stderr, the tree and a
+    /// screenshot beside the flow file, and a message for `run` to return as
+    /// an error so the process exits non-zero.
+    fn report_flow_failure(&mut self, driver: &FlowDriver) {
+        let (done, total) = driver.position();
+        let mut msg = format!(
+            "flow failed at step {done} of {total}:\n{}",
+            driver
+                .failures()
+                .iter()
+                .map(|f| f.to_string())
+                .collect::<Vec<_>>()
+                .join("\n")
+        );
+        let tree_path = driver.fail_artifact("txt");
+        let shot_path = driver.fail_artifact("png");
+        self.write_tree_dump(&tree_path);
+        // The shot goes through the same request path as any other, so it is
+        // captured off the current shadow surface on the next paint.
+        self.ui.request_screenshot(shot_path.clone());
+        self.fulfill_screenshot();
+        msg.push_str(&format!(
+            "\ntree written to {}, shot to {}",
+            tree_path.display(),
+            shot_path.display()
+        ));
+        eprintln!("fbui: {msg}");
+        self.flow_failure = Some(msg);
+    }
+
+    /// Feed the replayer's due events through the normal input path. Returns
+    /// the flow the replay wants (redraws while playing, and — once finished,
+    /// settled, and screenshotted — an exit if configured).
+    fn service_replay(&mut self) -> Flow {
+        let Some(mut rs) = self.replay.take() else {
+            return Flow::Continue;
+        };
+        let end = rs.end;
+        let mut flow = Flow::Continue;
+        match &mut rs.source {
+            ReplaySource::Rec(player) => {
+                let due = player.due_events();
+                let (f, exit) = self.deliver_replayed(due, end);
+                if exit {
+                    return Flow::Exit; // replay state dropped here
+                }
+                flow = merge(flow, f);
+            }
+            ReplaySource::Flow(driver) => {
+                // A flow alternates between delivering the input a step
+                // queued and choosing the next step against the tree as it
+                // stands *now* — which is what makes `tap #inc` follow the
+                // layout rather than a plan made at parse time.
+                loop {
+                    let due: Vec<(u64, InputEvent)> = driver
+                        .due_events()
+                        .into_iter()
+                        // A flow's coordinates come from the laid-out tree, so
+                        // they are logical; the input path speaks panel space.
+                        .map(|(ms, ev)| (ms, self.logical_event_to_panel(ev)))
+                        .collect();
+                    if !due.is_empty() {
+                        let (f, exit) = self.deliver_replayed(due, end);
+                        if exit {
+                            return Flow::Exit;
+                        }
+                        flow = merge(flow, f);
+                        continue;
+                    }
+                    // Finish whatever the driver is blocked on before asking
+                    // it for another step: a `shot` must be of a settled
+                    // screen, which is the whole reason it blocks.
+                    let blocked = match driver.blocked() {
+                        Some(Pending::Settle) => Some(None),
+                        Some(Pending::Shot(p)) => Some(Some((true, p.clone()))),
+                        Some(Pending::Tree(p)) => Some(Some((false, p.clone()))),
+                        _ => None,
+                    };
+                    if let Some(artifact) = blocked {
+                        if !self.settled(&mut rs.settle_frames) {
+                            flow = Flow::Redraw;
+                            break;
+                        }
+                        driver.unblock();
+                        match artifact {
+                            Some((true, path)) => {
+                                self.ui.request_screenshot(path);
+                                self.fulfill_screenshot();
+                                flow = Flow::Redraw;
+                            }
+                            Some((false, path)) => self.write_tree_dump(&path),
+                            None => {}
+                        }
+                        continue;
+                    }
+                    // The lint pass is a tree walk plus a measure per text
+                    // widget, so it runs only when a step asks for it.
+                    let lints = if driver.wants_lints() {
+                        let mut l = fbui_widgets::lint::render(&self.ui.lint());
+                        if let Some(t) = self.ui.inspect() {
+                            l.extend(fbui_widgets::script::ambiguous_refs(driver.script(), &t));
+                        }
+                        l
+                    } else {
+                        Vec::new()
+                    };
+                    let tree = self.ui.inspect();
+                    let step = driver.advance(tree.as_ref(), &lints);
+                    for (line, source, ok) in driver.take_checks() {
+                        let detail = format!("{source}  {}", if ok { "ok" } else { "FAILED" });
+                        self.trace("expect", &format!("line {line}: {detail}"));
+                    }
+                    match step {
+                        Pending::Idle if driver.has_pending() => continue,
+                        // Nothing queued and nothing due yet: wait for the
+                        // clock (`next_timeout` bounds the sleep).
+                        Pending::Idle | Pending::Done => break,
+                        // A step that blocks: serviced on the next turn.
+                        _ => continue,
+                    }
+                }
+            }
+        }
+        if rs.source.finished() {
+            // A failed flow says so once, writes its artifacts beside the
+            // flow file, and makes the process exit non-zero — which is what
+            // turns a directory of flows into a test suite.
+            let mut failed = false;
+            if let ReplaySource::Flow(driver) = &rs.source {
+                if !driver.failures().is_empty() && self.flow_failure.is_none() {
+                    self.report_flow_failure(driver);
+                    failed = true;
+                }
+            }
+            if failed {
+                rs.end = ReplayEnd::Exit;
+            }
             let shot_pending = rs.shot.is_some();
             let animating = self.ui.is_animating();
             match rs.finish_frames {
@@ -843,6 +1290,9 @@ impl<A: App> Runner<A> {
                     }
                     if let Some(path) = rs.shot.take() {
                         self.ui.request_screenshot(path);
+                    }
+                    if let Some(path) = rs.tree.take() {
+                        self.write_tree_dump(&path);
                     }
                     rs.finish_frames = Some(2);
                     flow = Flow::Redraw;
@@ -885,6 +1335,15 @@ impl<A: App> Runner<A> {
     }
 }
 
+/// Combine two flow verdicts: a redraw anywhere means a redraw.
+fn merge(a: Flow, b: Flow) -> Flow {
+    if a == Flow::Redraw || b == Flow::Redraw {
+        Flow::Redraw
+    } else {
+        Flow::Continue
+    }
+}
+
 fn should_wait_for_replay_settle(shot_pending: bool, animating: bool, frames_waited: u16) -> bool {
     shot_pending && animating && frames_waited < REPLAY_MAX_SETTLE_FRAMES
 }
@@ -904,6 +1363,9 @@ impl<A: App> Runner<A> {
         let mut flow = Flow::Continue;
         for cmd in hub.take_commands() {
             match cmd {
+                RemoteCommand::InspectText { reply } => {
+                    let _ = reply.send(self.ui.inspect_text());
+                }
                 RemoteCommand::Inspect { reply } => {
                     let scale = self.scale.factor();
                     let json = match self.ui.inspect() {
@@ -922,8 +1384,11 @@ impl<A: App> Runner<A> {
                         // files stay uniformly panel-space.
                         let ev = self.remote_event_to_panel(ev);
                         hub.record_input(1);
-                        if let Some(rec) = &mut self.recorder {
-                            rec.record(&ev);
+                        if self.recorder.is_some() {
+                            let note = self.tap_note(&ev);
+                            if let Some(rec) = &mut self.recorder {
+                                rec.record(&ev, note.as_deref());
+                            }
                         }
                         match self.handle_input(ev) {
                             Flow::Exit => return Flow::Exit,
@@ -945,18 +1410,9 @@ impl<A: App> Runner<A> {
     /// `handle_input` expects). Everything else passes through.
     fn remote_event_to_panel(&self, ev: InputEvent) -> InputEvent {
         match ev {
-            InputEvent::PointerMotionAbsolute { position } => {
-                let (sw, sh) = (self.surface.width() as f32, self.surface.height() as f32);
-                let (px, py) = self.rotation.inverse().map_panel_point(
-                    position.x as f32,
-                    position.y as f32,
-                    sw,
-                    sh,
-                );
-                InputEvent::PointerMotionAbsolute {
-                    position: PPoint::new(px.round() as i32, py.round() as i32),
-                }
-            }
+            InputEvent::PointerMotionAbsolute { position } => InputEvent::PointerMotionAbsolute {
+                position: self.surface_point_to_panel(position.x as f32, position.y as f32),
+            },
             other => other,
         }
     }
@@ -1018,7 +1474,9 @@ fn remote_input_events(cmd: &RemoteCommand) -> Vec<InputEvent> {
             .flat_map(|c| remote_key_events(&c.to_string()))
             .collect(),
         // Handled by `service_remote` before reaching here.
-        RemoteCommand::Inspect { .. } | RemoteCommand::RefreshFrame => Vec::new(),
+        RemoteCommand::Inspect { .. }
+        | RemoteCommand::InspectText { .. }
+        | RemoteCommand::RefreshFrame => Vec::new(),
     }
 }
 
@@ -1118,7 +1576,7 @@ impl<A: App> Runner<A> {
             idle.swallowing = begins_held_gesture(event);
         }
         if let Some(msg) = idle.policy.on_wake.clone() {
-            self.app.update(msg, &mut self.ui);
+            self.apply_message("idle", msg);
             self.drain_messages();
         }
         swallow
@@ -1150,7 +1608,7 @@ impl<A: App> Runner<A> {
         // `on_idle` fires once, when the screen first leaves the active state.
         if was_active && crossed {
             if let Some(msg) = idle.policy.on_idle.clone() {
-                self.app.update(msg, &mut self.ui);
+                self.apply_message("idle", msg);
                 self.drain_messages();
             }
         }
@@ -1159,8 +1617,13 @@ impl<A: App> Runner<A> {
 
 impl<A: App> PlatformHandler for Runner<A> {
     fn on_input(&mut self, event: InputEvent) -> Flow {
-        if let Some(rec) = &mut self.recorder {
-            rec.record(&event);
+        if self.recorder.is_some() {
+            // Annotate a press with the named widget under it, so the
+            // recording reads as the flow it stands for.
+            let note = self.tap_note(&event);
+            if let Some(rec) = &mut self.recorder {
+                rec.record(&event, note.as_deref());
+            }
         }
         #[cfg(feature = "remote")]
         if let Some(hub) = &self.remote {
@@ -1200,6 +1663,19 @@ impl<A: App> PlatformHandler for Runner<A> {
         self.cursor_sprite.paint(frame);
         self.cursor_dirty = false;
         let paint_ms = t0.elapsed().as_secs_f32() * 1000.0;
+        if self.tracing() {
+            let d = self.diag_delta();
+            let detail = format!(
+                "paint={paint_ms:.1}ms rects={} area={}",
+                rects.len(),
+                d.damage_area.round() as i64
+            );
+            self.trace("frame", &detail);
+            if let Some(t) = &mut self.trace {
+                // Flushed per frame: a crash loses at most one frame of trace.
+                t.flush();
+            }
+        }
         if let Some(hud) = &mut self.hud {
             hud.note_frame(paint_ms);
             hud.paint(frame);
@@ -1246,7 +1722,7 @@ impl<A: App> PlatformHandler for Runner<A> {
         // Drain everything a background thread queued (wakes coalesce), running
         // each message through the app exactly like a widget-emitted one.
         while let Ok(msg) = self.rx.try_recv() {
-            self.app.update(msg, &mut self.ui);
+            self.apply_message("proxy", msg);
         }
         // Updates may have queued widget messages (e.g. via `Ui::send_key`).
         self.drain_messages();
@@ -1333,6 +1809,11 @@ impl<A: App> PlatformHandler for Runner<A> {
         // Cross any idle-power stage boundary that came due (dim, blank).
         self.service_idle();
 
+        // `FBUI_LINT`: report what an eye would catch, once per finding.
+        if self.lint {
+            self.report_lints();
+        }
+
         if self.ui.needs_paint() || replay_flow == Flow::Redraw {
             Flow::Redraw
         } else {
@@ -1369,7 +1850,7 @@ impl<A: App> PlatformHandler for Runner<A> {
             let d = if rs.finish_frames.is_some() {
                 Some(FRAME)
             } else {
-                rs.player.next_due_in()
+                rs.source.next_due_in()
             };
             if let Some(d) = d {
                 t = Some(t.map_or(d, |cur| cur.min(d)));

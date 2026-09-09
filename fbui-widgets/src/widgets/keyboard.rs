@@ -37,6 +37,7 @@ use fbui_render::geom::{Point, Rect};
 use fbui_render::Color;
 
 use crate::ctx::{AnimCtx, EventCtx, PaintCtx};
+use crate::describe::Describe;
 use crate::event::{Event, Key, PointerButton};
 use crate::style::{self, Style};
 use crate::theme::Theme;
@@ -416,6 +417,11 @@ impl<Msg: 'static> Widget<Msg> for Keyboard<Msg> {
             running: true,
             ..Anim::IDLE
         }
+    }
+
+    fn describe(&self, out: &mut Describe) {
+        out.prop("layer", format!("{:?}", self.layer).to_lowercase());
+        out.prop("rows", self.rows.len());
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

@@ -4,9 +4,12 @@
 > cannot look at the display: an AI agent writing the app, a CI job, a
 > developer on a laptop with the device in a rack. Everything here is
 > additive to the existing runner and toolkit; nothing changes how an app is
-> written. Status: **designed, not implemented.** (An Elm-architecture layer
-> was designed first and set aside: verification tooling turned out to be the
-> actual need, and it works with the retained API as it is.)
+> written. Status: **implemented** — see [`docs/tooling.md`](docs/tooling.md)
+> for how to use it and [`PHASE-TOOLING.md`](PHASE-TOOLING.md) for what is
+> verified, what is still open, and where the implementation deliberately
+> deviates from this design. (An Elm-architecture layer was designed first and
+> set aside: verification tooling turned out to be the actual need, and it
+> works with the retained API as it is.)
 
 ## 0. The loop this exists to close
 

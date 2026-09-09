@@ -8,7 +8,8 @@ operable over plain HTTP:
 - a **live view** of the screen in any browser,
 - **remote control**: clicks, scrolls, and typing injected through the exact
   same code path as live input,
-- a **widget-tree inspector** (names, bounds, focus — the `Ui::inspect` API),
+- a **widget-tree inspector** (kinds, names, text, props, bounds, focus — the
+  `Ui::inspect` API),
 - **Prometheus metrics** for fleet monitoring,
 - and a scriptable input API (`curl` a tap onto a device in a rack).
 
@@ -109,16 +110,34 @@ regression test.
 ### `GET /tree`
 
 ```json
-{ "scale": 1, "tree": { "id": "WidgetId(1v1)", "name": "Container",
+{ "scale": 1, "tree": { "id": "WidgetId(1v1)", "kind": "Container",
   "bounds": [0, 0, 640, 480], "focusable": false, "focused": false,
-  "hovered": false, "children": [ … ] } }
+  "hovered": false, "visible": true, "props": { "direction": "column" },
+  "children": [
+    { "id": "WidgetId(3v1)", "kind": "Checkbox", "name": "agree",
+      "bounds": [24, 24, 200, 32], "focusable": true, "focused": true,
+      "hovered": false, "visible": true, "text": "I agree",
+      "props": { "checked": "false" }, "children": [] }
+  ] } }
 ```
 
 `bounds` are logical pixels (`[x, y, w, h]`); multiply by `scale` for the
-device pixels of `/screen.png`. Nodes report `overlay` when the widget
-currently floats one (an open dropdown, a toast). This is
-`fbui::Ui::inspect()` serialized with `fbui::remote::tree_json` — a custom
-embedder can serve the same document.
+device pixels of `/screen.png`.
+
+* `kind` is the widget type. (It was called `name` before 0.2.0; `name` now
+  holds the *app-assigned* name from `Ui::name`, and is absent when the
+  widget has none.)
+* `text` and `props` come from `Widget::describe` — what the widget reads and
+  holds, so a caller can tell a checked box from an unchecked one without
+  looking at pixels. Both are omitted when the widget reports nothing.
+* `visible` is `false` when the widget has no area, sits off-surface, or is
+  entirely clipped away by a scrolling ancestor — i.e. when tapping its
+  centre would not reach it.
+* `overlay` appears when the widget currently floats one (an open dropdown, a
+  toast).
+
+This is `fbui::Ui::inspect()` serialized with `fbui::remote::tree_json` — a
+custom embedder can serve the same document.
 
 ### `GET /metrics`
 

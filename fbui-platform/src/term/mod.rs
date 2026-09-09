@@ -505,26 +505,7 @@ pub fn open_pair_on(tty: OwnedFd, setup: &TermSetup) -> Result<(TermDisplay, Ter
 
 /// The no-op seat for the terminal backend: there are no device nodes to
 /// broker and no session changes — the terminal emulator is the session.
-pub(crate) struct TermSeat;
-
-impl crate::seat::Seat for TermSeat {
-    fn name(&self) -> &str {
-        "term"
-    }
-    fn open_device(&mut self, path: &std::path::Path) -> Result<OwnedFd> {
-        Err(Error::unsupported(format!(
-            "terminal backend has no devices to open ({})",
-            path.display()
-        )))
-    }
-    fn close_device(&mut self, _fd: OwnedFd) {}
-    fn session_fd(&self) -> Option<RawFd> {
-        None
-    }
-    fn dispatch(&mut self, _sink: &mut dyn FnMut(crate::seat::SessionEvent)) -> Result<()> {
-        Ok(())
-    }
-}
+pub(crate) use crate::seat::NullSeat;
 
 #[cfg(test)]
 mod tests {

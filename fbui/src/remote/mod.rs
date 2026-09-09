@@ -31,6 +31,8 @@
 //! | `GET /screen.png` | current frame as PNG (works while idle) |
 //! | `GET /stream` | multipart PNG stream, damage-driven |
 //! | `GET /tree` | widget-tree snapshot as JSON ([`Ui::inspect`](fbui_widgets::Ui::inspect)) |
+//! | `GET /tree.txt` | the same tree as text, one widget per line ([`Ui::inspect_text`](fbui_widgets::Ui::inspect_text)) |
+//! | `GET /trace` | the tail of the event trace (input → message → mutation → frame) |
 //! | `GET /metrics` | Prometheus text format |
 //! | `POST /input` | inject input (`type=tap&x=…&y=…`, `type=key&key=Enter`, `type=text&text=…`, …) |
 //!
@@ -53,7 +55,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 pub use hub::{Command, FrameImage, Hub, MetricsSnapshot, RemoteButton};
-pub use json::tree_json;
+pub use json::{parse_tree, tree_json};
 
 /// Where and how to serve. Built from the environment by
 /// [`RemoteConfig::from_env`], or directly for embedding/tests.

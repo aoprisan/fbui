@@ -1,0 +1,13 @@
+Container #page [0,0 480x640] direction=column gap=8 padding=12
+  Label #title [12,12 456x20] "Gallery"
+  Container #actions [12,40 456x36] direction=row gap=8
+    Button #save [12,40 65x36] "Save"
+    Button #delete [85,40 77x36] "Delete" variant=danger
+  Checkbox #agree [12,84 456x20] "I agree" checked=true
+  Switch #wifi [12,112 456x24] "Wi-Fi" on=false
+  RadioGroup #quality [12,144 456x46] "High" selected=1 options=2
+  Slider #volume [12,198 456x14] value=30 min=0 max=100
+  ProgressBar #progress [12,220 456x4] value=0.4 percent=40
+  TextInput #item [12,232 456x36] "milk" cursor=4
+  TabBar #tabs [12,276 456x36] "Two" selected=1 tabs=2
+  List #items [12,320 456x308] rows=2 selected=none first_visible=0

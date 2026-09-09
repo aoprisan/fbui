@@ -10,7 +10,13 @@ repository.workspace = true
 publish = false
 
 [features]
-default = []
+default = ["harness"]
+# Flow scripts and the in-process test harness: the `fbui-rec 2` parser, the
+# reference resolver, and an executor that drives a `Ui` through the same
+# `Event` path the behavior tests use. On by default because the umbrella
+# runner needs it and because an off-by-default parser is an untested one;
+# `default-features = false` drops it for a minimal embedded build.
+harness = []
 # Emit `tracing` spans through the event → layout → paint pipeline so an app can
 # capture a flamegraph of a frame. Off by default (and zero-cost when off).
 profile = ["dep:tracing"]
@@ -22,6 +28,11 @@ slotmap = "1"
 tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
 
 [dev-dependencies]
+# The tests pull in the compiled-in font so text metrics — and therefore the
+# laid-out bounds a tree dump prints — are identical on every host. Without a
+# pinned font a golden dump would be a golden of whatever fonts CI happens to
+# have installed.
+fbui-render = { path = "../fbui-render", features = ["bundled-font"] }
 fbui-testkit = { path = "../fbui-testkit" }
 criterion = { version = "0.5", default-features = false }
 # Used by the `all_widgets` example to build a procedural bitmap for ImageView.

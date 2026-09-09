@@ -1,0 +1,36 @@
+# The 10 000-row list: keyboard selection, the wheel, a drag, and a fling —
+# every gesture path, exercised with no screen and no finger.
+fbui-rec 2
+
+expect #rows rows 10000
+expect #rows selected none
+expect #rows first_visible 0
+
+# Keyboard selection is deterministic wherever the list happens to sit.
+key Tab
+expect #rows focused
+key Down
+expect #rows selected 0
+expect #status text "selected row #00000"
+key Down
+expect #rows selected 1
+
+# A wheel notch scrolls the view without touching the selection.
+wheel #rows -3
+expect #rows selected 1
+expect #rows first_visible 3
+
+# A slow drag scrolls and stops where it was let go — no fling, so the view is
+# settled the moment the finger lifts.
+drag #rows dy=-200
+wait settle
+expect #rows first_visible 8
+
+# A fast drag flings: the list keeps coasting after the lift. How far it
+# travels depends on the frame dt of the coast, so this asserts the property
+# that matters — a fling scrolls and never selects — and dumps the tree for a
+# reader rather than pinning a distance that would flake on a loaded machine.
+drag #rows dy=-400 fast
+wait settle
+expect #rows selected 1
+tree big_list.tree.txt

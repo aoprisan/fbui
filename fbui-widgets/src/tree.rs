@@ -20,7 +20,9 @@ use slotmap::{SecondaryMap, SlotMap};
 use taffy::{AvailableSpace, TaffyTree};
 
 use crate::ctx::{AnimCtx, CaptureOp, EventCtx, FocusOp, Outputs, PaintCtx, PopupOp};
+use crate::describe::Describe;
 use crate::event::{Event, Key, Modifiers, PointerButton};
+use crate::lint::{Lint, Rule, DEFAULT_TOUCH_TARGET};
 use crate::popup::{place_anchored, Alignment, AnchorSpec, Placement};
 use crate::style::Style;
 use crate::theme::Theme;
@@ -115,6 +117,42 @@ struct TipState {
     shown: Option<(WidgetId, Rect)>,
 }
 
+/// Cheap counters the [`Ui`] keeps always: what a frame *cost*, in operations
+/// rather than milliseconds.
+///
+/// A few integer increments per mutation, so there is nothing to switch on.
+/// They exist so a test can assert cost rather than only pixels — the general
+/// form of the "an unchanged render produces no damage" invariant:
+///
+/// ```
+/// # use fbui_widgets::{Ui, Theme};
+/// # use fbui_render::{Scale, geom::Size};
+/// # let mut ui = Ui::<()>::new(Size::new(100.0, 100.0), Scale::ONE, Theme::dark());
+/// let before = ui.take_diagnostics();
+/// # let _ = before;
+/// // ... deliver a message that should change nothing ...
+/// assert_eq!(ui.take_diagnostics().damage_area, 0.0, "a no-op must not repaint");
+/// ```
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Diagnostics {
+    /// Tree mutations: `set_root`, `add_child`, `remove`, `with`, `stream`,
+    /// `request_paint`.
+    pub mutations: u64,
+    /// Damage rectangles scheduled.
+    pub damage_rects: u64,
+    /// Total area of those rectangles, logical px² (overlaps counted twice —
+    /// this is scheduled work, not painted pixels).
+    pub damage_area: f64,
+    /// Layout passes run.
+    pub layouts: u64,
+    /// Paints that actually repainted a region.
+    pub paints: u64,
+    /// Messages widgets emitted.
+    pub messages: u64,
+    /// Events delivered to the tree.
+    pub events: u64,
+}
+
 /// One node of a [`Ui::inspect`] snapshot: plain owned data describing a live
 /// widget — no borrow into the tree, so it can cross threads or serialize.
 #[derive(Debug, Clone)]
@@ -124,15 +162,109 @@ pub struct InspectNode {
     pub id: String,
     /// The widget's [`debug_name`](Widget::debug_name), shortened to the bare
     /// type name (`Button`, `ScrollView`, …).
-    pub name: String,
+    pub kind: String,
+    /// The app-assigned name, if [`Ui::name`] gave this widget one. This is
+    /// what a flow script's `#name` reference resolves against.
+    pub name: Option<String>,
+    /// The widget's user-visible text, from [`Widget::describe`] — a label's
+    /// words, a button's caption, an input's content.
+    pub text: Option<String>,
+    /// Everything else [`Widget::describe`] reported (`checked`, `value`,
+    /// `offset`, …), in the order the widget reported it.
+    pub props: Vec<(&'static str, String)>,
     /// Absolute logical bounds after layout.
     pub bounds: Rect,
     pub focusable: bool,
     pub focused: bool,
     pub hovered: bool,
+    /// Whether any of this widget is actually on screen: `false` when it has
+    /// no area, sits outside the surface, or is entirely clipped away by a
+    /// scrolling ancestor. This is what "can I tap it" needs, and what a flow
+    /// reference checks before acting.
+    pub visible: bool,
     /// The floating overlay rect the widget currently reports, if any.
     pub overlay: Option<Rect>,
     pub children: Vec<InspectNode>,
+}
+
+impl InspectNode {
+    /// The value this widget reported under `key` in [`Widget::describe`]
+    /// (`"text"` included).
+    pub fn prop(&self, key: &str) -> Option<&str> {
+        if key == crate::describe::TEXT {
+            return self.text.as_deref();
+        }
+        self.props
+            .iter()
+            .find(|(k, _)| *k == key)
+            .map(|(_, v)| v.as_str())
+    }
+
+    /// This node and every descendant, in tree (depth-first, pre) order —
+    /// the order a dump prints and the order a `Kind "text"` reference
+    /// resolves in.
+    pub fn iter(&self) -> impl Iterator<Item = &InspectNode> {
+        let mut out = Vec::new();
+        collect_nodes(self, &mut out);
+        out.into_iter()
+    }
+
+    /// Render this node and its subtree one widget per line, indented by
+    /// depth — the text an author reads instead of looking at the screen.
+    /// See [`Ui::inspect_text`].
+    pub fn to_text(&self) -> String {
+        let mut out = String::new();
+        write_node_text(self, 0, &mut out);
+        out
+    }
+}
+
+fn collect_nodes<'a>(n: &'a InspectNode, out: &mut Vec<&'a InspectNode>) {
+    out.push(n);
+    for c in &n.children {
+        collect_nodes(c, out);
+    }
+}
+
+/// One dump line: `Kind #name [x,y wxh] "text" prop=value flags`.
+fn write_node_text(n: &InspectNode, depth: usize, out: &mut String) {
+    use std::fmt::Write as _;
+    for _ in 0..depth {
+        out.push_str("  ");
+    }
+    out.push_str(&n.kind);
+    if let Some(name) = &n.name {
+        let _ = write!(out, " #{name}");
+    }
+    let _ = write!(
+        out,
+        " [{},{} {}x{}]",
+        n.bounds.x.round() as i32,
+        n.bounds.y.round() as i32,
+        n.bounds.w.round() as i32,
+        n.bounds.h.round() as i32,
+    );
+    if let Some(t) = &n.text {
+        let _ = write!(out, " {:?}", t);
+    }
+    for (k, v) in &n.props {
+        let _ = write!(out, " {k}={v}");
+    }
+    // Live tree state, after the widget's own description: bare words, so a
+    // dump reads the way the example in TOOLING.md does.
+    if n.focused {
+        out.push_str(" focused");
+    }
+    if n.hovered {
+        out.push_str(" hovered");
+    }
+    if !n.visible {
+        out.push_str(" hidden");
+    }
+    out.push('\n');
+    for c in &n.children {
+        write_node_text(c, depth + 1, out);
+    }
 }
 
 /// `fbui_widgets::widgets::button::Button<app::Msg>` → `Button`: drop generic
@@ -190,6 +322,23 @@ pub struct Ui<Msg> {
     popups: Vec<PopupEntry>,
     /// Hover tooltips by owner (see [`set_tooltip`](Ui::set_tooltip)).
     tooltips: SecondaryMap<WidgetId, Tooltip>,
+    /// App-assigned names (see [`name`](Ui::name)), and the reverse index
+    /// [`find`](Ui::find) resolves through. Both are cleared on removal, so a
+    /// name never resolves to a dead widget.
+    names: SecondaryMap<WidgetId, String>,
+    by_name: std::collections::HashMap<String, WidgetId>,
+    /// Names that were claimed twice while both widgets were alive. The
+    /// second claim wins (so `find` stays unambiguous) and the collision is
+    /// reported by the `duplicate-name` lint rather than silently lost.
+    name_collisions: Vec<String>,
+    /// Per-widget lint suppressions (see [`allow_lint`](Ui::allow_lint)).
+    allowed_lints: SecondaryMap<WidgetId, Vec<Rule>>,
+    /// Minimum tappable size the `touch-target` lint enforces.
+    touch_target: f32,
+    /// Operation counters (see [`Diagnostics`]).
+    diag: Diagnostics,
+    /// How many entries of `damage` have already been counted into `diag`.
+    damage_counted: usize,
     tip: TipState,
     /// Scratch sink lent to each `EventCtx`; drained after every dispatch.
     out: Outputs<Msg>,
@@ -234,6 +383,13 @@ impl<Msg: 'static> Ui<Msg> {
             capture: None,
             popups: Vec::new(),
             tooltips: SecondaryMap::new(),
+            names: SecondaryMap::new(),
+            by_name: std::collections::HashMap::new(),
+            name_collisions: Vec::new(),
+            allowed_lints: SecondaryMap::new(),
+            touch_target: DEFAULT_TOUCH_TARGET,
+            diag: Diagnostics::default(),
+            damage_counted: 0,
             tip: TipState::default(),
             out: Outputs::default(),
             messages: Vec::new(),
@@ -258,9 +414,14 @@ impl<Msg: 'static> Ui<Msg> {
         self.capture = None;
         self.popups.clear();
         self.tooltips.clear();
+        self.names.clear();
+        self.by_name.clear();
+        self.name_collisions.clear();
+        self.allowed_lints.clear();
         self.tip = TipState::default();
         let id = self.insert(Box::new(widget), None);
         self.root = Some(id);
+        self.diag.mutations += 1;
         self.mark_full();
         id
     }
@@ -274,8 +435,107 @@ impl<Msg: 'static> Ui<Msg> {
         // Now that the parent link exists, re-resolve the child's style: a child
         // of a stacking container ([`Stack`]) is positioned to fill it.
         self.apply_style(id);
+        self.diag.mutations += 1;
         self.mark_full();
         id
+    }
+
+    /// Append `widget` as the last child of `parent` under the tree-unique
+    /// `name` — [`add_child`](Self::add_child) plus [`name`](Self::name) in
+    /// one call, which is how most named widgets get built.
+    pub fn add_named(
+        &mut self,
+        parent: WidgetId,
+        name: impl Into<String>,
+        widget: impl Widget<Msg>,
+    ) -> WidgetId {
+        let id = self.add_child(parent, widget);
+        self.name(id, name);
+        id
+    }
+
+    /// Give `id` a tree-unique name, so a flow script can say `#name`, a tree
+    /// dump can identify it, and [`find`](Self::find) can resolve it.
+    ///
+    /// Names are optional and purely additive: nothing in the tree behaves
+    /// differently for having one, and a widget without one is still
+    /// addressable by kind and text. Naming the same widget twice replaces
+    /// the old name; reusing a name that belongs to a *different* live widget
+    /// is a bug — the last writer wins (so `find` stays unambiguous) and the
+    /// `duplicate-name` lint reports it.
+    pub fn name(&mut self, id: WidgetId, name: impl Into<String>) {
+        if !self.nodes.contains_key(id) {
+            return;
+        }
+        let name = name.into();
+        if let Some(prev) = self.by_name.get(&name).copied() {
+            // A name claimed twice is a bug, but never a crash: names are a
+            // diagnostic aid, and killing an app over one would be a worse
+            // trade than reporting it. The last claim wins so `find` stays
+            // unambiguous, and the `duplicate-name` lint says so — which
+            // `FBUI_LINT=1` prints and `expect no-lints` fails a flow on.
+            if prev != id && self.nodes.contains_key(prev) && !self.name_collisions.contains(&name)
+            {
+                self.name_collisions.push(name.clone());
+            }
+            self.names.remove(prev);
+        }
+        // Renaming: drop the old reverse entry so it stops resolving.
+        if let Some(old) = self.names.insert(id, name.clone()) {
+            if old != name {
+                self.by_name.remove(&old);
+            }
+        }
+        self.by_name.insert(name, id);
+    }
+
+    /// The widget called `name`, if one is alive.
+    ///
+    /// A `#screen/field` path is sugar: the last segment is the name and any
+    /// earlier segments must appear, in order, among the widget's named
+    /// ancestors. That is what scopes a field name to the screen or dialog it
+    /// lives in without a second namespace.
+    pub fn find(&self, name: &str) -> Option<WidgetId> {
+        let (ancestors, leaf) = match name.rsplit_once('/') {
+            Some((path, leaf)) => (path.split('/').collect::<Vec<_>>(), leaf),
+            None => (Vec::new(), name),
+        };
+        let id = *self.by_name.get(leaf)?;
+        if !self.nodes.contains_key(id) {
+            return None;
+        }
+        if ancestors.is_empty() {
+            return Some(id);
+        }
+        // Walk up collecting named ancestors, then check the path appears in
+        // order (nearest last), so `#form/name` matches `name` inside `form`
+        // however deeply it is nested.
+        let mut named = Vec::new();
+        let mut cur = self.nodes[id].parent;
+        while let Some(p) = cur {
+            if let Some(n) = self.names.get(p) {
+                named.push(n.as_str());
+            }
+            cur = self.nodes[p].parent;
+        }
+        let mut want = ancestors.into_iter().rev();
+        let mut next = want.next();
+        for got in named {
+            if next == Some(got) {
+                next = want.next();
+            }
+        }
+        next.is_none().then_some(id)
+    }
+
+    /// The name given to `id`, if any.
+    pub fn name_of(&self, id: WidgetId) -> Option<&str> {
+        self.names.get(id).map(|s| s.as_str())
+    }
+
+    /// Every live (name, widget) pair, in no particular order.
+    pub fn names(&self) -> impl Iterator<Item = (&str, WidgetId)> {
+        self.by_name.iter().map(|(n, &id)| (n.as_str(), id))
     }
 
     /// Remove a widget and its whole subtree from the tree, damaging whatever
@@ -291,6 +551,7 @@ impl<Msg: 'static> Ui<Msg> {
         if !self.nodes.contains_key(id) {
             return;
         }
+        self.diag.mutations += 1;
         // Collect the subtree, damaging as we go.
         let mut ids = Vec::new();
         let mut stack = vec![id];
@@ -333,6 +594,9 @@ impl<Msg: 'static> Ui<Msg> {
             let _ = self.taffy.remove(t);
             self.nodes.remove(n);
             self.tooltips.remove(n);
+            if let Some(old) = self.names.remove(n) {
+                self.by_name.remove(&old);
+            }
             if self.focus == Some(n) {
                 self.focus = None;
             }
@@ -440,6 +704,7 @@ impl<Msg: 'static> Ui<Msg> {
         // The widget may have changed size or appearance; refresh style + damage.
         // `resolved_style` re-applies any parent-imposed positioning (stacks).
         self.apply_style(id);
+        self.diag.mutations += 1;
         self.damage.push(layout);
         self.damage_overlay(id);
         self.needs_layout = true;
@@ -480,6 +745,7 @@ impl<Msg: 'static> Ui<Msg> {
         let layout = node.layout;
         let w = node.widget.as_any_mut().downcast_mut::<W>()?;
         let verdict = f(w);
+        self.diag.mutations += 1;
         match verdict {
             StreamDamage::Quiet => {}
             StreamDamage::Shifted { extra } => {
@@ -496,7 +762,9 @@ impl<Msg: 'static> Ui<Msg> {
     /// Mark a widget's bounds for repaint without mutating it.
     pub fn request_paint(&mut self, id: WidgetId) {
         if let Some(node) = self.nodes.get(id) {
-            self.damage.push(node.layout);
+            let layout = node.layout;
+            self.diag.mutations += 1;
+            self.damage.push(layout);
         }
     }
 
@@ -913,6 +1181,7 @@ impl<Msg: 'static> Ui<Msg> {
 
     fn relayout(&mut self) {
         crate::span!("ui.layout");
+        self.diag.layouts += 1;
         let Some(root) = self.root else {
             self.needs_layout = false;
             return;
@@ -997,6 +1266,7 @@ impl<Msg: 'static> Ui<Msg> {
     /// after.
     pub fn event(&mut self, event: Event) {
         crate::span!("ui.event");
+        self.diag.events += 1;
         if self.needs_layout {
             self.relayout();
         }
@@ -1281,6 +1551,7 @@ impl<Msg: 'static> Ui<Msg> {
 
     fn apply_outputs(&mut self) {
         // Move messages + damage out of the scratch sink.
+        self.diag.messages += self.out.messages.len() as u64;
         self.messages.append(&mut self.out.messages);
         self.damage.append(&mut self.out.damage);
 
@@ -1444,21 +1715,369 @@ impl<Msg: 'static> Ui<Msg> {
         self.root.map(|r| self.inspect_node(r))
     }
 
+    /// Render the live tree as text, one widget per line, indented by depth:
+    ///
+    /// ```text
+    /// Container [0,0 1024x600] direction=column
+    ///   Label [24,24 976x34] "Counter"
+    ///   Label #count [24,74 976x58] "3"
+    ///   Container [24,148 976x40] direction=row
+    ///     Button #dec [24,148 60x40] "−"
+    ///     Button #inc [96,148 60x40] "+" focused
+    /// ```
+    ///
+    /// This is what an author who cannot see the screen reads instead of the
+    /// screenshot, nine times out of ten: it is greppable, diffable in
+    /// review, and says what each widget holds rather than only where it sits.
+    /// Empty (`""`) when there is no root.
+    pub fn inspect_text(&mut self) -> String {
+        match self.inspect() {
+            Some(root) => root.to_text(),
+            None => String::new(),
+        }
+    }
+
     fn inspect_node(&self, id: WidgetId) -> InspectNode {
+        // The visible region a widget must intersect: the surface, narrowed
+        // by every clipping ancestor's box.
+        self.inspect_node_clipped(id, Rect::new(0.0, 0.0, self.size.w, self.size.h))
+    }
+
+    fn inspect_node_clipped(&self, id: WidgetId, clip: Rect) -> InspectNode {
         let node = &self.nodes[id];
+        let mut desc = Describe::new();
+        node.widget.describe(&mut desc);
+        let mut pairs = desc.into_pairs();
+        // `text` is lifted out of the pair list: it is the one field scripts
+        // and dumps treat specially, so it should not need a lookup.
+        let text = pairs
+            .iter()
+            .position(|(k, _)| *k == crate::describe::TEXT)
+            .map(|i| pairs.remove(i).1);
+        let visible = !clip.intersect(node.layout).is_empty();
+        // A clipping widget (a scroll viewport) narrows what its children can
+        // be seen through.
+        let child_clip = if node.widget.clips() {
+            clip.intersect(node.layout)
+        } else {
+            clip
+        };
         InspectNode {
             id: format!("{id:?}"),
-            name: short_type_name(node.widget.debug_name()).to_string(),
+            kind: short_type_name(node.widget.debug_name()).to_string(),
+            name: self.names.get(id).cloned(),
+            text,
+            props: pairs,
             bounds: node.layout,
             focusable: node.widget.focusable(),
             focused: self.focus == Some(id),
             hovered: self.hover == Some(id),
+            visible,
             overlay: node.widget.overlay_rect(node.layout, self.size),
             children: node
                 .children
                 .iter()
-                .map(|&c| self.inspect_node(c))
+                .map(|&c| self.inspect_node_clipped(c, child_clip))
                 .collect(),
+        }
+    }
+
+    // ---- diagnostics and lints -------------------------------------------
+
+    /// The operation counters since the last [`take_diagnostics`](Self::take_diagnostics).
+    pub fn diagnostics(&mut self) -> Diagnostics {
+        self.account_damage();
+        self.diag
+    }
+
+    /// The counters, then reset them.
+    pub fn take_diagnostics(&mut self) -> Diagnostics {
+        let d = self.diagnostics();
+        self.diag = Diagnostics::default();
+        d
+    }
+
+    /// Fold damage scheduled since the last fold into the counters. Damage is
+    /// pushed from a dozen places (some while a node is borrowed), so it is
+    /// counted here from a watermark rather than at each push site.
+    fn account_damage(&mut self) {
+        for r in &self.damage[self.damage_counted..] {
+            self.diag.damage_rects += 1;
+            self.diag.damage_area += (r.w.max(0.0) * r.h.max(0.0)) as f64;
+        }
+        self.damage_counted = self.damage.len();
+    }
+
+    /// Suppress `rule` for this widget — the escape hatch for a deliberate
+    /// case (an intentionally tiny decorative control, a label that is
+    /// *meant* to be elided).
+    pub fn allow_lint(&mut self, id: WidgetId, rule: Rule) {
+        if !self.nodes.contains_key(id) {
+            return;
+        }
+        self.allowed_lints
+            .entry(id)
+            .unwrap()
+            .or_default()
+            .push(rule);
+    }
+
+    /// The minimum tappable size the `touch-target` lint enforces, logical
+    /// px. Defaults to [`crate::lint::DEFAULT_TOUCH_TARGET`];
+    /// a touch-only kiosk should raise it to 44.
+    pub fn set_touch_target(&mut self, min: f32) {
+        self.touch_target = min;
+    }
+
+    /// Walk the laid-out tree and report what an eye would catch: text that
+    /// does not fit, targets too small to hit, widgets off the panel, a
+    /// scroll view somebody forgot to fill. See [`crate::lint`].
+    ///
+    /// Lays out first, so the geometry is current.
+    pub fn lint(&mut self) -> Vec<Lint> {
+        self.layout_now();
+        let mut out = Vec::new();
+        for name in &self.name_collisions {
+            // Only report a collision whose name is still live: if both
+            // widgets are gone the finding is about nothing.
+            if let Some(&id) = self.by_name.get(name) {
+                if let Some(node) = self.nodes.get(id) {
+                    out.push(Lint {
+                        rule: Rule::DuplicateName,
+                        id: Some(id),
+                        kind: short_type_name(node.widget.debug_name()).to_string(),
+                        name: Some(name.clone()),
+                        bounds: node.layout,
+                        message: format!(
+                            "the name {name:?} was claimed twice; only the last widget \
+                             answers to it"
+                        ),
+                    });
+                }
+            }
+        }
+        let Some(root) = self.root else {
+            return out;
+        };
+        let surface = Rect::new(0.0, 0.0, self.size.w, self.size.h);
+        let mut ids = Vec::new();
+        self.collect_ids(root, &mut ids);
+        let mut modals = Vec::new();
+        for id in ids {
+            self.lint_node(id, surface, &mut out, &mut modals);
+        }
+        if modals.len() > 1 {
+            let id = modals[1];
+            let node = &self.nodes[id];
+            out.push(Lint {
+                rule: Rule::StackedModals,
+                id: Some(id),
+                kind: short_type_name(node.widget.debug_name()).to_string(),
+                name: self.names.get(id).cloned(),
+                bounds: node.layout,
+                message: format!(
+                    "{} modal dialogs are in the tree at once; the ones underneath \
+                     are unreachable",
+                    modals.len()
+                ),
+            });
+        }
+        // Suppressions are applied last so a rule's own logic stays simple.
+        out.retain(|l| match l.id {
+            Some(id) => !self
+                .allowed_lints
+                .get(id)
+                .is_some_and(|rules| rules.contains(&l.rule)),
+            None => true,
+        });
+        out
+    }
+
+    fn collect_ids(&self, id: WidgetId, out: &mut Vec<WidgetId>) {
+        out.push(id);
+        for &c in &self.nodes[id].children {
+            self.collect_ids(c, out);
+        }
+    }
+
+    /// The visible region a widget must intersect to be reachable — the
+    /// surface narrowed by every clipping ancestor — and whether it *has* a
+    /// clipping ancestor. The flag matters on its own: content scrolled below
+    /// the fold is off the surface *legitimately*, and a viewport that
+    /// happens to fill the screen must not make that look otherwise.
+    fn clip_of(&self, id: WidgetId, surface: Rect) -> (Rect, bool) {
+        let mut clip = surface;
+        let mut clipped = false;
+        let mut cur = self.nodes[id].parent;
+        while let Some(p) = cur {
+            let node = &self.nodes[p];
+            if node.widget.clips() {
+                clip = clip.intersect(node.layout);
+                clipped = true;
+            }
+            cur = node.parent;
+        }
+        (clip, clipped)
+    }
+
+    fn lint_node(
+        &mut self,
+        id: WidgetId,
+        surface: Rect,
+        out: &mut Vec<Lint>,
+        modals: &mut Vec<WidgetId>,
+    ) {
+        let (clip, has_clipping_ancestor) = self.clip_of(id, surface);
+        let node = &self.nodes[id];
+        let bounds = node.layout;
+        let kind = short_type_name(node.widget.debug_name()).to_string();
+        let name = self.names.get(id).cloned();
+        let focusable = node.widget.focusable();
+        let clips = node.widget.clips();
+        let stacks = node.widget.stacks_children();
+        let child_count = node.children.len();
+        let visible = !clip.intersect(bounds).is_empty();
+        let mut desc = Describe::new();
+        node.widget.describe(&mut desc);
+        let child_boxes: Vec<Rect> = node
+            .children
+            .iter()
+            .map(|&c| self.nodes[c].layout)
+            .collect();
+
+        let mut find = |rule: Rule, message: String| {
+            out.push(Lint {
+                rule,
+                id: Some(id),
+                kind: kind.clone(),
+                name: name.clone(),
+                bounds,
+                message,
+            });
+        };
+
+        if desc.get("modal").is_some() {
+            modals.push(id);
+        }
+
+        // Off the panel. Only *whole* escapes are reported, and only for
+        // widgets with no clipping ancestor: content below the fold inside a
+        // scroll view is scrolled-away content, which is the whole point of a
+        // scroll view, not a mistake.
+        if !bounds.is_empty() && !has_clipping_ancestor && surface.intersect(bounds).is_empty() {
+            find(
+                Rule::OffSurface,
+                format!(
+                    "entirely outside the {}x{} surface",
+                    surface.w.round() as i32,
+                    surface.h.round() as i32
+                ),
+            );
+        }
+
+        if focusable {
+            if !visible {
+                find(
+                    Rule::UnreachableFocus,
+                    if bounds.is_empty() {
+                        "focusable but has no area".to_string()
+                    } else {
+                        "focusable but entirely clipped away".to_string()
+                    },
+                );
+            } else {
+                let t = self.touch_target;
+                if bounds.w < t && bounds.h < t {
+                    find(
+                        Rule::TouchTarget,
+                        format!(
+                            "{}x{} is under the {}x{} touch minimum",
+                            bounds.w.round() as i32,
+                            bounds.h.round() as i32,
+                            t.round() as i32,
+                            t.round() as i32
+                        ),
+                    );
+                }
+            }
+            if desc.is_empty() {
+                find(
+                    Rule::Undescribed,
+                    "focusable but reports nothing from `describe`, so no dump or flow \
+                     can say what it holds"
+                        .to_string(),
+                );
+            }
+        }
+
+        if clips && child_count == 0 {
+            find(
+                Rule::EmptyScroll,
+                "a scroll viewport with no content (a forgotten `add_child`?)".to_string(),
+            );
+        }
+
+        // Children escaping a container that neither clips nor stacks them.
+        if !clips && !stacks && !bounds.is_empty() {
+            // A pixel of overhang is rounding, not a layout bug; only a
+            // visible escape is worth a line.
+            let slack = bounds.inset(-1.0);
+            let escaped = child_boxes
+                .iter()
+                .filter(|c| !c.is_empty() && c.intersect(slack) != **c)
+                .count();
+            if escaped > 0 {
+                find(
+                    Rule::Overflow,
+                    format!("{escaped} child(ren) do not fit inside it"),
+                );
+            }
+        }
+
+        // Text that does not fit. The intrinsic measure is the widget's own,
+        // so this catches exactly what the widget would have drawn had layout
+        // given it the room.
+        if desc.text_value().is_some_and(|t| !t.is_empty())
+            && desc.get("wrap").is_none()
+            && !bounds.is_empty()
+        {
+            let Self {
+                nodes,
+                fonts,
+                theme,
+                ..
+            } = self;
+            let intrinsic = nodes[id].widget.measure(
+                fonts,
+                theme,
+                taffy::Size {
+                    width: None,
+                    height: None,
+                },
+                taffy::Size {
+                    width: taffy::AvailableSpace::MaxContent,
+                    height: taffy::AvailableSpace::MaxContent,
+                },
+            );
+            if let Some(i) = intrinsic {
+                // A pixel of slack absorbs the difference between the
+                // measure layout used and this one; anything more is real
+                // truncation.
+                if i.w > bounds.w + 1.0 {
+                    out.push(Lint {
+                        rule: Rule::TruncatedText,
+                        id: Some(id),
+                        kind,
+                        name,
+                        bounds,
+                        message: format!(
+                            "needs {}px of width but was given {}px, and does not wrap",
+                            i.w.ceil() as i32,
+                            bounds.w.floor() as i32
+                        ),
+                    });
+                }
+            }
         }
     }
 
@@ -1498,11 +2117,13 @@ impl<Msg: 'static> Ui<Msg> {
                 }
             }
         }
+        self.account_damage();
         if self.damage.is_empty() {
             return;
         }
         let Some(root) = self.root else {
             self.damage.clear();
+            self.damage_counted = 0;
             return;
         };
 
@@ -1511,10 +2132,12 @@ impl<Msg: 'static> Ui<Msg> {
             .damage
             .drain(..)
             .fold(Rect::new(0.0, 0.0, 0.0, 0.0), union_rect);
+        self.damage_counted = 0;
         let region = intersect_rect(region, Rect::new(0.0, 0.0, self.size.w, self.size.h));
         if region.is_empty() {
             return;
         }
+        self.diag.paints += 1;
         // Snap the region *out* to whole device pixels. The region-sized
         // background clear (and every draw clipped to it) must fully own its
         // boundary pixels: a fractional edge anti-aliases against the previous
