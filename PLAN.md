@@ -373,12 +373,13 @@ layer, Vulkan KHR-display backend, no_std/`embedded-graphics` bridge for
 MCU-class targets. Each gets its own mini-plan when prioritized; none blocks
 1.0 readiness for the kiosk/embedded niche.
 
-The declarative layer has its mini-plan: `fbui-elm/DESIGN.md` designs an
-Elm-architecture crate (`Program` = `init`/`update`/`view`/`subscriptions`,
-`Cmd`/`Sub` as data) that *reconciles* a cheap view description into the
-retained `Ui` — Elm's semantics at the retained tree's cost — with the
-equivalence tests and widget-crate prerequisites it needs. A `view!` macro is
-sugar over that layer, not a substitute for it.
+The developer-tooling track has its mini-plan: `TOOLING.md` designs the
+pieces an author who cannot see the screen needs — a headless display
+backend, widget names and a content-bearing inspector, flow scripts with
+expectations that run in-process, under the headless runner, and against a
+device, traces, lints, and a `fbui-ctl` shell client for the remote console.
+(An Elm-architecture layer was designed and set aside in favor of this: the
+retained API plus verification tooling covers the need.)
 
 ### Sequencing rationale
 
