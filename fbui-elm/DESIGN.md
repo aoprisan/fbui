@@ -12,7 +12,7 @@
 `view(&Model) -> Node<Msg>` / `subscriptions(&Model) -> Sub<Msg>` — on top of
 the existing retained `Ui<Msg>`. The app describes the whole screen as a value
 each time the model changes; a **reconciler** diffs that description against the
-retained tree and applies the difference through `Ui::with` / `Ui::stream` /
+retained tree and applies the difference through a new `Ui::patch` plus
 `add_child` / `remove`, so the damage tracker sees exactly the pixels that
 changed and nothing else. Widgets keep their internal state (scroll offsets,
 carets, tweens) across renders because they are never recreated while their
@@ -257,39 +257,45 @@ of re-rendering during an unrelated high-rate update (a clock ticking every
 second must not cause a 500-node diff of the page beside it — `lazy` the
 page, or the diff *is* cheap enough; §6.3 has the numbers to decide by).
 
-### 3.5 `map`: composing programs
+### 3.5 Composing programs: a mapper argument, not `Html.map`
 
 ```rust
 fn view(m: &Model) -> Node<Msg> {
     column().children([
-        settings::view(&m.settings).map(Msg::Settings),
-        player::view(&m.player).map(Msg::Player),
+        settings::view(&m.settings, Msg::Settings),
+        player::view(&m.player, Msg::Player),
+    ])
+}
+
+// settings.rs — a child module's view is a function taking the wrapper
+pub fn view<M: Clone + 'static>(m: &Model, wrap: impl Fn(Msg) -> M + Clone + 'static) -> Node<M> {
+    column().children([
+        switch("Dark theme", m.dark, { let w = wrap.clone(); move |on| w(Msg::Dark(on)) }),
+        button("Reset", wrap(Msg::Reset)),
     ])
 }
 ```
 
-`Node<A>::map(f: impl Fn(A) -> B + 'static) -> Node<B>` is Elm's `Html.map`
-and the only composition mechanism (Elm's stance: components are functions,
-not objects with private state — the model is the only state). The retained
-tree stores `Widget<B>` for one concrete `B`, so mapping must reach the widget
-level:
+Composition follows Elm's stance — components are functions, not objects with
+private state; the model is the only state — but v1 does **not** provide
+Elm's `Html.map` (`Node<A> -> Node<B>`). The retained tree stores `Widget<B>`
+for one concrete `B`, so a real `map` has to reach the widget level: a
+`Mapped<A, B>` wrapper widget forwarding every `Widget` method, a
+`EventCtx::remap` / `AnimCtx::remap` pair in `fbui-widgets/src/ctx.rs` to hand
+the inner widget a sibling context and translate what it emits, a composite
+`Kind`, and a lazily-wrapped child walk. It is buildable (`Outputs` is
+crate-private, so `remap` is the one place that can construct the sibling
+context, ~30 lines) but it is the most invasive prerequisite in the design,
+it muddies `Ui::inspect` names and islands inside mapped subtrees, and it is
+the least necessary: a child module's `view` taking `wrap: impl Fn(Child) ->
+Parent` gives the same modularity with zero new machinery, because callbacks
+are constructed at element-build time anyway. Child `update`s compose the
+same way (`settings::update(&mut m.settings, msg).map(Msg::Settings)` on the
+`Cmd`, which *is* cheap to map since it is data).
 
-* `MapElement<A, B>` implements `Element<B>` by delegating to the inner
-  `Element<A>` and wrapping the created widget in `widgets::Mapped<A, B>`, a
-  `Widget<B>` holding a `Box<dyn Widget<A>>` and an `Rc<dyn Fn(A) -> B>`.
-* `Mapped` forwards every `Widget` method. `event` and `animate_with` need to
-  hand the inner widget an `EventCtx<A>` / `AnimCtx<A>` — a new
-  `EventCtx::remap(&mut self, f, |ctx_a| …)` in `fbui-widgets/src/ctx.rs`
-  builds the sibling context over the same borrowed outputs, runs the body,
-  then drains and maps the messages it emitted. `Outputs` is private to the
-  crate, so this is the one place it can be done; it is ~30 lines.
-* `Kind` for a mapped element is the inner kind hashed with
-  `TypeId::of::<Mapped<A, B>>()`, so a subtree switching mappers is replaced,
-  never patched across types.
-
-Children of a mapped node are mapped lazily as the reconciler descends (each
-`Node<A>` child is wrapped into a `MapElement` on the way down); no tree is
-copied.
+`Node::map` stays on the table as a post-v1 addition once the mapper-argument
+pattern has been used in anger; its design above is recorded so it is not
+re-derived.
 
 ### 3.6 Islands: the escape hatch
 
@@ -328,11 +334,10 @@ tree: props live in the widgets, which is what makes "the previous view" free.
 reconcile(parent_id, slot: Option<WidgetId>, node: Node<Msg>):
   match slot with same kind (and key, if either side has one):
     Some(id) →
-      Patched { change, children, attrs } = node.patch(ui widget at id)
-      match change:
-        None   → nothing            (no damage; this is the idle guarantee)
-        Paint  → ui.stream(id, |_| StreamDamage::Repaint)
-        Layout → ui.with::<W, _>(id, |_| ())  (damages + relayouts)
+      Patched { change, children, attrs } =
+          ui.patch(id, |widget: &mut dyn Any| node.patch(widget))
+      (Ui::patch reads `change` — None: touch nothing; Paint: damage the
+       widget's rect; Layout: damage + re-apply style + relayout)
       apply attrs delta (tooltip / autofocus) if it changed
       if children is Diff(kids): reconcile_children(id, kids)
     None →
@@ -346,10 +351,28 @@ for: a message whose `update` changes nothing visible costs one `view`, one
 walk, and zero damage; the runner then sees `needs_paint() == false` and stays
 in `poll`.
 
-`patch` for a `Change::Paint` uses `Ui::stream` with `Repaint` rather than
-`Ui::with` because `with` also schedules a relayout — cheap when nothing
-moved, but not free, and the widget has just said its geometry is unchanged.
-`Layout` goes through `with`, which re-applies the layout style (the very
+`Ui::patch` is a new, small `Ui` method (§8) and not a reuse of `with` or
+`stream`, for a mechanical reason: the reconciler only gets `&mut W` *inside*
+a `Ui` closure, yet which damage the `Ui` should record is only known once
+`patch` returns. `with` always damages and relayouts; `stream` never
+relayouts. Neither can be chosen before the closure runs, so the closure
+must return the verdict:
+
+```rust
+impl<Msg: 'static> Ui<Msg> {
+    /// Mutate a widget, letting the closure say what the mutation changed.
+    /// `Change::None` records nothing; `Paint` damages the widget's rect;
+    /// `Layout` additionally re-applies its layout style and schedules a
+    /// relayout (what `with` does unconditionally).
+    pub fn patch<R>(&mut self, id: WidgetId, f: impl FnOnce(&mut dyn Any) -> (Change, R)) -> Option<R>;
+}
+```
+
+`with` becomes `patch` with a constant `Layout` verdict, and `stream` keeps its
+own richer `StreamDamage` for the blit case; the three share the lookup and
+the damage bookkeeping. Skipping the relayout on `Paint` matters because a
+relayout is cheap when nothing moved but not free, and the widget has just
+said its geometry is unchanged. `Layout` re-applies the layout style (the very
 thing that changed) and damages the old rect; the layout pass damages the new
 one.
 
@@ -455,7 +478,10 @@ pub enum Cmd<Msg> {
 ```
 
 `Cmd` is plain data with constructors (`Cmd::after(d, msg)`, `Cmd::perform(f)`,
-`Cmd::batch([...])`). The runtime executes commands *after* reconciling the
+`Cmd::batch([...])`) and a `map(f: Fn(A) -> B)` that wraps the payload of
+`Msg`/`After`, composes onto `Perform`'s closure, and passes the rest through;
+`Sub` has the same. This is what lets a child module's `update` return
+`Cmd<child::Msg>` and the parent lift it (§3.5). The runtime executes commands *after* reconciling the
 render that follows the update that produced them, so a `Focus` sees the tree
 it targets. `Perform` is threads, not async: this framework has no executor,
 `Proxy` is `Send + Clone`, and a kiosk's background work is an IPC reader or a
@@ -493,6 +519,19 @@ second). `SubId` defaults to `(discriminant(&msg), period)` for `Every` —
 `Worker` always names its id. The runtime holds `HashMap<SubId, Running>`
 where `Running` is a `Timer` or a `Stop` handle; dropping/cancelling is the
 whole unsubscribe.
+
+Ignoring the payload for *identity* means the payload can change while the
+subscription stays running: `Sub::every(1s, Msg::Tick(model.generation))`
+matches the existing timer on every render, and the queued message must then
+be the new one, not the one captured when the timer started. So the diff has
+three outcomes per entry, not two: start, cancel, or **update the payload in
+place**. `TimerQueue` has no such operation today; `Timer::replace(msg)` (a
+lock, swap the stored message, keep the deadline and period) is the small
+addition listed in §8. Cancel-and-restart would work but resets the phase,
+which turns a once-per-second clock into a stutter whenever the payload
+changes. `Worker` payloads live in the closure and are not updated; a worker
+that needs fresh model state should receive it through a message from
+`update`, not by re-subscribing.
 
 `Worker` gets a `Feed<Msg>` (a thin wrapper over `Proxy` that also exposes
 `is_stopped()`), so an IPC reader loop is `while !feed.is_stopped() {
@@ -593,9 +632,13 @@ one the runner uses — and resolves keys to bounds for `click`/`type_text`
    list; every existing row's `WidgetId` is unchanged (shadow inspection via
    `Ui::inspect`), and the unkeyed variant of the same test shows the shift
    (so the doc's warning is pinned, not folklore).
-5. **`map_delivers_wrapped_messages`** — a child program's button under
-   `.map(Msg::Child)` emits `Msg::Child(child::Msg::Pressed)`, through the
-   real `Ui::event` path.
+5. **`child_view_wraps_messages`** — a child module's button, built with
+   `wrap = Msg::Child`, emits `Msg::Child(child::Msg::Pressed)` through the
+   real `Ui::event` path, and the child's `Cmd` mapped with `Cmd::map` arrives
+   wrapped too.
+6. **`subscription_payload_updates_without_restart`** — re-render with
+   `Sub::every(1s, Msg::Tick(n+1))`; the timer's deadline is unchanged and
+   the next delivery carries `n+1`.
 
 ### 7.3 Snapshot parity with the retained examples
 
@@ -624,7 +667,7 @@ All additive; none changes a public behavior an `App` relies on.
 |---|---|
 | `fn adopt(&mut self, fresh: Self) -> Change` on every widget in `widgets/` (and `Change` in `widget.rs`) | The prop/state split, §3.2. Also useful to retained apps: `ui.with(id, |l| l.adopt(Label::new(..).bold()))`. |
 | `Ui::insert_child(parent, index, widget)` and `Ui::move_child(parent, id, index)` | Keyed diff needs insert-at and reorder; today only `add_child` (append) exists. Both are `taffy` `insert_child_at_index` / `remove_child` + `insert` and a `Vec` edit on `Node::children`, then `mark_full`. |
-| `EventCtx::remap` / `AnimCtx::remap` and `widgets::Mapped<A, B>` | `Node::map`, §3.5. |
+| `Ui::patch(id, \|w\| -> (Change, R))` with `with` reimplemented over it | The reconciler's verdict-driven damage, §4.2. |
 | `Ui::child_index(id) -> Option<usize>` (or expose in `InspectNode`) | Reconciler debug assertions and the harness's key index. |
 | Debug: `Ui::mutation_count()` behind `cfg(test)`/feature | Invariant 7.2.2 counts mutations rather than inferring from damage. |
 
@@ -634,11 +677,12 @@ All additive; none changes a public behavior an `App` relies on.
 |---|---|
 | `Runtime<P>: App` and `pub fn run_program<P: Program>(flags: P::Flags) -> Result<()>` | §2.3. |
 | Effect executor over `Proxy`/`Timer`: `After`, `Perform`, `Every`, `Worker`, `OnSession`, `OnDisplayChanged` | §5. `on_session` and `on_display_changed` are runner callbacks today; they get forwarded as messages when subscribed. |
+| `Timer::replace(msg)` on the timer queue | Subscription payload updates without restarting the timer, §5.2. |
 | Examples: `elm_counter`, `elm_form`, `elm_todo` (keyed list + dialog + navigator + toast + subscription) | Parity tests and the docs' worked examples. |
 
 New crate `fbui-elm` (MSRV 1.89, tracks the widget stack; `publish = false`
 until the API settles): `program.rs`, `node.rs` (`Element`, `Key`, `lazy`,
-`map`, `island`), `el/` (one file per built-in element), `reconcile.rs`,
+`island`), `el/` (one file per built-in element), `reconcile.rs`,
 `cmd.rs`, `sub.rs`, `harness.rs` (behind a `test-support` feature or as
 `fbui-elm::harness`, dev-dependency on `fbui-testkit`).
 
@@ -651,9 +695,12 @@ until the API settles): `program.rs`, `node.rs` (`Element`, `Key`, `lazy`,
   what PLAN §Phase 7 literally lists, and this design is its foundation).
 * An async runtime. Threads + `Proxy` cover the kiosk case; `Cmd::Perform` can
   grow an `async` variant behind a feature without changing the shape.
-* Component-local state. `map` is the composition tool; anything with private
-  state that is not model state is a *widget* (retained) or an island. This is
-  Elm's position and it keeps "the model is the screen" true.
+* Component-local state. A child `view` taking a mapper is the composition
+  tool; anything with private state that is not model state is a *widget*
+  (retained) or an island. This is Elm's position and it keeps "the model is
+  the screen" true.
+* `Node::map` (Elm's `Html.map`). Deferred, with its design recorded in §3.5;
+  the mapper-argument pattern covers v1.
 * Replacing `App`. Both stay; the runtime is an `App`.
 * Elm's `Html.Keyed` as a separate node type: keys are an attribute of any
   child (`keyed(k, node)`), which is simpler and covers the same cases.
@@ -663,7 +710,7 @@ until the API settles): `program.rs`, `node.rs` (`Element`, `Key`, `lazy`,
 1. *`update(&mut Model)` vs `update(Model) -> Model`.* Lean: `&mut`, §2.1.
    Reconsider only if a time-travel debugger for the remote console wants
    cheap model snapshots; a `Model: Clone` bound on that feature would do.
-2. *Should `Change::Paint` bypass relayout?* Lean: yes via `Ui::stream`, §4.2.
+2. *Should `Change::Paint` bypass relayout?* Lean: yes via `Ui::patch`, §4.2.
    Risk: a widget whose `adopt` under-reports (`Paint` when the measure
    changed) paints stale geometry. Mitigation: invariant 7.2.1 catches it, and
    `adopt` implementations default to `Layout` when unsure — the same
@@ -686,15 +733,16 @@ Sequenced so each step lands green on its own and the equivalence tests exist
 before anything depends on them.
 
 **Step A — widget-crate prerequisites** (`fbui-widgets`): `Change` + `adopt`
-on every widget, `insert_child`/`move_child`, `EventCtx::remap` + `Mapped`.
+on every widget, `Ui::patch` (with `with` re-expressed over it),
+`insert_child`/`move_child`, `Timer::replace`.
 *Exit:* `cargo test --workspace` green; an `adopt` round-trip test per widget
-(`adopt(fresh)` then snapshot equals a widget built as `fresh`); `Mapped`
-forwards every `Widget` method (a compile-time exhaustive forwarding test —
-add a method to `Widget`, the test fails to compile).
+(`adopt(fresh)` then snapshot equals a widget built as `fresh`); a
+`patch`-with-`Change::None` test asserting `needs_paint()` stays false.
 
 **Step B — `fbui-elm` headless**: `Program`, `Node`/`Element`, built-in
-elements, keyed reconciler, `lazy`, `map`, `island`, `Cmd`/`Sub` types,
-headless `Runtime` and `Harness`. *Exit:* invariants 7.2.1–5 pass; `Harness`
+elements, keyed reconciler, `lazy`, `island`, `Cmd`/`Sub` types (with
+`Cmd::map`), headless `Runtime` and `Harness`. *Exit:* invariants 7.2.1–6
+pass; `Harness`
 drives an Elm counter and form to the retained goldens (7.3); bench compiles
 with a first number recorded.
 
