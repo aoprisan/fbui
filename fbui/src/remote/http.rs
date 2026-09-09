@@ -118,7 +118,14 @@ fn serve_connection(hub: &Hub, stream: TcpStream, token: Option<&str>) -> std::i
         ),
         ("GET", "/screen.png") => screen_png(hub, &stream),
         ("GET", "/stream") => stream_frames(hub, &stream),
-        ("GET", "/tree") => tree(hub, &stream),
+        ("GET", "/tree") => tree(hub, &stream, false),
+        ("GET", "/tree.txt") => tree(hub, &stream, true),
+        ("GET", "/trace") => respond(
+            &stream,
+            200,
+            "text/plain; charset=utf-8",
+            hub.trace_tail().as_bytes(),
+        ),
         ("GET", "/metrics") => {
             let text = metrics_text(&hub.metrics());
             respond(&stream, 200, "text/plain; version=0.0.4", text.as_bytes())
@@ -320,11 +327,20 @@ fn stream_frames_inner(hub: &Hub, mut stream: &TcpStream) -> std::io::Result<()>
     }
 }
 
-fn tree(hub: &Hub, stream: &TcpStream) -> std::io::Result<()> {
+fn tree(hub: &Hub, stream: &TcpStream, as_text: bool) -> std::io::Result<()> {
     let (tx, rx) = mpsc::sync_channel(1);
-    hub.push(Command::Inspect { reply: tx });
+    hub.push(if as_text {
+        Command::InspectText { reply: tx }
+    } else {
+        Command::Inspect { reply: tx }
+    });
+    let mime = if as_text {
+        "text/plain; charset=utf-8"
+    } else {
+        "application/json"
+    };
     match rx.recv_timeout(UI_REPLY_TIMEOUT) {
-        Ok(json) => respond(stream, 200, "application/json", json.as_bytes()),
+        Ok(body) => respond(stream, 200, mime, body.as_bytes()),
         Err(_) => respond_simple(stream, 504, "UI thread did not reply"),
     }
 }

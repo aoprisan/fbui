@@ -19,6 +19,25 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Added
 
+- **`fbui-ctl` and the remote console's text endpoints** — the third flow
+  executor, and the field-support loop.
+  - **`fbui-ctl`** (a binary in `fbui`, `--features remote`, `std::net` only):
+    `tree`, `json`, `shot`, `tap`/`press`/`release`/`move`/`wheel`, `type`,
+    `key`, `trace [--follow]`, `metrics`, and `run <flow.txt>` — which resolves
+    a flow's references against the live device via `GET /tree` and injects
+    through `POST /input`. `FBUI_CTL` picks the console; `FBUI_REMOTE_TOKEN`
+    authenticates.
+  - **`GET /tree.txt`** serves `Ui::inspect_text()`, and **`GET /trace`** the
+    last 500 trace lines — which the console records whenever it is enabled,
+    even without `FBUI_TRACE`.
+  - **`fbui::remote::parse_tree`** reads the `/tree` document back into an
+    `InspectNode`, pinned to the writer by a round-trip test.
+  - `docs/tooling.md` documents the whole track; `PHASE-TOOLING.md` records
+    verified-vs-pending status and every deviation from the design;
+    `CLAUDE.md` gains the no-screen workflow.
+  - CI gains a `headless` job: every committed flow, every example lint-checked,
+    and a monkey session on three examples — no `sudo`, no `modprobe`.
+
 - **Traces, diagnostics and lints** — reading *why*, and catching what an eye
   would catch.
   - **`FBUI_TRACE=path` (or `-`)** writes one line per notable event on the

@@ -1823,7 +1823,7 @@ impl<Msg: 'static> Ui<Msg> {
     }
 
     /// The minimum tappable size the `touch-target` lint enforces, logical
-    /// px. Defaults to [`DEFAULT_TOUCH_TARGET`](crate::lint::DEFAULT_TOUCH_TARGET);
+    /// px. Defaults to [`crate::lint::DEFAULT_TOUCH_TARGET`];
     /// a touch-only kiosk should raise it to 44.
     pub fn set_touch_target(&mut self, min: f32) {
         self.touch_target = min;

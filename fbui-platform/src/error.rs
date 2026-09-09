@@ -37,6 +37,12 @@ pub enum Error {
 }
 
 impl Error {
+    /// Only the device-opening backends construct this; a headless- or
+    /// terminal-only build has no device nodes to fail on.
+    #[cfg_attr(
+        not(any(feature = "drm-backend", feature = "fbdev", feature = "evdev")),
+        allow(dead_code)
+    )]
     pub(crate) fn device(what: impl Into<String>, source: std::io::Error) -> Self {
         Error::Device {
             what: what.into(),

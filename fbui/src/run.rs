@@ -849,6 +849,18 @@ impl<A: App> Runner<A> {
         }
     }
 
+    /// Whether anything is listening: `FBUI_TRACE`, or the remote console
+    /// (whose `GET /trace` serves the tail). The expensive parts of a trace
+    /// line — an `inspect` to name the widget under the pointer — are guarded
+    /// on this, so an app with neither pays nothing.
+    fn tracing(&self) -> bool {
+        #[cfg(feature = "remote")]
+        if self.remote.is_some() {
+            return true;
+        }
+        self.trace.is_some()
+    }
+
     /// Write one trace line on the current clock (the recording's timeline
     /// during replay, so a trace lines up with the flow that produced it).
     fn trace(&mut self, kind: &'static str, detail: &str) {
@@ -856,12 +868,16 @@ impl<A: App> Runner<A> {
         if let Some(t) = &mut self.trace {
             t.line(ms, kind, detail);
         }
+        #[cfg(feature = "remote")]
+        if let Some(hub) = &self.remote {
+            hub.push_trace(format!("@{ms}\t{kind}\t{detail}"));
+        }
     }
 
     /// Run one message through `App::update`, tracing the message and what it
     /// changed — the `msg` → `mutate` half of the causal chain.
     fn apply_message(&mut self, kind: &'static str, msg: A::Message) {
-        if self.trace.is_some() {
+        if self.tracing() {
             let text = self
                 .app
                 .describe_message(&msg)
@@ -948,7 +964,7 @@ impl<A: App> Runner<A> {
     /// here, so a replay exercises exactly what a user did.
     fn handle_input(&mut self, event: InputEvent) -> Flow {
         crate::span!("input");
-        if self.trace.is_some() {
+        if self.tracing() {
             if let Some(detail) = crate::trace::input_detail(&event) {
                 // Name the widget under the pointer: "button down" alone
                 // never answers "did I hit the thing I meant to?".
@@ -1347,6 +1363,9 @@ impl<A: App> Runner<A> {
         let mut flow = Flow::Continue;
         for cmd in hub.take_commands() {
             match cmd {
+                RemoteCommand::InspectText { reply } => {
+                    let _ = reply.send(self.ui.inspect_text());
+                }
                 RemoteCommand::Inspect { reply } => {
                     let scale = self.scale.factor();
                     let json = match self.ui.inspect() {
@@ -1455,7 +1474,9 @@ fn remote_input_events(cmd: &RemoteCommand) -> Vec<InputEvent> {
             .flat_map(|c| remote_key_events(&c.to_string()))
             .collect(),
         // Handled by `service_remote` before reaching here.
-        RemoteCommand::Inspect { .. } | RemoteCommand::RefreshFrame => Vec::new(),
+        RemoteCommand::Inspect { .. }
+        | RemoteCommand::InspectText { .. }
+        | RemoteCommand::RefreshFrame => Vec::new(),
     }
 }
 
@@ -1642,7 +1663,7 @@ impl<A: App> PlatformHandler for Runner<A> {
         self.cursor_sprite.paint(frame);
         self.cursor_dirty = false;
         let paint_ms = t0.elapsed().as_secs_f32() * 1000.0;
-        if self.trace.is_some() {
+        if self.tracing() {
             let d = self.diag_delta();
             let detail = format!(
                 "paint={paint_ms:.1}ms rects={} area={}",
