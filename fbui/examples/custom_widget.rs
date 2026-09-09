@@ -15,6 +15,7 @@ use std::any::Any;
 
 use fbui::anim::{Easing, Tween};
 use fbui::ctx::EventCtx;
+use fbui::describe::Describe;
 use fbui::event::{Event, Key, PointerButton};
 use fbui::render::geom::{Rect, Size};
 use fbui::render::{Color, FontContext};
@@ -163,6 +164,14 @@ impl<Msg: 'static> Widget<Msg> for Dot<Msg> {
             }
             _ => {}
         }
+    }
+
+    // Say what this widget holds, so it is more than a bare box in a tree
+    // dump and a flow script can assert on it (`expect #dot value 1`). The
+    // `undescribed` lint flags a focusable widget that skips this.
+    fn describe(&self, out: &mut Describe) {
+        out.prop("radius", self.radius);
+        out.flag("pressed", self.pressed);
     }
 
     fn as_any_mut(&mut self) -> &mut dyn Any {

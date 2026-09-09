@@ -50,6 +50,7 @@ pub mod gesture;
 #[cfg(feature = "harness")]
 pub mod harness;
 pub mod kinetic;
+pub mod lint;
 pub mod popup;
 #[cfg(feature = "harness")]
 pub mod script;
@@ -65,12 +66,13 @@ pub use ctx::{AnimCtx, EventCtx, PaintCtx};
 pub use describe::Describe;
 pub use event::{Event, Key, Modifiers, PointerButton};
 pub use gesture::{Gesture, GestureConfig, GestureRecognizer};
+pub use lint::{Lint, Rule};
 pub use popup::{place_anchored, Alignment, AnchorSpec, Placement};
 #[cfg(feature = "harness")]
 pub use script::{Act, Executor, Failure, Ref, Script, Step};
 pub use style::Style;
 pub use theme::{Metrics, Palette, Theme};
-pub use tree::{InspectNode, PopupOptions, StreamDamage, Tooltip, Ui, WidgetId};
+pub use tree::{Diagnostics, InspectNode, PopupOptions, StreamDamage, Tooltip, Ui, WidgetId};
 pub use widget::{Anim, Widget};
 
 // Re-export the render layer so downstreams need only depend on the toolkit.

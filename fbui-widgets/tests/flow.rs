@@ -224,3 +224,57 @@ fn wait_settle_is_bounded() {
         harness::run_text(&mut ui, "wait settle\nexpect #busy running\n", |_, _| {}).unwrap();
     assert!(report.passed(), "{}", report.failure_text());
 }
+
+/// `expect no-lints` turns the lint pass into a test: a clean tree passes, and
+/// a tree with a finding fails with the finding's text.
+#[test]
+fn expect_no_lints_reports_what_the_pass_found() {
+    let (mut ui, mut app) = build();
+    let report = harness::run_text(&mut ui, "expect no-lints\n", |m, ui| {
+        update(&mut app, m, ui)
+    })
+    .unwrap();
+    assert!(report.passed(), "{}", report.failure_text());
+
+    // A viewport nobody filled is exactly the kind of thing a tree dump does
+    // not make obvious.
+    let mut ui2 = Ui::<Msg>::with_fonts(
+        Size::new(200.0, 100.0),
+        Scale::ONE,
+        Theme::dark(),
+        FontContext::with_default_font(),
+    );
+    let root = ui2.set_root(Container::column().fill());
+    ui2.add_named(root, "empty", ScrollView::new());
+    let report = harness::run_text(&mut ui2, "expect no-lints\n", |_, _| {}).unwrap();
+    assert!(!report.passed());
+    assert!(
+        report.failures[0].message.contains("empty-scroll"),
+        "{}",
+        report.failures[0].message
+    );
+}
+
+/// An ambiguous `Kind "text"` reference is fine while authoring and a hazard
+/// in a committed flow, so the lint pass reports it alongside the tree rules.
+#[test]
+fn an_ambiguous_reference_is_a_lint() {
+    let mut ui = Ui::<Msg>::with_fonts(
+        Size::new(300.0, 200.0),
+        Scale::ONE,
+        Theme::dark(),
+        FontContext::with_default_font(),
+    );
+    let root = ui.set_root(Container::column().fill().gap(4.0));
+    ui.add_child(root, Button::new("OK").on_press(|| Msg::Inc));
+    ui.add_child(root, Button::new("OK").on_press(|| Msg::Dec));
+
+    let flow = "expect no-lints\ntap Button \"OK\"\n";
+    let report = harness::run_text(&mut ui, flow, |_, _| {}).unwrap();
+    assert!(!report.passed());
+    assert!(
+        report.failures[0].message.contains("ambiguous-ref"),
+        "{}",
+        report.failures[0].message
+    );
+}

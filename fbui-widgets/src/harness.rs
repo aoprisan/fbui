@@ -140,10 +140,21 @@ pub fn run<Msg: 'static>(
     };
     let mut exec = Executor::new(script);
     loop {
+        // The lint pass is a tree walk plus a measure per text widget, so it
+        // runs only when a step actually asks for it.
+        let lints = if exec.wants_lints() {
+            let mut l = crate::lint::render(&h.ui.lint());
+            if let Some(t) = h.ui.inspect() {
+                l.extend(script::ambiguous_refs(exec.script(), &t));
+            }
+            l
+        } else {
+            Vec::new()
+        };
         // Resolution and assertions see the tree as it is *right now*, so a
         // flow follows the layout rather than a plan made at parse time.
         let tree = h.ui.inspect();
-        let Some(act) = exec.advance(Snapshot::new(tree.as_ref())) else {
+        let Some(act) = exec.advance(Snapshot::new(tree.as_ref()).with_lints(&lints)) else {
             break;
         };
         h.perform(act);

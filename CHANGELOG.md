@@ -19,6 +19,40 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Added
 
+- **Traces, diagnostics and lints** — reading *why*, and catching what an eye
+  would catch.
+  - **`FBUI_TRACE=path` (or `-`)** writes one line per notable event on the
+    replay/wall clock: `start`, `input` (with the named widget under the
+    pointer), `msg`, `mutate` (ops and damage), `frame`, `timer`, `proxy`,
+    `expect`, `lint`. That is the causal chain input → message → mutation →
+    damage → frame, which makes "the button did nothing" a one-line
+    diagnosis: no `msg` after the `input` means the callback is missing; a
+    `msg` with no `mutate` means `update` matched the wrong arm.
+  - **`App::describe_message`** (default `None`) gives the trace the app's own
+    vocabulary; a `#[derive(Debug)]` message type is a one-line impl.
+  - **`Ui::diagnostics()` / `take_diagnostics()`** — mutations, damage rects
+    and area, layouts, paints, messages, events. A few integer increments per
+    operation, always on, so a test can assert *cost* rather than only pixels.
+  - **`Ui::lint()`** reports what a tree dump never will: `touch-target`,
+    `truncated-text`, `unreachable-focus`, `off-surface`, `overflow`,
+    `empty-scroll`, `stacked-modals`, `duplicate-name`, `undescribed`, and
+    (from the script resolver) `ambiguous-ref`. `Ui::allow_lint` suppresses
+    one rule on one widget and `Ui::set_touch_target` sets the tappable
+    minimum (default 24 logical px; a touch-only kiosk should set 44).
+    `FBUI_LINT=1` runs the pass after every layout and reports each finding
+    once; `expect no-lints` makes it a flow failure.
+  - All ten shipped examples are lint-clean. Getting there fixed two real
+    bugs the pass found: the `showcase`'s panels row pushed its content off a
+    1024x600 screen, and `custom_widget`'s `Dot` described nothing.
+
+### Changed
+
+- **`Container::shrink()`** — the flexbox `min-size: 0` idiom, so a growing
+  container bounded by its parent wins over an oversized child. Without it a
+  windowing child (a `List` of 50 rows) demands its full content height and
+  pushes the page off the screen, which is what the new `overflow` lint found
+  in the `showcase` example.
+
 - **Flow scripts (`fbui-rec 2`) and two executors** — a UI interaction
   written as steps and expectations, meaning the same thing in a `cargo test`
   and under the runner.

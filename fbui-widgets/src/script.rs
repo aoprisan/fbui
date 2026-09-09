@@ -660,6 +660,45 @@ pub fn parse(text: &str) -> Result<Script, ParseError> {
     Ok(script)
 }
 
+/// `Kind "text"` references in `script` that match more than one widget in
+/// `tree`. Ambiguity is fine while authoring (`tap Button "OK"` finds the one
+/// you meant), but in a committed flow the next layout change can flip which
+/// match wins — so the lint pass says so.
+pub fn ambiguous_refs(script: &Script, tree: &InspectNode) -> Vec<String> {
+    let mut out = Vec::new();
+    for (i, step) in script.steps.iter().enumerate() {
+        let Some(r @ Ref::Kind { .. }) = step_ref(step) else {
+            continue;
+        };
+        let n = matches(tree, r).len();
+        if n > 1 {
+            out.push(format!(
+                "ambiguous-ref: line {}: {} matches {n} widgets; the next layout \
+                 change may flip which one wins",
+                script.lines[i], r
+            ));
+        }
+    }
+    out
+}
+
+/// The widget a step acts on, if it names one.
+fn step_ref(step: &Step) -> Option<&Ref> {
+    match step {
+        Step::Tap(r)
+        | Step::LongPress(r)
+        | Step::Press(r)
+        | Step::Move(r)
+        | Step::Release(Some(r))
+        | Step::Drag { target: r, .. }
+        | Step::Wheel { target: r, .. } => Some(r),
+        Step::Expect {
+            target: Some(r), ..
+        } => Some(r),
+        _ => None,
+    }
+}
+
 // ---- execution -------------------------------------------------------------
 
 /// One thing an executor must actually do, with every reference already
@@ -742,6 +781,9 @@ pub struct Executor {
     script: Script,
     next: usize,
     failures: Vec<Failure>,
+    /// Expectations evaluated since the last drain, for a trace: the source
+    /// line, its text, and whether it held.
+    checks: Vec<(usize, String, bool)>,
     /// Stop at the first failure rather than cascading through steps that
     /// were only ever going to fail because an earlier one did.
     stopped: bool,
@@ -753,6 +795,7 @@ impl Executor {
             script,
             next: 0,
             failures: Vec::new(),
+            checks: Vec::new(),
             stopped: false,
         }
     }
@@ -770,9 +813,29 @@ impl Executor {
         &self.failures
     }
 
+    /// Expectations evaluated since the last call: `(line, text, held)`. A
+    /// driver drains these into its trace, so `FBUI_TRACE` shows each
+    /// assertion as it is checked rather than only the one that failed.
+    pub fn take_checks(&mut self) -> Vec<(usize, String, bool)> {
+        std::mem::take(&mut self.checks)
+    }
+
     /// How far through the flow we are, for progress messages.
     pub fn position(&self) -> (usize, usize) {
         (self.next, self.script.steps.len())
+    }
+
+    /// Whether the next step is `expect no-lints`, so a driver can run the
+    /// lint pass only when a step actually asks for it rather than on every
+    /// step of every flow.
+    pub fn wants_lints(&self) -> bool {
+        matches!(
+            self.script.steps.get(self.next),
+            Some(Step::Expect {
+                what: Expect::NoLints,
+                ..
+            })
+        )
     }
 
     /// The next thing the driver must do, consuming steps that need nothing
@@ -781,10 +844,19 @@ impl Executor {
         while !self.is_done() {
             let i = self.next;
             self.next += 1;
+            let expectation = matches!(self.script.steps[i], Step::Expect { .. });
             match self.act_for(i, snap) {
                 Ok(Some(act)) => return Some(act),
-                Ok(None) => continue, // an expectation that held
+                Ok(None) => {
+                    // An expectation that held.
+                    self.checks
+                        .push((self.script.lines[i], self.script.sources[i].clone(), true));
+                    continue;
+                }
                 Err(f) => {
+                    if expectation {
+                        self.checks.push((f.line, f.source.clone(), false));
+                    }
                     self.failures.push(f);
                     self.stopped = true;
                     return None;

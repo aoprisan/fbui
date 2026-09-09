@@ -115,6 +115,22 @@ impl FlowDriver {
         self.exec.failures()
     }
 
+    /// Whether the next step is `expect no-lints`, so the runner runs the
+    /// lint pass only when a step asks for it.
+    pub(crate) fn wants_lints(&self) -> bool {
+        self.exec.wants_lints()
+    }
+
+    /// The flow being played, for the ambiguous-reference lint.
+    pub(crate) fn script(&self) -> &Script {
+        self.exec.script()
+    }
+
+    /// Expectations evaluated since the last call, for the trace.
+    pub(crate) fn take_checks(&mut self) -> Vec<(usize, String, bool)> {
+        self.exec.take_checks()
+    }
+
     pub(crate) fn position(&self) -> (usize, usize) {
         self.exec.position()
     }

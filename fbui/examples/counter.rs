@@ -17,7 +17,7 @@
 use fbui::widgets::{Align, Button, Container, Label};
 use fbui::{App, Ui};
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Msg {
     Inc,
     Dec,
@@ -46,6 +46,13 @@ impl App for Counter {
         let row = ui.add_named(root, "buttons", Container::row().gap(12.0));
         ui.add_named(row, "dec", Button::new("−").on_press(|| Msg::Dec));
         ui.add_named(row, "inc", Button::new("+").on_press(|| Msg::Inc));
+    }
+
+    // Give `FBUI_TRACE` the app's own vocabulary, so a trace reads
+    // `msg  Inc` rather than `msg  <msg>`. One line, and the causal chain
+    // input → message → mutation becomes legible.
+    fn describe_message(&self, msg: &Msg) -> Option<String> {
+        Some(format!("{msg:?}"))
     }
 
     fn update(&mut self, msg: Msg, ui: &mut Ui<Msg>) {
