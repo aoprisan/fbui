@@ -58,3 +58,40 @@ pub trait Seat {
     /// Drain session events after [`session_fd`](Seat::session_fd) signalled.
     fn dispatch(&mut self, sink: &mut dyn FnMut(SessionEvent)) -> Result<()>;
 }
+
+/// The seat for a backend that owns no device nodes at all — the terminal and
+/// headless displays. Every open fails (there is nothing to open) and there
+/// are no session events, so the VT/seat machinery stays out of the way.
+pub struct NullSeat {
+    name: &'static str,
+}
+
+impl NullSeat {
+    pub fn new(name: &'static str) -> Self {
+        NullSeat { name }
+    }
+}
+
+impl Seat for NullSeat {
+    fn name(&self) -> &str {
+        self.name
+    }
+
+    fn open_device(&mut self, path: &Path) -> Result<OwnedFd> {
+        Err(crate::error::Error::unsupported(format!(
+            "the {} backend has no devices to open ({})",
+            self.name,
+            path.display()
+        )))
+    }
+
+    fn close_device(&mut self, _fd: OwnedFd) {}
+
+    fn session_fd(&self) -> Option<RawFd> {
+        None
+    }
+
+    fn dispatch(&mut self, _sink: &mut dyn FnMut(SessionEvent)) -> Result<()> {
+        Ok(())
+    }
+}

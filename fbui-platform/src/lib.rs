@@ -57,7 +57,7 @@ pub use crate::geom::{Point, Rect, Size};
 pub use crate::input::{
     keysym, AxisSource, Button, InputEvent, InputSource, KeyEvent, KeyState, Keysym, Modifiers,
 };
-pub use crate::seat::{Seat, SessionEvent};
+pub use crate::seat::{NullSeat, Seat, SessionEvent};
 pub use crate::vt::{VtEvent, VtGuard};
 
 #[cfg(feature = "event-loop")]
@@ -66,7 +66,8 @@ pub use crate::event_loop::{Flow, PlatformHandler, Waker};
 /// How to bring the platform up. [`Default`] picks the conventional nodes and
 /// enables the VT guard — the right answer for a fullscreen app on the active
 /// console — and honors the `FBUI_BACKEND` environment variable (`drm`,
-/// `fbdev`, or `term`) so any binary can be redirected without a rebuild.
+/// `fbdev`, `term`, or `headless`) so any binary can be redirected without a
+/// rebuild.
 #[derive(Debug, Clone)]
 pub struct PlatformConfig {
     /// DRM card node to try first.
@@ -81,6 +82,12 @@ pub struct PlatformConfig {
     /// Skip the device backends entirely and run inside the controlling
     /// terminal emulator (requires the `term` feature; see [`term`]).
     pub prefer_term: bool,
+    /// Skip every real output and run against RAM buffers that present
+    /// nowhere (requires the `headless` feature; see
+    /// [`display::headless`]). No display, no tty, no seat, no input
+    /// devices — the CI / agent path, driven by `FBUI_REPLAY` or the remote
+    /// console.
+    pub prefer_headless: bool,
     /// Prefer the libinput backend over raw evdev (requires the `libinput`
     /// feature; falls back to evdev if it can't initialize).
     pub prefer_libinput: bool,
@@ -92,8 +99,11 @@ pub struct PlatformConfig {
 impl Default for PlatformConfig {
     fn default() -> Self {
         let backend = std::env::var("FBUI_BACKEND").unwrap_or_default();
-        if !matches!(backend.as_str(), "" | "drm" | "fbdev" | "term") {
-            eprintln!("[platform] ignoring unknown FBUI_BACKEND={backend:?} (drm | fbdev | term)");
+        if !matches!(backend.as_str(), "" | "drm" | "fbdev" | "term" | "headless") {
+            eprintln!(
+                "[platform] ignoring unknown FBUI_BACKEND={backend:?} \
+                 (drm | fbdev | term | headless)"
+            );
         }
         PlatformConfig {
             card: PathBuf::from("/dev/dri/card0"),
@@ -101,6 +111,7 @@ impl Default for PlatformConfig {
             tty: PathBuf::from("/dev/tty"),
             prefer_fbdev: backend == "fbdev",
             prefer_term: backend == "term",
+            prefer_headless: backend == "headless",
             prefer_libinput: false,
             vt_guard: true,
         }
@@ -128,6 +139,17 @@ impl Platform {
     /// fbdev), take the console, wire cooperative switching when there's no seat
     /// manager, and open the input devices.
     pub fn new(config: &PlatformConfig) -> Result<Self> {
+        #[cfg(feature = "headless")]
+        if config.prefer_headless {
+            return Self::new_headless();
+        }
+        // Asking for a backend this build doesn't have must fail loudly rather
+        // than quietly taking over a console instead (same rule as `term`).
+        #[cfg(not(feature = "headless"))]
+        if config.prefer_headless {
+            return Err(Error::FeatureDisabled("headless"));
+        }
+
         #[cfg(feature = "term")]
         if config.prefer_term {
             return Self::new_term();
@@ -224,7 +246,33 @@ impl Platform {
         Ok(Platform {
             display: Box::new(display),
             inputs: vec![Box::new(input)],
-            seat: Box::new(term::TermSeat),
+            seat: Box::new(term::NullSeat::new("term")),
+            vt: VtGuard::disabled(),
+            info,
+            #[cfg(feature = "event-loop")]
+            uevent: None,
+        })
+    }
+
+    /// Bring the platform up with **no output and no input devices**: two RAM
+    /// back buffers sized by `FBUI_HEADLESS_SIZE` (default 1024x600).
+    ///
+    /// Everything above the display is unchanged, which is the point — the
+    /// same runner, frame clock, gestures, timers and remote console run, so
+    /// a headless result is evidence about the real app. Input comes from
+    /// `FBUI_REPLAY` / `FBUI_MONKEY` / the remote console instead of devices.
+    #[cfg(feature = "headless")]
+    fn new_headless() -> Result<Self> {
+        let display = crate::display::headless::HeadlessDisplay::from_env()?;
+        let info = display.info();
+        eprintln!(
+            "[platform] display {}x{} {:?} via {:?} ({} buffers, presenting nowhere)",
+            info.size.w, info.size.h, info.format, info.backend, info.buffers,
+        );
+        Ok(Platform {
+            display: Box::new(display),
+            inputs: Vec::new(),
+            seat: Box::new(crate::seat::NullSeat::new("headless")),
             vt: VtGuard::disabled(),
             info,
             #[cfg(feature = "event-loop")]

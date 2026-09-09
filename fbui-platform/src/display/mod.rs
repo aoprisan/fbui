@@ -39,6 +39,8 @@ use crate::geom::{Rect, Size};
 pub mod drm;
 #[cfg(feature = "fbdev")]
 pub mod fbdev;
+#[cfg(feature = "headless")]
+pub mod headless;
 
 /// Static properties of the scanout, fixed for the life of a [`Display`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -72,6 +74,19 @@ pub enum BackendKind {
     /// A terminal emulator (kitty graphics protocol or half-block cells) —
     /// the development/SSH path; see [`crate::term`].
     Terminal,
+    /// RAM buffers presenting to nothing — the CI / no-screen path; see
+    /// [`crate::display::headless`].
+    Headless,
+}
+
+impl BackendKind {
+    /// Whether this backend's [`present`](Display::present) completes
+    /// synchronously, so a buffer is always free and the event loop needs no
+    /// pacing timer of its own. True for the fd-less software backends
+    /// (terminal, headless); false for fbdev, whose pan must be paced.
+    pub fn presents_synchronously(self) -> bool {
+        matches!(self, BackendKind::Terminal | BackendKind::Headless)
+    }
 }
 
 /// A back buffer borrowed for the duration of one frame.

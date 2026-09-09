@@ -14,7 +14,7 @@ publish = false
 # session path, and the calloop event loop. The libinput/libseat/xkbcommon
 # backends are gated off because they link system libraries; enable them on
 # hosts (and CI images) that provide the headers.
-default = ["drm-backend", "fbdev", "evdev", "noseat", "event-loop", "term"]
+default = ["drm-backend", "fbdev", "evdev", "noseat", "event-loop", "term", "headless"]
 
 drm-backend = ["dep:drm"]
 fbdev = []
@@ -22,6 +22,10 @@ fbdev = []
 # protocol or truecolor half-blocks) and read keys/mouse from it. Pure Rust,
 # no devices, no privileges — the development/SSH/CI path.
 term = []
+# Headless backend: two RAM buffers that present nowhere, for CI, agents, and
+# anyone driving the app with no screen and no tty. Pure Rust, no devices, no
+# privileges; on by default like the other dependency-free backends.
+headless = []
 
 # Input: raw evdev (pure Rust) is the portable default; libinput is the richer
 # path (hotplug, gestures, calibration) but needs the C library.
@@ -71,3 +75,8 @@ required-features = ["drm-backend", "fbdev", "evdev"]
 name = "term_pty"
 # Runs unprivileged against a pty pair — part of the ordinary `cargo test` run.
 required-features = ["term"]
+
+[[test]]
+name = "headless"
+# No devices, no privileges: part of the ordinary `cargo test` run.
+required-features = ["headless", "event-loop"]

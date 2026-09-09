@@ -19,6 +19,30 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Added
 
+- **A headless display backend** (`fbui-platform`, feature `headless`, on by
+  default) — `FBUI_BACKEND=headless` runs the *unmodified* runner against two
+  RAM back buffers that present nowhere: no display device, no tty, no seat,
+  no input devices, no privileges. This is what lets CI and an author who
+  cannot see the screen drive a real app (`FBUI_REPLAY`, `FBUI_MONKEY`,
+  `FBUI_REPLAY_SHOT`, the remote console) and get artifacts back. It is a
+  backend rather than a test runner on purpose: the frame clock, gestures,
+  timers, `Proxy`, power policy and record/replay are the real ones, so a
+  headless result is evidence about the real app.
+  - `FBUI_HEADLESS_SIZE=WxH` sets the surface (default `1024x600`); a
+    malformed value is a hard error like the other `FBUI_*` knobs.
+  - Buffer ages follow the DRM double-buffered sequence exactly, so the
+    *partial* redraw path runs headless rather than the `age = 0`
+    repaint-everything path a single buffer would force.
+  - Rows are padded to 64 bytes, so `stride != width * bpp` and any code that
+    recomputes the stride breaks loudly in CI instead of quietly on a device.
+  - Presents complete synchronously, so the event loop needs no pacing timer
+    and an idle headless app still burns ~0% CPU.
+  - `SIGUSR1` (or `display::headless::request_mode`) simulates a hotplug /
+    mode change, giving `on_display_changed` an off-device test for the first
+    time.
+  - `NullSeat` (`fbui-platform`) is the shared device-less seat behind the
+    terminal and headless backends.
+
 - **Text editing: `TextArea`, the clipboard, and a fuller `TextInput`** —
   closing the "clipboard-less, single-line" v1 scope from Phase 3.
   - **`TextArea`** (`fbui-widgets`): a multi-line text box with word-wrapped
