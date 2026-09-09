@@ -42,7 +42,9 @@ exit criteria (cross-crate phases live at the repo root):
   damage-aware animation API, scroll-blit fast path (`Surface::scroll_region` +
   `Widget::scroll_blit`), `tracing` spans behind the `profile` feature
   (`docs/profiling.md`), cross-thread `Waker`/`Proxy`, uevent hotplug trigger.
-- **Phases 6+** (GPU path, ecosystem backlog) — plan only.
+- **Phases 6+** (GPU path, ecosystem backlog) — plan only. The declarative
+  (Elm-architecture) layer is designed in `fbui-elm/DESIGN.md`: read it before
+  touching reconciliation, `Cmd`/`Sub`, or adding `adopt` to a widget.
 
 Remaining known gaps are tracked honestly in each `PHASEn.md` and
 `CHANGELOG.md`; most are hardware-gated (DRM cursor plane, on-device Pi-class

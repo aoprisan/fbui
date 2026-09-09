@@ -373,6 +373,13 @@ layer, Vulkan KHR-display backend, no_std/`embedded-graphics` bridge for
 MCU-class targets. Each gets its own mini-plan when prioritized; none blocks
 1.0 readiness for the kiosk/embedded niche.
 
+The declarative layer has its mini-plan: `fbui-elm/DESIGN.md` designs an
+Elm-architecture crate (`Program` = `init`/`update`/`view`/`subscriptions`,
+`Cmd`/`Sub` as data) that *reconciles* a cheap view description into the
+retained `Ui` — Elm's semantics at the retained tree's cost — with the
+equivalence tests and widget-crate prerequisites it needs. A `view!` macro is
+sugar over that layer, not a substitute for it.
+
 ### Sequencing rationale
 
 Phase 0 exists because dumb-buffer page-flipping and VT handling are where
