@@ -66,6 +66,8 @@ pub use fbui_widgets::{
 pub mod remote;
 
 #[cfg(feature = "platform")]
+mod flow;
+#[cfg(feature = "platform")]
 mod hud;
 #[cfg(feature = "platform")]
 mod monkey;

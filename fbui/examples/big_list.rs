@@ -8,43 +8,41 @@
 //! Scroll the wheel or drag; click or arrow-key to select. Esc quits.
 
 use fbui::widgets::{Container, Label, List};
-use fbui::{App, Ui, WidgetId};
+use fbui::{App, Ui};
 
 #[derive(Clone)]
 enum Msg {
     Selected(usize),
 }
 
-#[derive(Default)]
-struct Big {
-    status: Option<WidgetId>,
-}
+struct Big;
 
 impl App for Big {
     type Message = Msg;
 
     fn build(&mut self, ui: &mut Ui<Msg>) {
         let root = ui.set_root(Container::column().fill().padding(12.0).gap(8.0));
-        ui.add_child(root, Label::new("10,000 rows").size(20.0).bold());
-        self.status = Some(ui.add_child(
+        ui.add_named(root, "title", Label::new("10,000 rows").size(20.0).bold());
+        ui.add_named(
             root,
+            "status",
             Label::new("select a row").color(ui.theme().palette.muted),
-        ));
+        );
 
         let rows: Vec<String> = (0..10_000).map(|i| format!("Row #{i:05}")).collect();
-        ui.add_child(root, List::new(rows).on_select(Msg::Selected));
+        ui.add_named(root, "rows", List::new(rows).on_select(Msg::Selected));
     }
 
     fn update(&mut self, msg: Msg, ui: &mut Ui<Msg>) {
         let Msg::Selected(i) = msg;
-        if let Some(id) = self.status {
+        if let Some(id) = ui.find("status") {
             ui.with::<Label, _>(id, |l| l.set_text(format!("selected row #{i:05}")));
         }
     }
 }
 
 fn main() {
-    if let Err(e) = fbui::run(Big::default()) {
+    if let Err(e) = fbui::run(Big) {
         eprintln!("big_list: {e}");
         std::process::exit(1);
     }

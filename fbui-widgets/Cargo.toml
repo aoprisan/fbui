@@ -10,7 +10,13 @@ repository.workspace = true
 publish = false
 
 [features]
-default = []
+default = ["harness"]
+# Flow scripts and the in-process test harness: the `fbui-rec 2` parser, the
+# reference resolver, and an executor that drives a `Ui` through the same
+# `Event` path the behavior tests use. On by default because the umbrella
+# runner needs it and because an off-by-default parser is an untested one;
+# `default-features = false` drops it for a minimal embedded build.
+harness = []
 # Emit `tracing` spans through the event → layout → paint pipeline so an app can
 # capture a flamegraph of a frame. Off by default (and zero-cost when off).
 profile = ["dep:tracing"]

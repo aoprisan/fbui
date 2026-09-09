@@ -19,6 +19,44 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Added
 
+- **Flow scripts (`fbui-rec 2`) and two executors** — a UI interaction
+  written as steps and expectations, meaning the same thing in a `cargo test`
+  and under the runner.
+
+  ```
+  fbui-rec 2
+  tap #inc
+  type "milk"
+  key Enter
+  wait settle
+  expect #count text "1 item"
+  ```
+
+  - **`fbui_widgets::script`** holds everything that decides *meaning*: the
+    parser, the reference resolver (`#name`, `#screen/field`, `Kind "text"`,
+    `@x,y`), and expectation evaluation. References resolve against the live
+    tree **at the moment their step runs**, so a flow follows the layout; a
+    reference that matches nothing — or matches a widget that is not on
+    screen — fails the step instead of tapping the void.
+  - **`fbui_widgets::harness`** runs a flow in-process against a `Ui`
+    (`run_text`, `assert_flow`), feeding widget events through the same path
+    the behavior tests use and calling the caller's `update` for every
+    message. A failure panics with the failing line, the actual value, and
+    the tree.
+  - **The runner plays v2 flows** wherever `FBUI_REPLAY` takes a recording;
+    the header picks the format. Input goes through the real gesture
+    recognizer, a flow exits 0 when every expectation held and non-zero when
+    one did not, and a failure writes `<flow>.fail.txt` and `.fail.png`
+    beside the flow. `FBUI_REPLAY_STEP` (default 50 ms) paces the steps.
+    Raw `@ms` lines may be mixed in and keep their own timestamps.
+  - Committed flows for three shipped examples under `fbui/flows/`, which run
+    headless with no display, tty or privileges.
+  - `Ui::name`-based addressing means the examples no longer keep
+    `Option<WidgetId>` fields for their own labels.
+  - **Recordings are annotated**: a live press is written with the named
+    widget under it (`@120 b l p  # tap #inc`), so a recorded session can be
+    read — and hand-converted into a flow — without replaying it.
+
 - **Widget names, `Widget::describe`, and the tree as text** — the widget
   tree becomes readable without looking at the screen.
   - **`Widget::describe`** (`fbui-widgets`) reports a widget's user-visible

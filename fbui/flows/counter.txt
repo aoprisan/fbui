@@ -1,0 +1,33 @@
+# The counter example, driven with no screen.
+#
+#   cargo build -p fbui --example counter --features platform
+#   FBUI_BACKEND=headless FBUI_REPLAY=fbui/flows/counter.txt \
+#       ./target/debug/examples/counter
+#
+# Exit 0 means every expectation held. A failure prints the failing line, the
+# actual value, and writes counter.fail.txt / counter.fail.png beside this file.
+fbui-rec 2
+
+expect #title text "Counter"
+expect #count text "0"
+
+tap #inc
+expect #count text "1"
+tap #inc
+tap #inc
+expect #count text "3"
+
+tap #dec
+expect #count text "2"
+
+# The buttons are reachable by keyboard too: Tab moves focus to the next
+# focusable after the one the last tap left it on, and Space activates it.
+key Tab
+expect #inc focused
+key Space
+expect #count text "3"
+
+# Addressing without names works as well, which is what lets a flow be written
+# against an app nobody instrumented.
+tap Button "−"
+expect #count text "2"

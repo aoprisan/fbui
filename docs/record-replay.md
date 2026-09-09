@@ -49,6 +49,19 @@ FBUI_BACKEND=headless FBUI_REPLAY=/dev/null FBUI_REPLAY_TREE=t.txt \
 the shortest way to see what an app looks like with no screen at all: it
 builds the tree, renders the first frame, writes both artifacts, and exits.
 
+## Flow scripts (`fbui-rec` v2)
+
+A file whose header says `fbui-rec 2` is a **flow**: semantic steps
+(`tap #inc`, `type "milk"`, `expect #count text "1"`) resolved against the
+live widget tree instead of raw coordinates, with an exit code for a result.
+`FBUI_REPLAY` plays either format — the header picks. See `docs/tooling.md`
+for the grammar and the three executors; everything below describes v1, which
+is unchanged and still what `FBUI_RECORD` writes.
+
+A recorded press now carries the named widget under it as a trailing comment
+(`@120 b l p  # tap #inc`), which is what makes a recording readable and easy
+to convert into a flow by hand.
+
 ## File format (`fbui-rec` v1)
 
 Line-oriented text, written to be hand-editable and reviewable in a diff:
