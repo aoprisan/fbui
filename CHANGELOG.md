@@ -17,6 +17,8 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ## [Unreleased]
 
+## [0.3.0] — 2026-10-05 — Developer tooling, and the first crates.io release
+
 ### Added
 
 - **crates.io publishing.** All five crates are now publishable (`publish =
@@ -786,6 +788,7 @@ real devices.
 - libinput's `set_surface` rescale-on-hotplug override is left to the
   feature-gated backend (not in the default/CI build).
 
-[Unreleased]: https://github.com/aoprisan/fbui/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/aoprisan/fbui/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/aoprisan/fbui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aoprisan/fbui/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/aoprisan/fbui/releases/tag/v0.1.0

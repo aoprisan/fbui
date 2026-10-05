@@ -6,7 +6,7 @@ members = ["fbui-platform", "fbui-render", "fbui-testkit", "fbui-widgets", "fbui
 exclude = ["spikes"]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.76"
 license = "MIT OR Apache-2.0"
@@ -21,10 +21,10 @@ categories = ["gui", "embedded", "os::linux-apis", "rendering"]
 # siblings *exactly* — keep this in step with `workspace.package.version`
 # (`scripts/release-check.sh` enforces it, and so does the release workflow).
 [workspace.dependencies]
-fbui-platform = { path = "fbui-platform", version = "=0.2.0" }
-fbui-render = { path = "fbui-render", version = "=0.2.0" }
-fbui-widgets = { path = "fbui-widgets", version = "=0.2.0" }
-fbui-testkit = { path = "fbui-testkit", version = "=0.2.0" }
+fbui-platform = { path = "fbui-platform", version = "=0.3.0" }
+fbui-render = { path = "fbui-render", version = "=0.3.0" }
+fbui-widgets = { path = "fbui-widgets", version = "=0.3.0" }
+fbui-testkit = { path = "fbui-testkit", version = "=0.3.0" }
 
 # Release tuned for shipping on an embedded / boot-image target: small and fast.
 # `opt-level = 3` keeps the CPU renderer quick (it's the perf-sensitive part);
