@@ -7,7 +7,10 @@ edition.workspace = true
 rust-version = "1.89"
 license.workspace = true
 repository.workspace = true
-publish = false
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "README.md"
 
 [features]
 default = ["harness"]
@@ -21,8 +24,13 @@ harness = []
 # capture a flamegraph of a frame. Off by default (and zero-cost when off).
 profile = ["dep:tracing"]
 
+# docs.rs builds with the optional, pure-Rust features on so every public
+# item shows up (the C-library backends stay off: they need system headers).
+[package.metadata.docs.rs]
+features = ["harness", "profile"]
+
 [dependencies]
-fbui-render = { path = "../fbui-render" }
+fbui-render = { workspace = true }
 taffy = "0.11"
 slotmap = "1"
 tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
@@ -32,8 +40,8 @@ tracing = { version = "0.1", optional = true, default-features = false, features
 # laid-out bounds a tree dump prints — are identical on every host. Without a
 # pinned font a golden dump would be a golden of whatever fonts CI happens to
 # have installed.
-fbui-render = { path = "../fbui-render", features = ["bundled-font"] }
-fbui-testkit = { path = "../fbui-testkit" }
+fbui-render = { workspace = true, features = ["bundled-font"] }
+fbui-testkit = { workspace = true }
 criterion = { version = "0.5", default-features = false }
 # Used by the `all_widgets` example to build a procedural bitmap for ImageView.
 image = { version = "0.25", default-features = false, features = ["png"] }

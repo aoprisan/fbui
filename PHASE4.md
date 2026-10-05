@@ -16,7 +16,7 @@ carries `0.1.0` off the workspace `version`.
 | Display hotplug & mode-change without restart | `fbui-platform`: `display/{mod,drm,fbdev}.rs`, `event_loop.rs`, `input/mod.rs`; `fbui/src/run.rs` | ✅ end-to-end path; ⏳ udev trigger + on-device verify |
 | Crash-safety audit; fuzz the input parser | `fbui-platform/src/vt.rs`, `input/evdev.rs` | ✅ done & tested |
 | Docs: `cargo doc` clean, running guide, CHANGELOG, versioning | `docs/`, `CHANGELOG.md`, crate docs, `.github/workflows/ci.yml` | ✅ done |
-| CI matrix; publish 0.1 | `.github/workflows/ci.yml`, crate manifests | ✅ CI extended, version cut; ⏳ crates.io upload |
+| CI matrix; publish 0.1 | `.github/workflows/ci.yml`, crate manifests | ✅ CI extended, version cut; ✅ publish pipeline (`release.yml`, `RELEASING.md`); ⏳ first crates.io upload (needs the maintainer's token + a tag) |
 
 ## Design decisions worth knowing
 
@@ -91,7 +91,7 @@ versioning policy.
 | Every exit path restores the console; parser fuzzed | ✅ panic/signal hooks (incl. SIGQUIT), idempotency test, 300k-tuple parser fuzz |
 | Docs: a tester can bring up a device from the guide | ✅ [running-on-your-device.md](docs/running-on-your-device.md); `cargo doc` is a CI gate |
 | CI matrix (doc, benches, MSRV, VKMS) | ✅ added rustdoc + bench-compile gates to the existing fmt/clippy/test, MSRV, VKMS jobs |
-| 0.1.0 published to crates.io | ⏳ version cut workspace-wide; the upload (flip `publish`, registry token) is a release-time action, gated like the prior phases' hardware steps |
+| 0.1.0 published to crates.io | ⏳ version cut workspace-wide; `publish = false` removed and a tag-triggered publish workflow added (all five crates pass `cargo package --workspace` in CI) — the upload itself waits on the maintainer's crates.io token and a release tag (see `RELEASING.md`) |
 
 ### Gaps called out honestly (consistent with Phases 0–3)
 
