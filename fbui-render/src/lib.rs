@@ -54,11 +54,37 @@
 //! assert!(!damage.is_empty());
 //! ```
 
+//!
+//! ## `no_std`
+//!
+//! With default features off the crate is `no_std + alloc` — the painter,
+//! damage, copy-out, rotation and text from in-memory fonts are all available on
+//! a bare-metal target. The `std` feature (default) adds the `image`-crate
+//! codecs, PNG export and file paths. See `NOSTD.md` at the repo root.
+
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+/// The names `std`'s prelude provides that `core`'s doesn't, so every module
+/// reads the same in both builds (`use crate::prelude::*`).
+#[allow(unused_imports)]
+mod prelude {
+    #[cfg(not(feature = "std"))]
+    pub use crate::math::F32Ext;
+    pub use alloc::borrow::ToOwned;
+    pub use alloc::boxed::Box;
+    pub use alloc::string::{String, ToString};
+    pub use alloc::vec::Vec;
+    pub use alloc::{format, vec};
+}
+
 pub mod color;
 pub mod copyout;
 pub mod damage;
 pub mod geom;
 pub mod image;
+pub mod math;
 pub mod painter;
 pub mod path;
 pub mod rotate;
@@ -80,5 +106,7 @@ pub use painter::Painter;
 pub use path::{Path, PathBuilder};
 pub use rotate::Rotation;
 pub use scale::Scale;
-pub use surface::{encode_png_rgba, Surface};
+#[cfg(feature = "std")]
+pub use surface::encode_png_rgba;
+pub use surface::Surface;
 pub use text::{FontContext, FontFamily, TextLayout, TextStyle};

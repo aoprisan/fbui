@@ -1,5 +1,8 @@
 //! Small painting helpers shared by the widget set.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use fbui_render::geom::Rect;
 use fbui_render::{Color, Painter, TextStyle};
 

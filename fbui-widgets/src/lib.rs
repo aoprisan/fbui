@@ -27,6 +27,23 @@
 //! ui.add_child(root, Button::new("Click me").on_press(|| Msg::Clicked));
 //! ```
 
+#![cfg_attr(not(feature = "std"), no_std)]
+
+extern crate alloc;
+
+/// The names `std`'s prelude provides that `core`'s doesn't, so every module
+/// reads the same in both builds (`use crate::prelude::*`).
+#[allow(unused_imports)]
+mod prelude {
+    pub use alloc::borrow::ToOwned;
+    pub use alloc::boxed::Box;
+    pub use alloc::string::{String, ToString};
+    pub use alloc::vec::Vec;
+    pub use alloc::{format, vec};
+    #[cfg(not(feature = "std"))]
+    pub use fbui_render::math::F32Ext;
+}
+
 /// Enter a `tracing` span for the rest of the current scope when the `profile`
 /// feature is on; expands to nothing otherwise (zero cost in normal builds).
 /// Defined before the modules so they can all use it.

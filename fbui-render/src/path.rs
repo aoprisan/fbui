@@ -6,6 +6,9 @@
 //! doesn't provide: rounded corners are approximated with the standard cubic
 //! Bézier arc (control-point distance `κ·r`).
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::geom::Rect;
 
 /// Quarter-circle Bézier control-point ratio: `4/3·tan(π/8)`.
@@ -123,7 +126,7 @@ impl PathBuilder {
         if sweep == 0.0 || radius <= 0.0 {
             return self;
         }
-        let n = (sweep.abs() / std::f32::consts::FRAC_PI_2).ceil().max(1.0) as u32;
+        let n = (sweep.abs() / core::f32::consts::FRAC_PI_2).ceil().max(1.0) as u32;
         let step = sweep / n as f32;
         // Control-point distance for a cubic approximating a `step`-radian arc;
         // the sign rides along from `step`, flipping the tangents for
@@ -192,7 +195,7 @@ mod tests {
     #[test]
     fn full_circle_arc_bounds_match_circle() {
         let mut pb = PathBuilder::new();
-        pb.arc(50.0, 50.0, 20.0, 0.0, std::f32::consts::TAU);
+        pb.arc(50.0, 50.0, 20.0, 0.0, core::f32::consts::TAU);
         let b = pb.finish().unwrap().bounds();
         assert!((b.x - 30.0).abs() < 0.1 && (b.y - 30.0).abs() < 0.1);
         assert!((b.w - 40.0).abs() < 0.2 && (b.h - 40.0).abs() < 0.2);
@@ -203,7 +206,7 @@ mod tests {
         // A three-quarter sweep from 0: the last on-curve point must sit at
         // angle 1.5π, i.e. (cx, cy - r).
         let mut pb = PathBuilder::new();
-        pb.arc(0.0, 0.0, 10.0, 0.0, 1.5 * std::f32::consts::PI);
+        pb.arc(0.0, 0.0, 10.0, 0.0, 1.5 * core::f32::consts::PI);
         pb.line_to(0.0, 0.0); // close back to centre so bounds include it
         let b = pb.finish().unwrap().bounds();
         assert!(
@@ -221,10 +224,10 @@ mod tests {
     #[test]
     fn negative_sweep_mirrors_positive() {
         let mut a = PathBuilder::new();
-        a.arc(0.0, 0.0, 10.0, 0.0, std::f32::consts::FRAC_PI_2);
+        a.arc(0.0, 0.0, 10.0, 0.0, core::f32::consts::FRAC_PI_2);
         let ba = a.finish().unwrap().bounds();
         let mut b = PathBuilder::new();
-        b.arc(0.0, 0.0, 10.0, 0.0, -std::f32::consts::FRAC_PI_2);
+        b.arc(0.0, 0.0, 10.0, 0.0, -core::f32::consts::FRAC_PI_2);
         let bb = b.finish().unwrap().bounds();
         // Same footprint mirrored across y=0.
         assert!((ba.y - -bb.bottom().abs()).abs() < 0.2 || (ba.y + bb.bottom()).abs() < 0.2);

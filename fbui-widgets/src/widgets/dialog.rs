@@ -28,7 +28,10 @@
 //! the dialog see Esc. That's why opening should call
 //! [`Ui::focus_first`](crate::Ui::focus_first).
 
-use std::any::Any;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::any::Any;
 
 use fbui_render::Color;
 

@@ -6,6 +6,9 @@
 //! is exactly what PLAN §4's perf gate is specified against. Drawing it takes a
 //! [`Painter`] and a [`FontContext`]; everything is plain painter calls.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::color::Color;
 use crate::geom::{Point, Rect};
 use crate::painter::Painter;

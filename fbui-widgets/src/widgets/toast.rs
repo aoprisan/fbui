@@ -15,7 +15,10 @@
 //! [`animate`](Widget::animate), so an idle screen with no toasts costs
 //! nothing. Toasts are paint-only (no hit-testing): they never steal input.
 
-use std::any::Any;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::any::Any;
 
 use fbui_render::geom::{Point, Rect, Size};
 use fbui_render::Color;

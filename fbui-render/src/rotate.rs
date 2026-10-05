@@ -17,6 +17,9 @@
 //! rotated copy-out itself lives in [`crate::copyout`]; the runner applies the
 //! input mapping.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::geom::IRect;
 
 /// A quarter-turn rotation of the UI on the panel, clockwise.

@@ -11,6 +11,9 @@
 //! shares one editing core and the [`Ui`](crate::Ui)'s process clipboard; see
 //! `docs/text-editing.md` for the key table.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 mod button;
 mod calendar;
 mod chart;

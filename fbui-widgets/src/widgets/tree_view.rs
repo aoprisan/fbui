@@ -12,7 +12,10 @@
 //!
 //! [`List`]: crate::widgets::List
 
-use std::any::Any;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::any::Any;
 
 use fbui_render::geom::{Point, Rect};
 use fbui_render::PathBuilder;
@@ -637,7 +640,7 @@ impl<Msg: 'static> Widget<Msg> for TreeView<Msg> {
         if self.blit_dy.abs() < f32::EPSILON {
             None
         } else {
-            Some(std::mem::take(&mut self.blit_dy))
+            Some(core::mem::take(&mut self.blit_dy))
         }
     }
 

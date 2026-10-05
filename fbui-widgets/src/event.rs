@@ -5,6 +5,9 @@
 //! events before they reach a widget. Keeping this enum independent of
 //! `fbui-platform` is what lets the widget layer be tested headlessly.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use fbui_render::geom::Point;
 
 /// Which pointer/mouse button.

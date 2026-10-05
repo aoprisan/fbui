@@ -7,6 +7,9 @@
 //!
 //! [`Ui`]: crate::Ui
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use fbui_render::text::FontFamily;
 use fbui_render::Color;
 

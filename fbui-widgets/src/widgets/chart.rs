@@ -23,8 +23,11 @@
 //! - When the auto-range moves (quantized to "nice" bounds so it moves
 //!   rarely), the chart falls back to a full repaint of its box.
 
-use std::any::Any;
-use std::collections::VecDeque;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::VecDeque;
+use core::any::Any;
 
 use fbui_render::geom::{Point, Rect, Size};
 use fbui_render::path::PathBuilder;
@@ -404,7 +407,7 @@ impl<Msg: 'static> Widget<Msg> for Chart {
         if self.blit_dx == 0.0 {
             return None;
         }
-        let dx = std::mem::take(&mut self.blit_dx);
+        let dx = core::mem::take(&mut self.blit_dx);
         Some((self.plot_rect(bounds), dx, 0.0))
     }
 

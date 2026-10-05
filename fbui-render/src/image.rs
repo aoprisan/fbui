@@ -10,6 +10,10 @@
 //! with the `svg` feature — rasterize a vector icon at exactly the size you
 //! need via `Image::from_svg`.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+#[cfg(feature = "std")]
 use std::path::Path;
 
 use crate::geom::Size;
@@ -22,12 +26,14 @@ pub struct Image {
 
 impl Image {
     /// Decode PNG/JPEG bytes (format sniffed from content).
+    #[cfg(feature = "std")]
     pub fn from_encoded(bytes: &[u8]) -> Result<Image, String> {
         let dynimg = image::load_from_memory(bytes).map_err(|e| e.to_string())?;
         Ok(Image::from_rgba(dynimg.to_rgba8()))
     }
 
     /// Decode a PNG/JPEG file.
+    #[cfg(feature = "std")]
     pub fn open(path: impl AsRef<Path>) -> Result<Image, String> {
         let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
         Image::from_encoded(&bytes)
@@ -35,6 +41,7 @@ impl Image {
 
     /// Build from raw straight-alpha RGBA8 pixels, premultiplying into tiny-skia
     /// layout.
+    #[cfg(feature = "std")]
     pub fn from_rgba(img: image::RgbaImage) -> Image {
         let (w, h) = img.dimensions();
         let mut pixmap = tiny_skia::Pixmap::new(w.max(1), h.max(1)).expect("image pixmap alloc");
@@ -118,7 +125,7 @@ impl Image {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
 

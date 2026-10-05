@@ -11,6 +11,9 @@
 //! `size × scale` device pixels via cosmic-text's `physical(_, scale)`, so text
 //! stays crisp at 2× instead of being a scaled-up 1× bitmap.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 mod atlas;
 
 use cosmic_text::{Attrs, Buffer, Cursor, Family, FontSystem, Metrics, Shaping, Style, Weight};
@@ -344,6 +347,15 @@ impl FontContext {
     /// pixels (or unbounded if `None`).
     pub fn layout(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>) -> TextLayout {
         let metrics = Metrics::new(style.size, style.line_height);
+        // cosmic-text panics shaping with an empty font database. A hosted
+        // build almost never sees one, but a bare-metal target that forgot to
+        // load a font must not crash: lay out nothing (zero-size) instead.
+        if self.font_system.db().is_empty() {
+            return TextLayout {
+                buffer: Buffer::new_empty(metrics),
+                measured: Size::new(0.0, 0.0),
+            };
+        }
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
         buffer.set_size(max_width, None);
         buffer.set_text(text, &style.attrs(), Shaping::Advanced, None);

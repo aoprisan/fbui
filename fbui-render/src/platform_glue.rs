@@ -7,6 +7,9 @@
 //! `present` the damaged regions. It is the glue PLAN/PHASE1 promised, kept
 //! deliberately thin so the headless core stays the tested default.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use fbui_platform::{Display, Frame, PixelFormat, Rect as PRect, Result};
 
 use crate::copyout::TargetFormat;

@@ -14,6 +14,9 @@
 //! *destructure `&mut self`* into disjoint field references so a walk can hold
 //! `&mut nodes` and `&mut fonts` at once.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use fbui_render::geom::{Point, Rect, Size};
 use fbui_render::{FontContext, Scale, Surface};
 use slotmap::{SecondaryMap, SlotMap};
@@ -228,7 +231,7 @@ fn collect_nodes<'a>(n: &'a InspectNode, out: &mut Vec<&'a InspectNode>) {
 
 /// One dump line: `Kind #name [x,y wxh] "text" prop=value flags`.
 fn write_node_text(n: &InspectNode, depth: usize, out: &mut String) {
-    use std::fmt::Write as _;
+    use core::fmt::Write as _;
     for _ in 0..depth {
         out.push_str("  ");
     }
@@ -326,7 +329,7 @@ pub struct Ui<Msg> {
     /// [`find`](Ui::find) resolves through. Both are cleared on removal, so a
     /// name never resolves to a dead widget.
     names: SecondaryMap<WidgetId, String>,
-    by_name: std::collections::HashMap<String, WidgetId>,
+    by_name: hashbrown::HashMap<String, WidgetId>,
     /// Names that were claimed twice while both widgets were alive. The
     /// second claim wins (so `find` stays unambiguous) and the collision is
     /// reported by the `duplicate-name` lint rather than silently lost.
@@ -354,6 +357,7 @@ pub struct Ui<Msg> {
     /// At least one widget has a running animation; drive [`animate`](Self::animate).
     animating: bool,
     /// A pending [`request_screenshot`](Self::request_screenshot) destination.
+    #[cfg(feature = "std")]
     screenshot: Option<std::path::PathBuf>,
     /// The process clipboard (see [`clipboard`](Self::clipboard)).
     clipboard: String,
@@ -384,7 +388,7 @@ impl<Msg: 'static> Ui<Msg> {
             popups: Vec::new(),
             tooltips: SecondaryMap::new(),
             names: SecondaryMap::new(),
-            by_name: std::collections::HashMap::new(),
+            by_name: hashbrown::HashMap::new(),
             name_collisions: Vec::new(),
             allowed_lints: SecondaryMap::new(),
             touch_target: DEFAULT_TOUCH_TARGET,
@@ -397,6 +401,7 @@ impl<Msg: 'static> Ui<Msg> {
             needs_layout: true,
             pending_stream: false,
             animating: false,
+            #[cfg(feature = "std")]
             screenshot: None,
             clipboard: String::new(),
         }
@@ -1086,7 +1091,7 @@ impl<Msg: 'static> Ui<Msg> {
 
     /// Drain the messages widgets have emitted since the last call.
     pub fn take_messages(&mut self) -> Vec<Msg> {
-        std::mem::take(&mut self.messages)
+        core::mem::take(&mut self.messages)
     }
 
     /// Whether there is anything to repaint.
@@ -1420,6 +1425,7 @@ impl<Msg: 'static> Ui<Msg> {
     /// before the last one was taken replaces it. Embedders (the `fbui` runner,
     /// or a custom one) collect it with
     /// [`take_screenshot_request`](Self::take_screenshot_request).
+    #[cfg(feature = "std")]
     pub fn request_screenshot(&mut self, path: impl Into<std::path::PathBuf>) {
         self.screenshot = Some(path.into());
     }
@@ -1428,6 +1434,7 @@ impl<Msg: 'static> Ui<Msg> {
     /// [`request_screenshot`](Self::request_screenshot). The `fbui` runner
     /// calls this after painting each frame (and when idle with nothing to
     /// paint) and writes the surface out; a custom runner should do the same.
+    #[cfg(feature = "std")]
     pub fn take_screenshot_request(&mut self) -> Option<std::path::PathBuf> {
         self.screenshot.take()
     }

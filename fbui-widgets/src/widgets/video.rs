@@ -25,8 +25,11 @@
 //! converters for the common camera/decoder formats live in
 //! [`fbui_render::yuv`].
 
-use std::any::Any;
-use std::rc::Rc;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::rc::Rc;
+use core::any::Any;
 
 use fbui_render::geom::{Rect, Size};
 use fbui_render::{Color, Image};

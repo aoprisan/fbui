@@ -1,6 +1,9 @@
 //! [`Spinner`] — an indeterminate activity indicator.
 
-use std::any::Any;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::any::Any;
 
 use fbui_render::geom::Rect;
 
@@ -105,7 +108,7 @@ impl<Msg: 'static> Widget<Msg> for Spinner {
         for i in 0..DOTS {
             let frac = ((i as f32 - head).rem_euclid(DOTS as f32)) / DOTS as f32;
             let alpha = 1.0 - (1.0 - MIN_ALPHA) * frac;
-            let angle = std::f32::consts::TAU * i as f32 / DOTS as f32;
+            let angle = core::f32::consts::TAU * i as f32 / DOTS as f32;
             let (dx, dy) = (cx + ring_r * angle.cos(), cy + ring_r * angle.sin());
             // A dot is a fully-rounded square (there is no circle primitive).
             let dot = Rect::new(dx - dot_r, dy - dot_r, 2.0 * dot_r, 2.0 * dot_r);

@@ -13,6 +13,9 @@
 //!
 //! [`present_to_buffer`]: Surface::present_to_buffer
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::color::Color;
 use crate::copyout::{self, TargetFormat};
 use crate::damage::DamageTracker;
@@ -25,6 +28,7 @@ use crate::scale::Scale;
 /// PNG. This is [`Surface::encode_png`] for pixels that already left the
 /// surface — a frame snapshot shipped to another thread, say. Errors on a
 /// buffer that isn't exactly `width * height * 4` bytes.
+#[cfg(feature = "std")]
 pub fn encode_png_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
     if rgba.len() != width as usize * height as usize * 4 {
         return Err(format!(
@@ -171,6 +175,7 @@ impl Surface {
     /// about to be on) screen. The widget layer's `Ui::request_screenshot`
     /// pairs with this for capture from a running app; call it directly when
     /// you hold the surface (tests, tooling, a custom runner).
+    #[cfg(feature = "std")]
     pub fn encode_png(&self) -> Result<Vec<u8>, String> {
         encode_png_rgba(self.width(), self.height(), &self.to_rgba())
     }
@@ -178,6 +183,7 @@ impl Surface {
     /// Write the rendered pixels to `path` as a PNG. See
     /// [`encode_png`](Self::encode_png). Blocking file I/O — fine for
     /// diagnostics; don't call it per frame.
+    #[cfg(feature = "std")]
     pub fn write_png(&self, path: impl AsRef<std::path::Path>) -> Result<(), String> {
         let png = self.encode_png()?;
         std::fs::write(path, png).map_err(|e| e.to_string())
@@ -337,7 +343,7 @@ impl Surface {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;
     use crate::geom::Rect;

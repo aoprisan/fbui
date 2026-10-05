@@ -10,6 +10,9 @@
 //! Everything here is pure and headless: tweens take a `dt`, never a wall clock,
 //! so animations are deterministic and unit-testable.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use fbui_render::Color;
 
 /// An easing curve mapping linear progress `t ∈ [0,1]` to eased progress.
@@ -268,7 +271,7 @@ impl Spring {
             self.snap_to(self.target);
             return false;
         }
-        let omega = std::f32::consts::TAU / self.response;
+        let omega = core::f32::consts::TAU / self.response;
         let stiffness = omega * omega;
         let damping = 2.0 * self.damping_ratio * omega;
         // Substeps bounded by both a frame cap and the spring's own stiffness

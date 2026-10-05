@@ -6,6 +6,9 @@
 //! so the shortcut table is unit-tested here once and can't drift between the
 //! two widgets.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::event::{Key, Modifiers};
 
 /// What applying a key to an [`EditState`] did.

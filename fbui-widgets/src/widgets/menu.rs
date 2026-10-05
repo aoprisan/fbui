@@ -22,7 +22,10 @@
 //! [`Select`]: crate::widgets::Select
 //! [`Toasts`]: crate::widgets::Toasts
 
-use std::any::Any;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::any::Any;
 
 use fbui_render::geom::{Point, Rect, Size};
 use fbui_render::FontContext;

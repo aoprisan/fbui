@@ -5,6 +5,9 @@
 //! pixels internally; the conversion happens at the boundary in [`Color::to_tiny`]
 //! and friends, never in caller code.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 /// A straight-alpha sRGB color, one byte per channel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Color {

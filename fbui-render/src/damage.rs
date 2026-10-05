@@ -18,6 +18,9 @@
 //!    short ring of recent frame-damage and unions the right span; age `0` (or an
 //!    age deeper than our history) means "contents undefined, repaint all".
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::geom::IRect;
 
 /// Past how many rects we stop tracking them individually and just merge to a

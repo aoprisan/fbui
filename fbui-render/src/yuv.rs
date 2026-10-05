@@ -12,6 +12,9 @@
 //! pipeline converts on its producer thread (not the UI thread), and one
 //! `Vec` per frame is noise next to the decode itself.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 /// Clamp a fixed-point BT.601 result to a byte.
 #[inline]
 fn clamp8(v: i32) -> u8 {

@@ -11,6 +11,9 @@
 //! last anti-aliased column out of a repaint and leave stale pixels on screen.
 //! [`Scale::to_device_rect`] floors the origin and ceils the far edge.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::geom::{IRect, Rect};
 
 /// Device pixels per logical pixel.

@@ -8,7 +8,10 @@
 //! keeps the caret inside the box when the value outgrows it. See
 //! `docs/text-editing.md` for the key table. Still **no IME**.
 
-use std::any::Any;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::any::Any;
 
 use fbui_render::geom::{Point, Rect};
 use fbui_render::{FontContext, TextLayout, TextStyle};
@@ -73,13 +76,13 @@ impl<Msg> TextInput<Msg> {
     }
 
     /// The selected byte range (`start..end`, empty when nothing is selected).
-    pub fn selection(&self) -> std::ops::Range<usize> {
+    pub fn selection(&self) -> core::ops::Range<usize> {
         let (a, b) = self.edit.selection();
         a..b
     }
 
     /// Select `range` (clamped to char boundaries), caret at its end.
-    pub fn select(&mut self, range: std::ops::Range<usize>) {
+    pub fn select(&mut self, range: core::ops::Range<usize>) {
         self.edit.select(range.start, range.end);
     }
 

@@ -17,7 +17,10 @@
 //! its parent by default (the overlay-host case). Give it a definite size through
 //! the parent's layout if you need something smaller.
 
-use std::any::Any;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::any::Any;
 
 use fbui_render::Color;
 

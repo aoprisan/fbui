@@ -18,6 +18,9 @@
 //! before painting), so premultiplied equals straight alpha and we can take the
 //! channels as-is.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::geom::IRect;
 use crate::rotate::Rotation;
 
@@ -330,7 +333,7 @@ mod tests {
         // Decode the 16 pixels back to approximate 8-bit and collect distinct
         // 565 words: a flat input should produce *more than one* level (proof the
         // dither fired) yet every red channel stays within one step of 133.
-        let mut words = std::collections::BTreeSet::new();
+        let mut words = alloc::collections::BTreeSet::new();
         for px in dst.chunks_exact(2) {
             let v = u16::from_le_bytes([px[0], px[1]]);
             words.insert(v);

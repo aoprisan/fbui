@@ -1,6 +1,9 @@
 //! [`TabBar`] — a segmented tab strip for switching between views.
 
-use std::any::Any;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::any::Any;
 
 use fbui_render::geom::{Point, Rect};
 
