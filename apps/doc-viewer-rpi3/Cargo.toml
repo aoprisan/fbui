@@ -1,0 +1,30 @@
+[package]
+name = "doc-viewer-rpi3"
+version = "0.2.0"
+description = "The fbui doc-viewer on a Raspberry Pi 3 with no operating system: boots straight into Rust on the Cortex-A53, takes the VideoCore framebuffer through the mailbox, reads keys from the PL011 UART, and runs fbui-bare. Runs in QEMU's raspi3b machine (scripts/run.sh) or on a real board (kernel8.img)."
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Not a workspace member: it only builds for aarch64-unknown-none (see
+# .cargo/config.toml), with its own lockfile.
+[workspace]
+
+[dependencies]
+fbui-bare = { path = "../../fbui-bare" }
+fbui-doc = { path = "../../fbui-doc" }
+fbui-doc-viewer = { path = "../doc-viewer" }
+fbui-render = { path = "../../fbui-render", default-features = false }
+fbui-widgets = { path = "../../fbui-widgets", default-features = false }
+linked_list_allocator = { version = "0.10", default-features = false }
+
+[profile.dev]
+panic = "abort"
+opt-level = 1
+
+[profile.release]
+panic = "abort"
+opt-level = 3
+lto = true
+codegen-units = 1
+debug = false
