@@ -60,7 +60,11 @@ impl Image {
         }
         let mut pixmap =
             tiny_skia::Pixmap::new(width.max(1), height.max(1)).expect("image pixmap alloc");
-        for (dst, src) in pixmap.pixels_mut().iter_mut().zip(rgba.chunks_exact(4)) {
+        for (dst, src) in pixmap
+            .pixels_mut()
+            .iter_mut()
+            .zip(rgba.as_chunks::<4>().0.iter())
+        {
             *dst = tiny_skia::ColorU8::from_rgba(src[0], src[1], src[2], src[3]).premultiply();
         }
         Ok(Image { pixmap })

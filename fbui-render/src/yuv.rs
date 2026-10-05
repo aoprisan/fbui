@@ -47,7 +47,7 @@ pub fn yuyv_to_rgba(src: &[u8], width: u32, height: u32) -> Result<Vec<u8>, Stri
         ));
     }
     let mut out = Vec::with_capacity(w * h * 4);
-    for quad in src.chunks_exact(4) {
+    for quad in src.as_chunks::<4>().0.iter() {
         let [y0, u, y1, v] = [quad[0], quad[1], quad[2], quad[3]];
         for y in [y0, y1] {
             let (r, g, b) = yuv_to_rgb(y, u, v);
@@ -152,7 +152,7 @@ mod tests {
     fn nv12_solid_color_and_subsampling() {
         // A 2x2 white frame: Y plane all 235, one UV pair at neutral.
         let rgba = nv12_to_rgba(&[235; 4], &[128, 128], 2, 2).unwrap();
-        for px in rgba.chunks_exact(4) {
+        for px in rgba.as_chunks::<4>().0.iter() {
             assert_close(px, (255, 255, 255), 1, "white");
         }
 
