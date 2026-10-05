@@ -49,6 +49,15 @@ exit criteria (cross-crate phases live at the repo root):
   `Ui::lint`, and `fbui-ctl`. **Read `docs/tooling.md` before touching
   `Ui::inspect`, record/replay, or the remote console** — and use it to see
   what you changed (below).
+- **No OS / `no_std`** (`NOSTD.md` — design, measured memory budget, and
+  verified-vs-pending status) — `fbui-render` and `fbui-widgets` build
+  `#![no_std]` + `alloc` with `default-features = false` (a default `std`
+  feature keeps the hosted build unchanged; without `all-widgets` only the
+  minimal widget set compiles). `fbui-bare/` is the bare-metal runner (board
+  supplies `Framebuffer` + `Board`), `fbui-doc/` decodes PNG/JPEG and renders
+  a PDF subset, `apps/doc-viewer/` is the sample viewer app, and
+  `apps/doc-viewer-rpi3/` boots it on a Raspberry Pi 3 with no OS (verified
+  in QEMU `raspi3b`; excluded from the workspace, own lockfile).
 - **Phases 6+** (GPU path, ecosystem backlog) — plan only.
 
 Remaining known gaps are tracked honestly in each `PHASEn.md` and
@@ -77,6 +86,30 @@ cargo run -p fbui-platform --example echo   # platform-layer smoke test
 ```
 
 The Phase 0 spike builds separately (`cd spikes && cargo build --release`).
+
+### The `no_std` / bare-metal track
+
+```sh
+# No std at all: the stack must build for a target that has none.
+rustup target add thumbv7em-none-eabihf aarch64-unknown-none
+cargo build --target thumbv7em-none-eabihf -p fbui-render --no-default-features
+cargo build --target thumbv7em-none-eabihf -p fbui-widgets --no-default-features
+cargo build --target thumbv7em-none-eabihf -p fbui-bare -p fbui-doc -p fbui-doc-viewer
+cargo test -p fbui-render --no-default-features --lib   # no_std code paths, on the host
+
+# See the viewer app (host, RAM framebuffer, same Runner a board uses):
+cargo run -p fbui-doc-viewer --features std --example shots -- /tmp/shots
+# Compare the PDF renderer with poppler:
+cargo run -p fbui-doc --features std --example pdf2png -- in.pdf out.png 1 1.5
+
+# The Raspberry Pi 3 image, booted in QEMU and driven over its UART:
+apps/doc-viewer-rpi3/scripts/build.sh
+apps/doc-viewer-rpi3/scripts/qemu_drive.py apps/doc-viewer-rpi3/target/kernel8.img /tmp/rpi3 boot= open=enter next=right
+```
+
+Never pass `-p fbui-render`/`-p fbui-widgets` to a `no_std` build *without*
+`--no-default-features`: their default `std` feature unifies into the whole
+build. In `no_std` code, `f32` math needs `use fbui_render::math::F32Ext`.
 
 ### Seeing what you changed, with no screen
 
@@ -141,6 +174,7 @@ QEMU window), not SSH/serial, because they take `KD_GRAPHICS`.
 
 ```
 fbui           umbrella: re-exports render+widgets, app runner (`platform` feature)
+  (bare metal: fbui-bare replaces fbui + fbui-platform; fbui-doc sits beside render)
 fbui-widgets   retained tree, focus, theming, gestures, animation   [PHASE3/DESIGN.md]
 fbui-render    headless painter, damage, text, copy-out             [PHASE2.md]
 fbui-platform  Display / InputSource / Seat traits, VT, event loop  [PHASE1.md]
@@ -183,6 +217,13 @@ HTTP server — live screen view, input injection, widget-tree inspector,
 Prometheus metrics — activated by `FBUI_REMOTE`; see `docs/remote-console.md`;
 the module is headless-testable, the runner wiring needs `platform`) **and the
 `fbui-ctl` binary**, the shell client and third flow executor.
+
+`fbui-render` / `fbui-widgets`: **`std`** is a default feature; turning
+defaults off gives `no_std` (see `NOSTD.md` §4). `fbui-widgets` also has
+**`all-widgets`** (default) — without it only the minimal set (`Label`,
+`Button`, `Container`, `Stack`, `ScrollView`, `List`, `ImageView`,
+`ProgressBar`) compiles. `fbui-bare` forwards `bundled-font` and
+`all-widgets`.
 
 `fbui-platform`: the **default set is everything that builds with no system C
 libraries**: `drm-backend fbdev evdev noseat event-loop term headless`

@@ -381,6 +381,13 @@ device, traces, lints, and a `fbui-ctl` shell client for the remote console.
 (An Elm-architecture layer was designed and set aside in favor of this: the
 retained API plus verification tooling covers the need.)
 
+### Track — no OS (`no_std`), done outside the phase order
+
+Everything above `fbui-platform` builds `#![no_std]` + `alloc`; `fbui-bare`
+replaces the Linux runner on bare metal, `fbui-doc` renders PDF/PNG/JPEG, and
+a document viewer boots on a Raspberry Pi 3 with no OS. Design, measured
+memory budget and status: [`NOSTD.md`](NOSTD.md).
+
 ### Sequencing rationale
 
 Phase 0 exists because dumb-buffer page-flipping and VT handling are where
