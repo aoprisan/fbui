@@ -226,3 +226,9 @@ These come from the Phase 0 spike's hardware findings and recur throughout:
   change run with `FBUI_UPDATE_SNAPSHOTS=1`, review the PNG, commit it.
 - Workspace crates version in **lockstep** off `workspace.version`; changelog
   follows Keep a Changelog (see `CHANGELOG.md` for the pre-1.0 semver policy).
+- **Publishing**: all five crates go to crates.io together when a `v<version>`
+  tag is pushed (`.github/workflows/release.yml`; procedure in `RELEASING.md`).
+  Intra-workspace deps come from `[workspace.dependencies]` (`path` + an exact
+  `=x.y.z` pin) — use `{ workspace = true }`, never a bare `path`, and bump the
+  pins with the version. `scripts/release-check.sh` and CI's
+  `cargo package --workspace` catch drift.

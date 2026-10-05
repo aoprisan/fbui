@@ -1,0 +1,112 @@
+name: Release
+
+# Publishes the five workspace crates to crates.io when a `v<version>` tag is
+# pushed (see RELEASING.md). `workflow_dispatch` runs the same pipeline by hand;
+# it is a dry run unless `dry-run` is unticked, and a real dispatched publish
+# must be started from a `v*` tag ref.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: "Package and verify only; do not upload"
+        type: boolean
+        default: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: "-D warnings"
+
+# Never run two publishes at once: crates.io versions are immutable, and a race
+# would leave a half-published lockstep set.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish to crates.io
+    runs-on: ubuntu-latest
+    environment: crates-io
+    permissions:
+      contents: write # create the GitHub release
+      id-token: write # crates.io trusted publishing (OIDC)
+    env:
+      # Secrets can't be read in `if:`; expose whether the fallback token exists.
+      HAS_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: dry run?
+        id: mode
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.dry-run }}" = "true" ]; then
+            echo "dry_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "dry_run=false" >> "$GITHUB_OUTPUT"
+            if [ "${{ github.ref_type }}" != "tag" ]; then
+              echo "a real publish must run from a v* tag, not ${{ github.ref }}" >&2
+              exit 1
+            fi
+          fi
+
+      # Lockstep pins, changelog section, and (for a real publish) tag == version.
+      - name: release consistency
+        run: |
+          if [ "${{ steps.mode.outputs.dry_run }}" = "true" ]; then
+            ./scripts/release-check.sh
+          else
+            ./scripts/release-check.sh "${{ github.ref_name }}"
+          fi
+
+      # The same gates CI runs, so a tag on a commit CI never saw can't ship.
+      - name: system fonts (text tests)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            fontconfig fonts-dejavu-core fonts-noto-core fonts-noto-cjk
+      - name: tests
+        run: cargo test --workspace
+
+      # Build every crate from its packaged .crate file, siblings resolved from
+      # the other tarballs — exactly what crates.io will see.
+      - name: package + verify
+        run: cargo package --workspace
+
+      # Trusted publishing: exchanges the job's OIDC token for a short-lived
+      # crates.io token. Needs each crate configured on crates.io (Settings →
+      # Trusted Publishing → this repo, workflow `release.yml`, environment
+      # `crates-io`), which is only possible once the crate exists. Until then
+      # — i.e. for the very first upload — set a CARGO_REGISTRY_TOKEN secret on
+      # the `crates-io` environment and it is used instead.
+      - name: crates.io auth (trusted publishing)
+        id: auth
+        if: steps.mode.outputs.dry_run == 'false' && env.HAS_TOKEN != 'true'
+        uses: rust-lang/crates-io-auth-action@v1
+
+      # `cargo publish --workspace` uploads in dependency order
+      # (platform → testkit → render → widgets → fbui) and waits for each to
+      # appear in the index before publishing its dependents.
+      - name: publish
+        if: steps.mode.outputs.dry_run == 'false'
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN || steps.auth.outputs.token }}
+        run: cargo publish --workspace --no-verify
+
+      - name: GitHub release
+        if: steps.mode.outputs.dry_run == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="${TAG#v}"
+          # This version's CHANGELOG section, up to the next `## [` heading.
+          awk -v v="$version" '
+            index($0, "## [" v "]") == 1 { on = 1; next }
+            on && /^## \[/ { exit }
+            on { print }
+          ' CHANGELOG.md > release-notes.md
+          gh release create "$TAG" --title "fbui $TAG" --notes-file release-notes.md

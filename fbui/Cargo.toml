@@ -6,7 +6,10 @@ edition.workspace = true
 rust-version = "1.89"
 license.workspace = true
 repository.workspace = true
-publish = false
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../README.md"
 
 [features]
 # Headless by default (tests, snapshots, off-device tooling). The `platform`
@@ -31,10 +34,15 @@ profile = ["dep:tracing", "fbui-widgets/profile"]
 # See `docs/remote-console.md`.
 remote = []
 
+# docs.rs builds with the optional, pure-Rust features on so every public
+# item shows up (the C-library backends stay off: they need system headers).
+[package.metadata.docs.rs]
+features = ["platform", "bundled-font", "svg", "profile", "remote"]
+
 [dependencies]
-fbui-render = { path = "../fbui-render" }
-fbui-widgets = { path = "../fbui-widgets" }
-fbui-platform = { path = "../fbui-platform", optional = true }
+fbui-render = { workspace = true }
+fbui-widgets = { workspace = true }
+fbui-platform = { workspace = true, optional = true }
 tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
 
 # The remote-console CLI: the third flow executor (see `docs/tooling.md`).

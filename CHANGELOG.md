@@ -19,6 +19,18 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Added
 
+- **crates.io publishing.** All five crates are now publishable (`publish =
+  false` is gone) and carry the metadata crates.io and docs.rs want: a root
+  `README.md`, keywords/categories, `LICENSE-MIT`/`LICENSE-APACHE` texts, and
+  `[package.metadata.docs.rs]` feature sets. Sibling crates pin each other
+  exactly (`=x.y.z`, via `[workspace.dependencies]`), matching the lockstep
+  policy. Pushing a `v<version>` tag runs `.github/workflows/release.yml`:
+  consistency check, tests, `cargo package --workspace`, an ordered
+  `cargo publish --workspace` (trusted publishing, or a `CARGO_REGISTRY_TOKEN`
+  for the first upload), and a GitHub release from this changelog.
+  `scripts/release-check.sh` guards the pins/changelog/tag, and CI now
+  packages and verifies every crate on each push. See `RELEASING.md`.
+
 - **`fbui-ctl` and the remote console's text endpoints** — the third flow
   executor, and the field-support loop.
   - **`fbui-ctl`** (a binary in `fbui`, `--features remote`, `std::net` only):
