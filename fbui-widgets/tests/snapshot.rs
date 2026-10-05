@@ -1,13 +1,14 @@
-//! A widget snapshot test that is deliberately **text-free**, so it's
-//! deterministic across hosts (no font dependency): nested containers with
-//! backgrounds plus sliders at known values. This exercises the layout → paint →
-//! damage path end to end and pins the geometry of the painted output.
+//! Widget snapshot tests: layout → paint → damage end to end, pinned against
+//! golden PNGs. Every `Ui` here is built with [`ui`], which loads **only** the
+//! bundled Inter font — `Ui::new` would load the host's installed fonts, so any
+//! snapshot with text (tab labels, key caps, menus, calendar digits) would be a
+//! golden of whatever fonts the machine happens to have.
 //!
 //! Regenerate after an intentional change:
 //! `FBUI_UPDATE_SNAPSHOTS=1 cargo test -p fbui-widgets --test snapshot`
 
 use fbui_render::geom::Size;
-use fbui_render::{Color, Image, Scale, Surface};
+use fbui_render::{Color, FontContext, Image, Scale, Surface};
 use fbui_testkit::{assert_snapshot_in, Tolerance};
 use fbui_widgets::widgets::{
     Container, Keyboard, Slider, Spinner, Stack, TabBar, TextArea, VideoView,
@@ -17,10 +18,21 @@ use fbui_widgets::{Theme, Ui};
 #[derive(Clone)]
 enum Msg {}
 
+/// A `Ui` with the bundled font and nothing else, so text renders identically
+/// on every host.
+fn ui(w: u32, h: u32) -> Ui<Msg> {
+    Ui::with_fonts(
+        Size::new(w as f32, h as f32),
+        Scale::ONE,
+        Theme::dark(),
+        FontContext::with_default_font(),
+    )
+}
+
 #[test]
 fn sliders_in_panels() {
     let (w, h) = (300u32, 200u32);
-    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+    let mut ui = ui(w, h);
 
     let root = ui.set_root(Container::column().fill().padding(16.0).gap(12.0));
     for (i, v) in [10.0f32, 50.0, 90.0].into_iter().enumerate() {
@@ -52,7 +64,7 @@ fn sliders_in_panels() {
 #[test]
 fn stacked_panels_overlap_back_to_front() {
     let (w, h) = (240u32, 180u32);
-    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+    let mut ui = ui(w, h);
 
     let stack = ui.set_root(Stack::new());
     // Back: fills the whole stack.
@@ -96,7 +108,7 @@ fn stacked_panels_overlap_back_to_front() {
 #[test]
 fn keyboard_key_grid() {
     let (w, h) = (360u32, 232u32);
-    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+    let mut ui = ui(w, h);
 
     let root = ui.set_root(Container::column().fill());
     ui.add_child(root, Keyboard::new().height(h as f32));
@@ -120,7 +132,7 @@ fn keyboard_key_grid() {
 #[test]
 fn tabbar_and_spinner() {
     let (w, h) = (260u32, 120u32);
-    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+    let mut ui = ui(w, h);
 
     let root = ui.set_root(Container::column().fill().padding(12.0).gap(12.0));
     ui.add_child(root, TabBar::new(["one", "two", "three"]).selected(1));
@@ -150,7 +162,7 @@ fn menu_open() {
     use fbui_widgets::PopupOptions;
 
     let (w, h) = (240u32, 200u32);
-    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+    let mut ui = ui(w, h);
 
     let root = ui.set_root(Container::column().fill().padding(12.0));
     // Entries: 0 "Cut", 1 "Copy", 2 separator, 3 "Paste" (disabled).
@@ -191,7 +203,7 @@ fn context_menu_open() {
     use fbui_widgets::PopupOptions;
 
     let (w, h) = (240u32, 160u32);
-    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+    let mut ui = ui(w, h);
 
     let root = ui.set_root(Container::column().fill().padding(8.0));
     let cm = ui.add_child(root, ContextMenu::new(["Rename", "Delete"]).fill());
@@ -229,7 +241,7 @@ fn tooltip_shown() {
     use fbui_widgets::Tooltip;
 
     let (w, h) = (240u32, 120u32);
-    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+    let mut ui = ui(w, h);
 
     let root = ui.set_root(Container::column().padding(6.0));
     let btn = ui.add_child(root, Button::new("Save"));
@@ -263,7 +275,7 @@ fn instruments_chart_and_gauges() {
     use fbui_widgets::widgets::{Chart, Gauge};
 
     let (w, h) = (360u32, 220u32);
-    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+    let mut ui = ui(w, h);
 
     let root = ui.set_root(Container::column().fill().padding(10.0).gap(10.0));
     let dials = ui.add_child(root, Container::row().gap(10.0));
@@ -319,7 +331,7 @@ fn sparkline_inline() {
     use fbui_widgets::widgets::Chart;
 
     let (w, h) = (120u32, 40u32);
-    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+    let mut ui = ui(w, h);
     let root = ui.set_root(Container::column().fill().padding(8.0));
     let spark = ui.add_child(root, Chart::sparkline());
     ui.layout_now();
@@ -349,7 +361,7 @@ fn tree_view_disclosure_and_selection() {
     use fbui_widgets::widgets::{TreeNode, TreeView};
 
     let (w, h) = (240u32, 160u32);
-    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+    let mut ui = ui(w, h);
 
     let root = ui.set_root(Container::column().fill());
     let tv = ui.add_child(
@@ -391,7 +403,7 @@ fn calendar_month_grid() {
     use fbui_widgets::widgets::{Calendar, Date};
 
     let (w, h) = (280u32, 252u32);
-    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+    let mut ui = ui(w, h);
 
     let root = ui.set_root(Container::column());
     ui.add_child(
@@ -439,7 +451,7 @@ fn video_color_bars_letterboxed() {
     let frame = Image::from_rgba_bytes(fw, fh, &rgba).unwrap();
 
     let (w, h) = (160u32, 120u32);
-    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+    let mut ui = ui(w, h);
     let root = ui.set_root(Container::column().fill());
     let video = ui.add_child(root, VideoView::new().letterbox(Color::rgb(10, 10, 14)));
     ui.with(video, |v: &mut VideoView| v.set_frame(frame));
@@ -464,7 +476,7 @@ fn navigator_mid_slide() {
     use fbui_widgets::widgets::Navigator;
 
     let (w, h) = (200u32, 160u32);
-    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+    let mut ui = ui(w, h);
     let nav = ui.set_root(Navigator::new().duration(0.3));
     let s0 = Navigator::push(&mut ui, nav, Container::column().fill().padding(10.0));
     ui.add_child(
@@ -511,7 +523,7 @@ fn text_area_boxes() {
     use fbui_widgets::event::{Event, PointerButton};
 
     let (w, h) = (300u32, 220u32);
-    let mut ui = Ui::<Msg>::new(Size::new(w as f32, h as f32), Scale::ONE, Theme::dark());
+    let mut ui = ui(w, h);
     let root = ui.set_root(Container::column().fill().padding(16.0).gap(12.0));
     let first = ui.add_child(root, TextArea::new().rows(3));
     ui.add_child(root, TextArea::new().rows(2));
