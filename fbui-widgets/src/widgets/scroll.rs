@@ -197,14 +197,12 @@ impl<Msg: 'static> Widget<Msg> for ScrollView {
                     ctx.release_pointer();
                 }
             }
-            Event::Fling { velocity_y, .. } => {
-                // Finger moving up (negative velocity_y) coasts content upward,
-                // i.e. a positive offset velocity — matching the drag mapping.
-                if self.max_offset() > 0.0 {
-                    self.kinetic.start(-velocity_y);
-                    ctx.request_anim();
-                    ctx.set_handled();
-                }
+            // Finger moving up (negative velocity_y) coasts content upward,
+            // i.e. a positive offset velocity — matching the drag mapping.
+            Event::Fling { velocity_y, .. } if self.max_offset() > 0.0 => {
+                self.kinetic.start(-velocity_y);
+                ctx.request_anim();
+                ctx.set_handled();
             }
             _ => {}
         }

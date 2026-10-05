@@ -176,12 +176,10 @@ impl<Msg: 'static> Widget<Msg> for Button<Msg> {
                 key: Key::Space | Key::Enter,
                 pressed: true,
                 ..
-            } => {
-                if ctx.is_focused() {
-                    self.fire(ctx);
-                    ctx.request_paint();
-                    ctx.set_handled();
-                }
+            } if ctx.is_focused() => {
+                self.fire(ctx);
+                ctx.request_paint();
+                ctx.set_handled();
             }
             _ => {}
         }

@@ -9,7 +9,8 @@ A STEP is `name=keys`, keys being a comma list of: enter, esc, left, right,
 up, down, pgup, pgdn, home, end, space, or literal characters. Each step
 waits for the screen to settle, then writes OUT_DIR/<name>.ppm (and .png if
 Pillow is around). The UART log goes to OUT_DIR/serial.log. Exit status is
-non-zero if the guest panics or never prints its banner.
+non-zero if the guest panics, never prints its banner, or a screendump is
+blank (one flat colour: nothing was drawn).
 """
 import os, socket, subprocess, sys, tempfile, time
 
@@ -18,6 +19,25 @@ KEYS = {
     "up": b"\x1b[A", "down": b"\x1b[B", "pgup": b"\x1b[5~", "pgdn": b"\x1b[6~",
     "home": b"\x1b[H", "end": b"\x1b[F", "space": b" ",
 }
+
+def distinct_colours(ppm_path, limit=16):
+    """Distinct pixel values in a binary PPM (P6), counting up to `limit`."""
+    data = open(ppm_path, "rb").read()
+    fields, i = [], 0
+    while len(fields) < 4:  # magic, width, height, maxval
+        while data[i:i + 1].isspace(): i += 1
+        if data[i:i + 1] == b"#":
+            i = data.index(b"\n", i)
+            continue
+        j = i
+        while not data[j:j + 1].isspace(): j += 1
+        fields.append(data[i:j]); i = j
+    px = data[i + 1:]
+    seen = set()
+    for k in range(0, len(px) - 2, 3 * 97):  # sample every 97th pixel
+        seen.add(px[k:k + 3])
+        if len(seen) >= limit: break
+    return len(seen)
 
 def connect(path, timeout=10):
     end = time.time() + timeout
@@ -43,6 +63,7 @@ def main():
     ser, mon = connect(ser_p), connect(mon_p)
     ser.setblocking(False); mon.settimeout(2)
     text = b""
+    blank = []
 
     def pump(seconds):
         nonlocal text
@@ -81,13 +102,18 @@ def main():
                 Image.open(path).save(path[:-4] + ".png")
             except Exception:
                 pass
-            print("shot", path, flush=True)
+            colours = distinct_colours(path)
+            print("shot", path, f"({colours}+ colours)", flush=True)
+            if colours < 2:
+                blank.append(name)
             if b"PANIC" in text:
                 break
     finally:
         qemu.kill()
     sys.stdout.write(text.decode(errors="replace"))
-    ok = b"documents;" in text and b"PANIC" not in text
+    if blank:
+        print("blank screendumps:", ", ".join(blank))
+    ok = b"documents;" in text and b"PANIC" not in text and not blank
     sys.exit(0 if ok else 1)
 
 main()

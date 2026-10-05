@@ -61,7 +61,7 @@ jobs:
           cargo test -p fbui --features remote
           cargo clippy -p fbui --all-targets --features "platform remote"
           cargo test -p fbui --features "platform remote" --lib
-          # The widget layer without the flow parser / harness.
+          # The widget layer at its smallest: no_std, minimal widget set.
           cargo check -p fbui-widgets --no-default-features
           # The platform layer's headless backend on its own.
           cargo check -p fbui-platform --no-default-features --features "headless event-loop"
@@ -74,6 +74,7 @@ jobs:
         run: |
           cargo doc --no-deps -p fbui-platform -p fbui-render -p fbui-widgets -p fbui-testkit
           cargo doc --no-deps -p fbui --features platform
+          cargo doc --no-deps -p fbui-bare -p fbui-doc -p fbui-doc-viewer
       # Keep the benchmarks compiling (they're a regression gate; running them for
       # numbers needs stable hardware, but they must not bit-rot).
       - name: benches compile
@@ -128,6 +129,52 @@ jobs:
               FBUI_REPLAY_SHOT=/tmp/shot-$ex.png \
               "target/debug/examples/$ex"
           done
+
+  # The no_std track (NOSTD.md): the render/widget stack, fbui-bare, fbui-doc
+  # and the viewer app built for a target with no std at all, then the
+  # Raspberry Pi 3 image booted in QEMU and driven through its UART — every
+  # screendump must show a drawn screen and the guest must not panic.
+  nostd:
+    name: no_std + bare-metal viewer in QEMU
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf, aarch64-unknown-none
+          components: clippy, llvm-tools
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            .
+            apps/doc-viewer-rpi3
+      - name: no_std builds (thumbv7em-none-eabihf)
+        run: |
+          cargo build --target thumbv7em-none-eabihf -p fbui-render --no-default-features
+          cargo build --target thumbv7em-none-eabihf -p fbui-widgets --no-default-features
+          cargo build --target thumbv7em-none-eabihf -p fbui-widgets --no-default-features --features all-widgets
+          cargo build --target thumbv7em-none-eabihf -p fbui-bare -p fbui-doc -p fbui-doc-viewer
+      - name: no_std unit tests on the host
+        run: |
+          cargo test -p fbui-render --no-default-features --lib
+          cargo test -p fbui-widgets --no-default-features --lib
+          cargo test -p fbui-bare -p fbui-doc -p fbui-doc-viewer
+      - name: Raspberry Pi 3 image (aarch64-unknown-none)
+        run: |
+          apps/doc-viewer-rpi3/scripts/build.sh
+          (cd apps/doc-viewer-rpi3 && cargo fmt -- --check && cargo clippy --release)
+      - name: boot it in QEMU and page through documents
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-arm
+          timeout 900 python3 apps/doc-viewer-rpi3/scripts/qemu_drive.py \
+            apps/doc-viewer-rpi3/target/kernel8.img /tmp/rpi3 \
+            boot= open=enter next=right zoom=+,down fit=p library=esc png=down,down,down,enter
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: rpi3-screendumps
+          path: /tmp/rpi3
 
   # MSRV gate: the crate claims rust-version 1.76; prove it builds there.
   msrv:
