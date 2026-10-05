@@ -1,9 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["fbui-platform", "fbui-render", "fbui-testkit", "fbui-widgets", "fbui", "fbui-bare", "fbui-doc"]
-# The Phase 0 spike keeps its own lockfile and throwaway deps; it is not part of
-# the framework workspace.
-exclude = ["spikes"]
+members = ["fbui-platform", "fbui-render", "fbui-testkit", "fbui-widgets", "fbui", "fbui-bare", "fbui-doc", "apps/doc-viewer"]
+# Not part of the framework workspace, each with its own lockfile: the Phase 0
+# spike (throwaway deps) and the bare-metal board crates (they build only for
+# their own targets, so `cargo test --workspace` on the host must not see them).
+exclude = ["spikes", "apps/doc-viewer-rpi3"]
 
 [workspace.package]
 version = "0.2.0"

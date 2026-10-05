@@ -415,6 +415,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fbui-doc-viewer"
+version = "0.2.0"
+dependencies = [
+ "fbui-bare",
+ "fbui-doc",
+ "fbui-render",
+ "fbui-widgets",
+ "image",
+ "taffy",
+]
+
+[[package]]
 name = "fbui-platform"
 version = "0.2.0"
 dependencies = [
