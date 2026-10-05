@@ -1,0 +1,35 @@
+[package]
+name = "fbui-doc"
+version.workspace = true
+description = "fbui document decoders for no_std targets: PNG and JPEG via the zune codecs, and a self-contained PDF subset renderer (xref tables and streams, object streams, Flate/LZW/ASCII85/RunLength/DCT, vector paths, clipping, images, shadings, and TrueType/CFF/Type1/Type3 fonts) that rasterizes pages with tiny-skia. no_std + alloc throughout; produces tiny-skia pixmaps that fbui-render blits as Images. See NOSTD.md."
+edition.workspace = true
+rust-version = "1.89"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+default = []
+# Only gates the host-side `pdf2png` example; the library itself is
+# always `no_std` (errors implement `core::error::Error`).
+std = []
+
+[dependencies]
+# Same tiny-skia as fbui-render (0.12), so a rendered page is a pixmap the
+# painter can blit with no conversion. Default features off: no_std floats.
+tiny-skia = { version = "0.12", default-features = false, features = ["no-std-float"] }
+zune-png = { version = "0.5", default-features = false }
+zune-jpeg = { version = "0.5", default-features = false }
+zune-core = { version = "0.5", default-features = false }
+miniz_oxide = { version = "0.8", default-features = false, features = ["with-alloc"] }
+# `glyph-names`: CFF glyph lookup by name (Type1C fonts with /Differences).
+ttf-parser = { version = "0.25", default-features = false, features = ["no-std-float", "glyph-names"] }
+libm = "0.2"
+
+[dev-dependencies]
+# The host-side `pdf2png` example writes its output with the image crate.
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[[example]]
+name = "pdf2png"
+required-features = ["std"]

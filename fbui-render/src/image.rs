@@ -73,6 +73,14 @@ impl Image {
         Ok(Image { pixmap })
     }
 
+    /// Wrap an already-premultiplied [`tiny_skia::Pixmap`] with no copy —
+    /// the hand-off point for decoders that render straight into tiny-skia
+    /// (`fbui-doc`'s PDF pages and PNG/JPEG decoding, in the `no_std` build
+    /// where the `image` crate is unavailable).
+    pub fn from_pixmap(pixmap: tiny_skia::Pixmap) -> Image {
+        Image { pixmap }
+    }
+
     /// Rasterize SVG bytes at `width`×`height` device pixels (feature `svg`).
     ///
     /// The drawing is scaled to **fit** the box, preserving its aspect ratio,
