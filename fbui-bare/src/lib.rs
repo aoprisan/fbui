@@ -188,9 +188,23 @@ pub trait App {
     /// Fonts compiled into the image (TTF/OTF bytes, e.g.
     /// `include_bytes!`), used **in place** — no heap copy, which on a small
     /// target saves the size of every font. With no fonts from this or
-    /// [`fonts`](Self::fonts), the runner uses the bundled font under
-    /// `bundled-font` (also in place), and otherwise text lays out empty.
+    /// [`fonts`](Self::fonts) (nor [`bitmap_fonts`](Self::bitmap_fonts)),
+    /// the runner uses the bundled font under `bundled-font` (also in place),
+    /// else the bundled bitmap fonts under `bundled-bitmap-font`, and
+    /// otherwise text lays out empty. Needs the `outline-text` feature (on by
+    /// default); without it these are ignored.
     fn static_fonts(&self) -> Vec<&'static [u8]> {
+        Vec::new()
+    }
+
+    /// Pre-rasterized [bitmap fonts](fbui_render::text::bitmap) — e.g.
+    /// `BitmapFont::from_bytes(include_bytes!("Inter-16.fbf"))`. When any are
+    /// given they set **all** the app's text and the outline fonts are not
+    /// used: no shaping engine or rasterizer runs, and nothing is copied, so
+    /// text costs almost no heap. With the `outline-text` feature off this is
+    /// the only way to have text. Fixed sizes (the nearest is used) and no
+    /// shaping: see the module docs for what that gives up.
+    fn bitmap_fonts(&self) -> Vec<fbui_render::text::BitmapFont> {
         Vec::new()
     }
 
@@ -250,19 +264,7 @@ impl<A: App> Runner<A> {
     }
 
     fn build(mut app: A, info: FbInfo, scale: f32, band_rows: Option<u32>) -> Self {
-        let statics = app.static_fonts();
-        let owned = app.fonts();
-        let fonts = if statics.is_empty() && owned.is_empty() {
-            default_fonts()
-        } else if statics.is_empty() {
-            FontContext::with_fonts(owned)
-        } else {
-            let mut fc = FontContext::with_static_fonts(statics);
-            for f in owned {
-                fc.load_font_data(f);
-            }
-            fc
-        };
+        let fonts = font_context(&app);
         let sc = Scale::new(scale);
         let size = Size::new(info.width as f32 / scale, info.height as f32 / scale);
         let mut ui = Ui::with_fonts(size, sc, app.theme(), fonts);
@@ -595,12 +597,42 @@ fn new_surface(w: u32, h: u32, scale: Scale, band_rows: Option<u32>) -> Surface 
     }
 }
 
+/// The app's fonts: bitmap fonts if it has any, else its outline fonts,
+/// else whatever is bundled.
+fn font_context<A: App>(app: &A) -> FontContext {
+    let bitmaps = app.bitmap_fonts();
+    if !bitmaps.is_empty() {
+        return FontContext::with_bitmap_fonts(bitmaps);
+    }
+    #[cfg(feature = "outline-text")]
+    {
+        let statics = app.static_fonts();
+        let owned = app.fonts();
+        if !statics.is_empty() {
+            let mut fc = FontContext::with_static_fonts(statics);
+            for f in owned {
+                fc.load_font_data(f);
+            }
+            return fc;
+        }
+        if !owned.is_empty() {
+            return FontContext::with_fonts(owned);
+        }
+    }
+    default_fonts()
+}
+
 #[cfg(feature = "bundled-font")]
 fn default_fonts() -> FontContext {
     FontContext::with_default_font()
 }
 
-#[cfg(not(feature = "bundled-font"))]
+#[cfg(all(not(feature = "bundled-font"), feature = "bundled-bitmap-font"))]
+fn default_fonts() -> FontContext {
+    FontContext::with_default_bitmap_fonts()
+}
+
+#[cfg(not(any(feature = "bundled-font", feature = "bundled-bitmap-font")))]
 fn default_fonts() -> FontContext {
     FontContext::new()
 }

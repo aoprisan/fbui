@@ -10,18 +10,31 @@
 //! HiDPI is handled at rasterization time: glyphs are rendered at
 //! `size × scale` device pixels via cosmic-text's `physical(_, scale)`, so text
 //! stays crisp at 2× instead of being a scaled-up 1× bitmap.
+//!
+//! That outline path is the `outline-text` feature (on by default). The other
+//! backend is [bitmap fonts](bitmap): glyphs pre-rasterized at fixed sizes,
+//! read in place from flash, laid out with no shaping engine — for a small
+//! device that wants text without cosmic-text's heap and code. A
+//! [`FontContext`] holding bitmap fonts uses them; the widget code above is
+//! the same either way.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
 
+#[cfg(feature = "outline-text")]
 mod atlas;
+pub mod bitmap;
 
+#[cfg(feature = "outline-text")]
 use cosmic_text::{Attrs, Buffer, Cursor, Family, FontSystem, Metrics, Shaping, Style, Weight};
 
 use crate::color::Color;
 use crate::geom::{IRect, Point, Rect, Size};
 use crate::painter::Painter;
+#[cfg(feature = "outline-text")]
 use atlas::GlyphAtlas;
+use bitmap::BitmapLayout;
+pub use bitmap::{BitmapFont, BitmapFontError, BitmapFontWriter};
 
 /// Which font to shape with. `Name` picks a specific family; the others are the
 /// generic CSS-style buckets resolved against the font database.
@@ -74,6 +87,7 @@ impl TextStyle {
         self
     }
 
+    #[cfg(feature = "outline-text")]
     fn attrs(&self) -> Attrs<'_> {
         let family = match &self.family {
             FontFamily::SansSerif => Family::SansSerif,
@@ -96,14 +110,105 @@ impl TextStyle {
     }
 }
 
-/// A shaped, laid-out paragraph ready to draw. Holds the cosmic-text buffer so
-/// the (expensive) shaping is done once and reused across repaints.
+/// A shaped, laid-out paragraph ready to draw. The (expensive) layout is done
+/// once and reused across repaints.
 pub struct TextLayout {
+    repr: Repr,
+}
+
+enum Repr {
+    #[cfg(feature = "outline-text")]
+    Outline(OutlineLayout),
+    Bitmap(BitmapLayout),
+    /// No font to lay out with: nothing, one empty line.
+    Empty {
+        line_height: f32,
+    },
+}
+
+impl TextLayout {
+    /// The measured logical size of the laid-out text (width of the widest line,
+    /// total height of all lines).
+    pub fn size(&self) -> Size {
+        match &self.repr {
+            #[cfg(feature = "outline-text")]
+            Repr::Outline(l) => l.size(),
+            Repr::Bitmap(l) => l.size(),
+            Repr::Empty { .. } => Size::new(0.0, 0.0),
+        }
+    }
+
+    /// The logical height of one line (font size × line-height factor), the
+    /// vertical step between wrapped or explicit lines.
+    pub fn line_height(&self) -> f32 {
+        match &self.repr {
+            #[cfg(feature = "outline-text")]
+            Repr::Outline(l) => l.line_height(),
+            Repr::Bitmap(l) => l.line_height(),
+            Repr::Empty { line_height } => *line_height,
+        }
+    }
+
+    /// Number of *visual* lines after wrapping (at least 1, even for empty text).
+    pub fn line_count(&self) -> usize {
+        match &self.repr {
+            #[cfg(feature = "outline-text")]
+            Repr::Outline(l) => l.line_count(),
+            Repr::Bitmap(l) => l.line_count(),
+            Repr::Empty { .. } => 1,
+        }
+    }
+
+    /// The byte offset (a char boundary in the source text) nearest to logical
+    /// point (`x`, `y`) measured from the layout's top-left. Points above the
+    /// first line map to its start, below the last line to its end, and
+    /// beyond a line's ends to that line's ends — what a click or drag into
+    /// text should resolve to.
+    pub fn hit(&self, x: f32, y: f32) -> usize {
+        match &self.repr {
+            #[cfg(feature = "outline-text")]
+            Repr::Outline(l) => l.hit(x, y),
+            Repr::Bitmap(l) => l.hit(x, y),
+            Repr::Empty { .. } => 0,
+        }
+    }
+
+    /// The caret box for the boundary before byte `idx`: zero-width, at the
+    /// glyph edge, spanning the line's height. Falls back to the start of the
+    /// first line (or the line's end for an offset past the text) so a caret
+    /// always has somewhere to draw — including in empty text.
+    pub fn caret(&self, idx: usize) -> Rect {
+        match &self.repr {
+            #[cfg(feature = "outline-text")]
+            Repr::Outline(l) => l.caret(idx),
+            Repr::Bitmap(l) => l.caret(idx),
+            Repr::Empty { line_height } => Rect::new(0.0, 0.0, 0.0, *line_height),
+        }
+    }
+
+    /// Highlight boxes covering the source byte range `a..b` (either order),
+    /// one per visual line touched — plus a thin marker at a line's end when
+    /// the selection continues onto the next line, so a selected line break
+    /// is visible. Empty when `a == b`.
+    pub fn selection_rects(&self, a: usize, b: usize) -> Vec<Rect> {
+        match &self.repr {
+            #[cfg(feature = "outline-text")]
+            Repr::Outline(l) => l.selection_rects(a, b),
+            Repr::Bitmap(l) => l.selection_rects(a, b),
+            Repr::Empty { .. } => Vec::new(),
+        }
+    }
+}
+
+/// A cosmic-text layout: the shaped buffer and its measured size.
+#[cfg(feature = "outline-text")]
+struct OutlineLayout {
     buffer: Buffer,
     measured: Size,
 }
 
-impl TextLayout {
+#[cfg(feature = "outline-text")]
+impl OutlineLayout {
     /// The measured logical size of the laid-out text (width of the widest line,
     /// total height of all lines).
     pub fn size(&self) -> Size {
@@ -265,15 +370,23 @@ pub const DEFAULT_FONT: &[u8] = include_bytes!("../../fonts/Inter-Regular.ttf");
 /// Construction does **not** scan the host's installed fonts: [`new`] starts
 /// from an empty database, so on a minimal target (a boot image, a kiosk) text
 /// renders only from fonts you load — deterministic and host-independent, which
-/// is what an embedded/ISO target wants. Use [`with_fonts`] to start from a
-/// bundled set, or `with_default_font` (behind the `bundled-font` feature) for
-/// the compiled-in default.
+/// is what an embedded/ISO target wants. Use `with_fonts` /
+/// `with_static_fonts` to start from a bundled set (outline text), or
+/// `with_default_font` (behind the `bundled-font` feature) for the
+/// compiled-in default; or [`with_bitmap_fonts`] for pre-rasterized fonts
+/// with no shaping engine.
 ///
 /// [`new`]: FontContext::new
-/// [`with_fonts`]: FontContext::with_fonts
+/// [`with_bitmap_fonts`]: FontContext::with_bitmap_fonts
 pub struct FontContext {
+    #[cfg(feature = "outline-text")]
     font_system: FontSystem,
+    #[cfg(feature = "outline-text")]
     atlas: GlyphAtlas,
+    /// Bitmap fonts; when there are any, they set all text.
+    bitmaps: Vec<BitmapFont>,
+    /// Device pixels per logical pixel, for choosing a bitmap size.
+    scale: f32,
 }
 
 impl Default for FontContext {
@@ -284,15 +397,69 @@ impl Default for FontContext {
 
 impl FontContext {
     /// Build a context with an empty font database. Load fonts with
-    /// [`load_font_data`](Self::load_font_data) before drawing, or prefer
-    /// [`with_fonts`](Self::with_fonts) to supply them up front.
+    /// `load_font_data` / `add_bitmap_font` before drawing, or prefer
+    /// `with_fonts` / [`with_bitmap_fonts`](Self::with_bitmap_fonts) to
+    /// supply them up front.
     pub fn new() -> Self {
         FontContext {
+            #[cfg(feature = "outline-text")]
             font_system: FontSystem::new(),
+            #[cfg(feature = "outline-text")]
             atlas: GlyphAtlas::new(),
+            bitmaps: Vec::new(),
+            scale: 1.0,
         }
     }
 
+    /// A context that sets all text in `fonts` — pre-rasterized
+    /// [bitmap fonts](bitmap), read in place. No shaping engine or
+    /// rasterizer runs, and no font data is copied: the cheapest way to have
+    /// text on a small device, at the cost of fixed sizes and no shaping.
+    /// The outline database starts empty and is never touched.
+    pub fn with_bitmap_fonts(fonts: impl IntoIterator<Item = BitmapFont>) -> Self {
+        let mut fc = FontContext {
+            #[cfg(feature = "outline-text")]
+            font_system: FontSystem::new_with_locale_and_db(
+                "en-US".into(),
+                cosmic_text::fontdb::Database::new(),
+            ),
+            #[cfg(feature = "outline-text")]
+            atlas: GlyphAtlas::new(),
+            bitmaps: Vec::new(),
+            scale: 1.0,
+        };
+        fc.bitmaps.extend(fonts);
+        fc
+    }
+
+    /// The bundled bitmap fonts: Inter Regular at 12, 16, 20 and 24 px,
+    /// Latin-1 (behind the `bundled-bitmap-font` feature). See
+    /// [`with_bitmap_fonts`](Self::with_bitmap_fonts).
+    #[cfg(feature = "bundled-bitmap-font")]
+    pub fn with_default_bitmap_fonts() -> Self {
+        Self::with_bitmap_fonts(bitmap::bundled())
+    }
+
+    /// Add a bitmap font. Once a context holds any, bitmap fonts set all of
+    /// its text.
+    pub fn add_bitmap_font(&mut self, font: BitmapFont) {
+        self.bitmaps.push(font);
+    }
+
+    /// Whether text is set in bitmap fonts.
+    pub fn uses_bitmap_fonts(&self) -> bool {
+        !self.bitmaps.is_empty()
+    }
+
+    /// The device scale text is drawn at. Bitmap fonts pick the size nearest
+    /// `style.size × scale` device pixels when laying out, so the owner of
+    /// the context (the `Ui`) keeps this in step with its surface. The
+    /// outline path rasterizes at draw time and ignores it.
+    pub fn set_scale(&mut self, scale: crate::Scale) {
+        self.scale = scale.factor();
+    }
+
+    #[cfg(feature = "outline-text")]
     /// Build a context from a fixed set of in-memory fonts (TTF/OTF), with **no**
     /// host-font dependence — rendering is reproducible across machines, the
     /// property a boot image or kiosk needs.
@@ -309,6 +476,7 @@ impl FontContext {
         Self::from_db(db)
     }
 
+    #[cfg(feature = "outline-text")]
     /// As [`with_fonts`](Self::with_fonts), for font data that lives for the
     /// whole program — `include_bytes!` in flash, say. The bytes are used in
     /// place: nothing is copied into the heap, which on a small target saves
@@ -323,6 +491,7 @@ impl FontContext {
         Self::from_db(db)
     }
 
+    #[cfg(feature = "outline-text")]
     /// Install the first face as every generic family's default and build
     /// the context around `db`.
     fn from_db(mut db: cosmic_text::fontdb::Database) -> Self {
@@ -345,6 +514,8 @@ impl FontContext {
             // host, decide coverage.
             font_system: FontSystem::new_with_locale_and_db("en-US".to_string(), db),
             atlas: GlyphAtlas::new(),
+            bitmaps: Vec::new(),
+            scale: 1.0,
         }
     }
 
@@ -357,12 +528,14 @@ impl FontContext {
         Self::with_static_fonts([DEFAULT_FONT])
     }
 
+    #[cfg(feature = "outline-text")]
     /// Add a font from in-memory bytes (TTF/OTF). Useful for bundling a fixed
     /// font so rendering is reproducible regardless of the host's installed set.
     pub fn load_font_data(&mut self, data: Vec<u8>) {
         self.font_system.db_mut().load_font_data(data);
     }
 
+    #[cfg(feature = "outline-text")]
     /// Add a font whose bytes live for the whole program, used in place (see
     /// [`with_static_fonts`](Self::with_static_fonts)).
     pub fn load_static_font(&mut self, data: &'static [u8]) {
@@ -376,14 +549,38 @@ impl FontContext {
     /// Shape and lay out `text` in `style`, wrapping at `max_width` logical
     /// pixels (or unbounded if `None`).
     pub fn layout(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>) -> TextLayout {
+        if let Some(font) = bitmap::select(&self.bitmaps, style, self.scale) {
+            let l = BitmapLayout::new(font, text, style, max_width, self.scale);
+            return TextLayout {
+                repr: Repr::Bitmap(l),
+            };
+        }
+        #[cfg(feature = "outline-text")]
+        {
+            TextLayout {
+                repr: self.layout_outline(text, style, max_width),
+            }
+        }
+        #[cfg(not(feature = "outline-text"))]
+        {
+            let _ = (text, max_width);
+            TextLayout {
+                repr: Repr::Empty {
+                    line_height: style.line_height,
+                },
+            }
+        }
+    }
+
+    #[cfg(feature = "outline-text")]
+    fn layout_outline(&mut self, text: &str, style: &TextStyle, max_width: Option<f32>) -> Repr {
         let metrics = Metrics::new(style.size, style.line_height);
         // cosmic-text panics shaping with an empty font database. A hosted
         // build almost never sees one, but a bare-metal target that forgot to
         // load a font must not crash: lay out nothing (zero-size) instead.
         if self.font_system.db().is_empty() {
-            return TextLayout {
-                buffer: Buffer::new_empty(metrics),
-                measured: Size::new(0.0, 0.0),
+            return Repr::Empty {
+                line_height: style.line_height,
             };
         }
         let mut buffer = Buffer::new(&mut self.font_system, metrics);
@@ -398,10 +595,10 @@ impl FontContext {
             width = width.max(run.line_w);
             height = height.max(run.line_top + run.line_height);
         }
-        TextLayout {
+        Repr::Outline(OutlineLayout {
             buffer,
             measured: Size::new(width, height),
-        }
+        })
     }
 
     /// Convenience: shape and draw in one call.
@@ -420,6 +617,22 @@ impl FontContext {
     /// Composite an already-shaped [`TextLayout`] into the painter with its
     /// top-left at logical point `at`, in `color`.
     pub fn draw(&mut self, painter: &mut Painter, layout: &TextLayout, color: Color, at: Point) {
+        match &layout.repr {
+            #[cfg(feature = "outline-text")]
+            Repr::Outline(l) => self.draw_outline(painter, l, color, at),
+            Repr::Bitmap(l) => draw_bitmap(painter, l, color, at),
+            Repr::Empty { .. } => {}
+        }
+    }
+
+    #[cfg(feature = "outline-text")]
+    fn draw_outline(
+        &mut self,
+        painter: &mut Painter,
+        layout: &OutlineLayout,
+        color: Color,
+        at: Point,
+    ) {
         let scale = painter.scale().factor();
         let clip = painter.clip();
         let base_x = (at.x * scale).round() as i32;
@@ -449,15 +662,23 @@ impl FontContext {
                 let gx = base_x + physical.x + raster.left;
                 let gy = base_y + line_y + physical.y - raster.top;
 
-                composite_glyph(
+                let (rw, rcolor, data) = (raster.width as i32, raster.color, &raster.data);
+                composite(
                     target.pixels_mut(),
-                    tw,
-                    th,
-                    raster,
-                    gx - ox,
-                    gy - oy,
+                    (tw, th),
+                    (raster.width, raster.height),
+                    (gx - ox, gy - oy),
                     gc,
                     target_clip,
+                    |col, row| {
+                        if rcolor {
+                            // Emoji: straight RGBA source.
+                            let o = ((row * rw + col) * 4) as usize;
+                            Sample::Rgba(data[o], data[o + 1], data[o + 2], data[o + 3])
+                        } else {
+                            Sample::Coverage(data[(row * rw + col) as usize])
+                        }
+                    },
                 );
                 dirty = dirty.union(IRect::new(gx, gy, raster.width, raster.height));
             }
@@ -467,47 +688,76 @@ impl FontContext {
     }
 }
 
-/// Blend one rasterized glyph into the target's premultiplied pixels with
-/// source-over alpha, clipped to `clip` and the buffer bounds.
-#[allow(clippy::too_many_arguments)]
-fn composite_glyph(
+/// Draw a bitmap-font layout with its top-left at logical `at`.
+fn draw_bitmap(painter: &mut Painter, layout: &BitmapLayout, color: Color, at: Point) {
+    let scale = painter.scale().factor();
+    let clip = painter.clip();
+    let base_x = (at.x * scale).round() as i32;
+    let base_y = (at.y * scale).round() as i32;
+    let (ox, oy) = painter.origin();
+    let target_clip = IRect::new(clip.x - ox, clip.y - oy, clip.w, clip.h);
+    let target = painter.target();
+    let (tw, th) = (target.width() as i32, target.height() as i32);
+    let mut dirty = IRect::EMPTY;
+    for (glyph, pen_x, baseline) in layout.glyphs() {
+        // Placed like the outline path: pen and baseline rounded to device
+        // pixels, then the bitmap's own offsets.
+        let gx = base_x + pen_x.round() as i32 + glyph.left;
+        let gy = base_y + baseline.round() as i32 - glyph.top;
+        composite(
+            target.pixels_mut(),
+            (tw, th),
+            (glyph.width, glyph.height),
+            (gx - ox, gy - oy),
+            color,
+            target_clip,
+            |col, row| Sample::Coverage(glyph.coverage(col as u32, row as u32)),
+        );
+        dirty = dirty.union(IRect::new(gx, gy, glyph.width, glyph.height));
+    }
+    painter.add_damage(dirty);
+}
+
+/// One glyph pixel: coverage of the run colour, or a colour (emoji) pixel.
+enum Sample {
+    Coverage(u8),
+    #[cfg_attr(not(feature = "outline-text"), allow(dead_code))]
+    Rgba(u8, u8, u8, u8),
+}
+
+/// Blend one glyph of `size` at `at` (target pixels) into the target's
+/// premultiplied pixels with source-over alpha, clipped to `clip` and the
+/// buffer bounds. `sample(col, row)` reads the glyph.
+fn composite(
     pixels: &mut [tiny_skia::PremultipliedColorU8],
-    tw: i32,
-    th: i32,
-    raster: &atlas::RasterGlyph,
-    gx: i32,
-    gy: i32,
+    (tw, th): (i32, i32),
+    (gw, gh): (u32, u32),
+    (gx, gy): (i32, i32),
     color: Color,
     clip: IRect,
+    sample: impl Fn(i32, i32) -> Sample,
 ) {
-    let gw = raster.width as i32;
-    for row in 0..raster.height as i32 {
+    for row in 0..gh as i32 {
         let py = gy + row;
         if py < 0 || py >= th || py < clip.y || py >= clip.bottom() {
             continue;
         }
-        for col in 0..gw {
+        for col in 0..gw as i32 {
             let px = gx + col;
             if px < 0 || px >= tw || px < clip.x || px >= clip.right() {
                 continue;
             }
             let idx = (py * tw + px) as usize;
-            if raster.color {
-                // Emoji: straight RGBA source.
-                let o = ((row * gw + col) * 4) as usize;
-                let (sr, sg, sb, sa) = (
-                    raster.data[o],
-                    raster.data[o + 1],
-                    raster.data[o + 2],
-                    raster.data[o + 3],
-                );
-                let ea = mul255(sa, color.a);
-                blend(&mut pixels[idx], sr, sg, sb, ea);
-            } else {
-                // Coverage mask modulated by the run color's alpha.
-                let cov = raster.data[(row * gw + col) as usize];
-                let ea = mul255(cov, color.a);
-                blend(&mut pixels[idx], color.r, color.g, color.b, ea);
+            match sample(col, row) {
+                Sample::Rgba(sr, sg, sb, sa) => {
+                    let ea = mul255(sa, color.a);
+                    blend(&mut pixels[idx], sr, sg, sb, ea);
+                }
+                Sample::Coverage(cov) => {
+                    // Coverage mask modulated by the run color's alpha.
+                    let ea = mul255(cov, color.a);
+                    blend(&mut pixels[idx], color.r, color.g, color.b, ea);
+                }
             }
         }
     }

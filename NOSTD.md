@@ -147,7 +147,7 @@ fling), so touch boards get kinetic scrolling for free.
 | `image` crate (decode, PNG encode) | `std`-only; `no_std` gets `Image::from_rgba_bytes` and the new `Image::from_pixmap` — `fbui-doc` decodes into tiny-skia pixmaps directly |
 | file paths (`Image::open`, `Surface::write_png`, `Ui::request_screenshot`) | `std`-only |
 | flow harness, `profile` tracing | `std`-only (`harness`/`profile` imply `std`) |
-| cosmic-text system fonts | none in `no_std`; fonts come from bytes — `App::static_fonts` (`&'static`, used in place by `FontContext::with_static_fonts`: no heap copy) or `App::fonts` (copied). The bundled font is used in place too. `FontContext::layout` no longer panics on an empty font database — it lays out nothing — so a firmware that forgot a font shows no text rather than crashing |
+| cosmic-text system fonts | none in `no_std`; fonts come from bytes — `App::static_fonts` (`&'static`, used in place by `FontContext::with_static_fonts`: no heap copy) or `App::fonts` (copied) — or as pre-rasterized bitmap fonts with no shaping engine at all (`App::bitmap_fonts`, §6.2; with `outline-text` off, cosmic-text isn't built). The bundled font is used in place too. `FontContext::layout` no longer panics on an empty font database — it lays out nothing — so a firmware that forgot a font shows no text rather than crashing |
 | taffy `std` | `alloc` + the default layout algorithms; `detailed_layout_info` is `std`-only (taffy 0.11 doesn't build it without `std`; fbui never read it) |
 
 ### 4.1 Minimal widget set
@@ -206,12 +206,14 @@ Counting allocators in the tests and the viewer's `shots` example give:
 |---|---|---|
 | 320×240 RGB565, minimal widgets, font copied into the heap, whole-screen shadow (`fbui-bare/tests/footprint.rs`) | 718 KiB | 800 KiB |
 | … the font used in place (`App::static_fonts`) | 416 KiB | 497 KiB |
-| … and painted through a 16-row band (`Runner::new_banded`, gated < 300 KiB) | **138 KiB** | **191 KiB** |
+| … and painted through a 16-row band (`Runner::new_banded`, gated < 300 KiB) | 138 KiB | 191 KiB |
+| … with bitmap fonts instead (`App::bitmap_fonts`, §6.2, gated < 128 KiB) | **45 KiB** | **97 KiB** |
 | viewer at 1024×768, library screen | 3.3 MiB | 5.7 MiB |
 | viewer, a PDF page at fit-width | 9.3 MiB | 11.9–14.7 MiB |
 | viewer, zoomed to ~280% | 16.1 MiB | 24.5 MiB |
 
-All three 320×240 rows put the same bytes on screen.
+The first three 320×240 rows put the same bytes on screen; the bitmap-font
+row draws the same UI with glyphs snapped to whole pixels (§6.2).
 
 Where it goes: the whole-screen shadow is 4 bytes/pixel (300 KiB at
 320×240, 3 MiB at 1024×768) — a band of it is 4 bytes × width × (rows + 2);
@@ -280,6 +282,47 @@ The one exception: a **bilinear-scaled image** (`draw_image_scaled`, used by
 the inverse of its transform in f32, and the band offset changes that
 rounding. A test pins the difference at ≤ 1.
 
+### 6.2 Bitmap fonts
+
+Outline text (cosmic-text shaping, swash rasterizing) is the default and the
+right choice when you need any size, any script, kerning or ligatures. On a
+small device it is also the biggest remaining cost: ~70 KiB of heap once text
+is shaped, the font file in flash, and the shaping/rasterizing code itself.
+**Bitmap fonts** (`fbui_render::text::bitmap`) drop all three:
+
+- A `.fbf` file is one face at one pixel size: a sorted glyph table and 4-bit
+  coverage, read **in place** from flash and validated up front (a bad file
+  is an error, never a panic or an out-of-bounds read).
+- `make_bitmap_font` (an `fbui-render` example) rasterizes any TTF/OTF with
+  the same cosmic-text + swash calls the outline path uses, so glyph shapes,
+  advances, bearings and baselines match. Inter at 12/16/20/24 px, Latin-1
+  plus common punctuation, is 75 KB in all (the TTF is 300 KB) and ships
+  behind the `bundled-bitmap-font` feature.
+- `FontContext::with_bitmap_fonts` sets all text in them; `fbui-bare` apps
+  return them from `App::bitmap_fonts`. Layout, wrapping, hit-testing, carets
+  and selection are implemented directly, so every widget — text editing
+  included — works unchanged (`fbui-widgets/tests/bitmap_fonts.rs`).
+- With the `outline-text` feature off (it is on by default in
+  `fbui-render`, `fbui-widgets` and `fbui-bare`), cosmic-text, swash and
+  harfrust leave the build.
+
+Measured on a linked `thumbv7em-none-eabihf` firmware running the 320×240
+counter UI with 16-row bands (`opt-level = "s"`, LTO):
+
+| text | `.text` | `.rodata` | flash | heap (live / peak) |
+|---|---|---|---|---|
+| outline, Inter TTF in place | 1,313 KB | 548 KB | 1.78 MiB | 138 / 191 KiB |
+| bitmap fonts, `outline-text` off | 590 KB | 85 KB | 0.66 MiB | 45 / 97 KiB |
+
+What bitmap fonts give up: sizes are the ones generated (text uses the
+nearest; generate the sizes your theme uses at your device scale); no shaping,
+so no kerning, ligatures, complex scripts or right-to-left text; characters
+the font lacks draw as its `?`; and each glyph's pen is snapped to a whole
+pixel (the outline path renders quarter-pixel variants), so glyphs sit up to
+half a pixel from where outline text puts them — same ink, same lines
+(`fbui-render/tests/bitmap_text.rs`). Bitmap text is band-exact like
+everything else.
+
 ## 7. The sample app
 
 **`apps/doc-viewer`** (`no_std`, board-independent): a library screen
@@ -323,6 +366,12 @@ same commands; its first run is pending at the time of writing):
       matches the whole-screen runner frame by frame (input, rotation,
       RGB565 dithering, timers, `invalidate`); a 320×240 UI with static fonts
       and 16-row bands peaks at 191 KiB (gated < 300 KiB).
+- [x] Bitmap fonts (§6.2): format validation and mutation, layout, wrapping,
+      hit/caret/selection, fidelity against outline Inter, band exactness,
+      the widget set (text editing included) on bitmap fonts, and a 97 KiB
+      peak for the 320×240 UI (gated < 128 KiB). `fbui-render`,
+      `fbui-widgets` and `fbui-bare` build for `thumbv7em` with
+      `outline-text` off, and the firmware sizes above were measured there.
 - [x] The bare runner on its own (`fbui-bare/tests/runner.rs`): padded-stride
       copy-out, idle, `invalidate`, key and scaled pointer input; rotation —
       every panel pixel equals the rotated surface pixel, and taps map back
@@ -346,10 +395,12 @@ Pending (hardware-gated or out of scope here):
 
 ## 9. Follow-ups
 
-- **Smaller still.** The next costs at 320×240 are cosmic-text's per-font
-  state (~90 KiB, inside the dependency) and the glyph atlas, whose budget
-  could be made configurable for tiny screens. Bilinear-scaled images could be
-  made band-exact by sampling in whole-screen coordinates.
+- **Smaller still.** With bitmap fonts the heap is ~45 KiB live; the first,
+  full-screen frame briefly adds ~50 KiB (one ~40 KB allocation, not yet
+  traced). Bitmap fonts could store quarter-pixel variants (4× the flash) to
+  match outline positioning exactly, or 2-bit coverage to halve it.
+  Bilinear-scaled images could be made band-exact by sampling in whole-screen
+  coordinates.
 - **More boards.** UEFI (GOP framebuffer, `wfi`-free event waits), a
   Cortex-M7 + SPI panel (exercising `Framebuffer::flush` as a DMA push), the
   Pi 4 (GIC-400 instead of the BCM2836 local controller).

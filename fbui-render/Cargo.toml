@@ -17,7 +17,7 @@ readme = "../README.md"
 # Core is headless and self-contained: it draws into a normal-RAM shadow buffer
 # and knows how to copy damaged spans into a caller-supplied byte target. None of
 # that needs a kernel device, so the default build pulls in no platform code.
-default = ["std"]
+default = ["std", "outline-text"]
 
 # `std` is the full, hosted build — on by default and what every Linux target
 # uses. Turning it off (`default-features = false`) gives a `no_std + alloc`
@@ -30,9 +30,15 @@ std = [
     "tiny-skia/std",
     "tiny-skia-path/std",
     "tiny-skia/simd",
-    "cosmic-text/std",
-    "cosmic-text/fontconfig",
+    "cosmic-text?/std",
+    "cosmic-text?/fontconfig",
 ]
+
+# Outline text: cosmic-text shaping and swash rasterization — any size, any
+# script, kerning and ligatures. On by default. Without it text comes only
+# from bitmap fonts (`text::bitmap`), and cosmic-text, swash and harfrust
+# leave the binary; a `FontContext` with no bitmap fonts lays text out empty.
+outline-text = ["dep:cosmic-text"]
 
 # The `platform` feature adds the one coupling point PLAN/PHASE1 promised: a
 # `present()` glue that drives an `fbui_platform::Display` (begin_frame ->
@@ -43,7 +49,13 @@ platform = ["std", "dep:fbui-platform"]
 # fonts can render text turnkey via `FontContext::with_default_font`. Off by
 # default — it adds ~300 KB to the binary; apps that bundle their own font don't
 # pay for it. The font + its license live in `fonts/`.
-bundled-font = []
+bundled-font = ["outline-text"]
+
+# Compile in pre-rasterized bitmap fonts (Inter Regular at 12, 16, 20 and
+# 24 px, Latin-1, ~60 KB) for `FontContext::with_default_bitmap_fonts`: text
+# with no font file, shaping engine or rasterizer. Works without
+# `outline-text`. Regenerate with the `make_bitmap_font` example.
+bundled-bitmap-font = []
 
 # SVG icon support: `Image::from_svg`/`from_svg_file` rasterize an SVG at a
 # caller-chosen pixel size through resvg (which rasterizes with tiny-skia, the
@@ -54,7 +66,7 @@ svg = ["std", "dep:resvg"]
 # docs.rs builds with the optional, pure-Rust features on so every public
 # item shows up (the C-library backends stay off: they need system headers).
 [package.metadata.docs.rs]
-features = ["platform", "bundled-font", "svg"]
+features = ["platform", "bundled-font", "bundled-bitmap-font", "svg"]
 
 [dependencies]
 # tiny-skia is the CPU rasterizer; cosmic-text shapes/lays out text and re-exports
@@ -64,7 +76,7 @@ features = ["platform", "bundled-font", "svg"]
 # defaults back on.
 tiny-skia = { version = "0.12", default-features = false, features = ["no-std-float"] }
 tiny-skia-path = { version = "0.12", default-features = false, features = ["no-std-float"] }
-cosmic-text = { version = "0.19", default-features = false, features = ["swash", "no_std"] }
+cosmic-text = { version = "0.19", default-features = false, features = ["swash", "no_std"], optional = true }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"], optional = true }
 # Float math (`floor`, `sin`, …) for the no_std build; with `std` the inherent
 # f32 methods shadow the `math::F32Ext` trait and libm goes unused.
@@ -88,6 +100,10 @@ criterion = { version = "0.5", default-features = false }
 [[bench]]
 name = "repaint"
 harness = false
+
+[[example]]
+name = "make_bitmap_font"
+required-features = ["std", "outline-text"]
 
 [[example]]
 name = "present"

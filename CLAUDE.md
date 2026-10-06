@@ -92,7 +92,8 @@ The Phase 0 spike builds separately (`cd spikes && cargo build --release`).
 ```sh
 # No std at all: the stack must build for a target that has none.
 rustup target add thumbv7em-none-eabihf aarch64-unknown-none
-cargo build --target thumbv7em-none-eabihf -p fbui-render --no-default-features
+cargo build --target thumbv7em-none-eabihf -p fbui-render --no-default-features   # bitmap text only
+cargo build --target thumbv7em-none-eabihf -p fbui-render --no-default-features --features outline-text
 cargo build --target thumbv7em-none-eabihf -p fbui-widgets --no-default-features
 cargo build --target thumbv7em-none-eabihf -p fbui-bare -p fbui-doc -p fbui-doc-viewer
 cargo test -p fbui-render --no-default-features --lib   # no_std code paths, on the host
@@ -194,7 +195,8 @@ fbui-testkit   golden-PNG snapshot harness (dev-dependency only)
   the impl, box it behind the trait, and fall back gracefully.
 - **`fbui-render/src/`** — `surface.rs` (shadow buffer + damage + `copy_out` +
   `scroll_region`, and the banded mode: `Surface::banded`/`paint_banded`),
-  `painter.rs`, `text/` (cosmic-text + glyph atlas), `copyout.rs`
+  `painter.rs`, `text/` (cosmic-text + glyph atlas behind `outline-text`;
+  `text/bitmap.rs` the bitmap-font backend and `.fbf` format), `copyout.rs`
   (XRGB/RGB565+dither), `platform_glue.rs` (the only render↔platform
   coupling, behind the `platform` feature), `hairline/` (tiny-skia's hairline
   rasterizer, **vendored** for exact banded hairlines — keep it in step with
@@ -222,11 +224,16 @@ the module is headless-testable, the runner wiring needs `platform`) **and the
 `fbui-ctl` binary**, the shell client and third flow executor.
 
 `fbui-render` / `fbui-widgets`: **`std`** is a default feature; turning
-defaults off gives `no_std` (see `NOSTD.md` §4). `fbui-widgets` also has
+defaults off gives `no_std` (see `NOSTD.md` §4). **`outline-text`** (default)
+is cosmic-text + swash; off, text comes only from bitmap fonts
+(`fbui_render::text::bitmap`, `NOSTD.md` §6.2) and the shaping engine leaves
+the build — so `--no-default-features` alone means *bitmap text only*; add
+`--features outline-text` for TTF/OTF text. `bundled-bitmap-font` compiles in
+pre-rasterized Inter. `fbui-widgets` also has
 **`all-widgets`** (default) — without it only the minimal set (`Label`,
 `Button`, `Container`, `Stack`, `ScrollView`, `List`, `ImageView`,
-`ProgressBar`) compiles. `fbui-bare` forwards `bundled-font` and
-`all-widgets`.
+`ProgressBar`) compiles. `fbui-bare` forwards `outline-text` (default),
+`bundled-font`, `bundled-bitmap-font` and `all-widgets`.
 
 `fbui-platform`: the **default set is everything that builds with no system C
 libraries**: `drm-backend fbdev evdev noseat event-loop term headless`

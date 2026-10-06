@@ -47,6 +47,20 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
   `fbui-widgets/tests/banded.rs` — except bilinear-scaled images (±1 level).
   tiny-skia's hairline rasterizer is vendored (`fbui-render/src/hairline/`,
   BSD-3) so hairlines stay exact across band edges.
+- **Bitmap fonts** (`NOSTD.md` §6.2, `fbui_render::text::bitmap`): text
+  with no shaping engine or rasterizer at run time. `.fbf` files hold glyphs
+  pre-rasterized at fixed sizes (4-bit coverage, read in place, validated
+  without panics); `FontContext::with_bitmap_fonts`, `add_bitmap_font`,
+  `BitmapFont`, `BitmapFontWriter`, and `fbui_bare::App::bitmap_fonts`. The
+  `make_bitmap_font` example generates them from any TTF/OTF;
+  `bundled-bitmap-font` ships Inter at 12/16/20/24 px (Latin-1, 75 KB). Every
+  widget works on them. The 320×240 counter UI drops to 45 KiB live / 97 KiB
+  peak heap, and its firmware from 1.78 MiB to 0.66 MiB of flash with
+  `outline-text` off. No kerning or shaping, fixed sizes, whole-pixel glyph
+  positions.
+- **`outline-text` feature** (default on in `fbui-render`, `fbui-widgets` and
+  `fbui-bare`): cosmic-text and swash are now optional. `FontContext::set_scale`
+  (called by `Ui`) lets bitmap fonts choose their size in device pixels.
 - **Fonts used in place:** `FontContext::with_static_fonts` /
   `load_static_font` and `fbui_bare::App::static_fonts` take `&'static`
   font data without copying it into the heap (~300 KiB for Inter).
@@ -61,6 +75,11 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ### Changed
 
+- **Breaking for `default-features = false` users of `fbui-render` /
+  `fbui-widgets` / `fbui-bare`:** outline text is now the `outline-text`
+  feature. A dependent that turns default features off must add it to keep
+  TTF/OTF text (`FontContext::with_fonts` and friends); without it only
+  bitmap fonts are available. Default builds are unchanged.
 - `Painter` no longer clones the clip mask (a full surface-sized buffer) for
   every primitive drawn under a clip; peak heap while painting a clipped
   region drops by one mask (75 KiB at 320×240). Output is unchanged.

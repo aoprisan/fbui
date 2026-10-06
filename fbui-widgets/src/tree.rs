@@ -373,7 +373,9 @@ impl<Msg: 'static> Ui<Msg> {
 
     /// As [`new`](Self::new), but with a caller-built [`FontContext`] — the way
     /// to bundle a fixed font so text renders without depending on host fonts.
-    pub fn with_fonts(size: Size, scale: Scale, theme: Theme, fonts: FontContext) -> Self {
+    pub fn with_fonts(size: Size, scale: Scale, theme: Theme, mut fonts: FontContext) -> Self {
+        // Bitmap fonts choose their size in device pixels.
+        fonts.set_scale(scale);
         Ui {
             taffy: TaffyTree::new(),
             nodes: SlotMap::with_key(),
@@ -1029,6 +1031,7 @@ impl<Msg: 'static> Ui<Msg> {
     pub fn set_size(&mut self, size: Size, scale: Scale) {
         self.size = size;
         self.scale = scale;
+        self.fonts.set_scale(scale);
         // A visible tooltip was placed against the old surface; drop it.
         self.tip = TipState::default();
         // Open popups size/place themselves against the surface; let them

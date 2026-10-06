@@ -33,6 +33,23 @@ unsafe impl GlobalAlloc for Counting {
 static A: Counting = Counting;
 
 const FONT: &[u8] = include_bytes!("../../fbui-render/fonts/Inter-Regular.ttf");
+const FBF: [&[u8]; 4] = [
+    include_bytes!("../../fbui-render/fonts/Inter-12.fbf"),
+    include_bytes!("../../fbui-render/fonts/Inter-16.fbf"),
+    include_bytes!("../../fbui-render/fonts/Inter-20.fbf"),
+    include_bytes!("../../fbui-render/fonts/Inter-24.fbf"),
+];
+
+/// How the counter gets its font.
+#[derive(Clone, Copy, PartialEq)]
+enum Fonts {
+    /// The TTF copied into the heap.
+    Owned,
+    /// The TTF used in place.
+    Static,
+    /// Pre-rasterized bitmap fonts: no shaping engine at all.
+    Bitmap,
+}
 
 #[derive(Clone)]
 enum Msg {
@@ -42,9 +59,7 @@ enum Msg {
 struct Counter {
     n: u32,
     label: Option<fbui_widgets::WidgetId>,
-    /// Supply the font as `&'static` data (used in place) rather than a
-    /// heap copy.
-    static_font: bool,
+    fonts: Fonts,
 }
 
 impl App for Counter {
@@ -64,17 +79,24 @@ impl App for Counter {
         }
     }
     fn static_fonts(&self) -> Vec<&'static [u8]> {
-        if self.static_font {
-            vec![FONT]
-        } else {
-            Vec::new()
+        match self.fonts {
+            Fonts::Static => vec![FONT],
+            _ => Vec::new(),
         }
     }
     fn fonts(&self) -> Vec<Vec<u8>> {
-        if self.static_font {
-            Vec::new()
-        } else {
-            vec![FONT.to_vec()]
+        match self.fonts {
+            Fonts::Owned => vec![FONT.to_vec()],
+            _ => Vec::new(),
+        }
+    }
+    fn bitmap_fonts(&self) -> Vec<fbui_render::text::BitmapFont> {
+        match self.fonts {
+            Fonts::Bitmap => FBF
+                .iter()
+                .map(|f| fbui_render::text::BitmapFont::from_bytes(f).unwrap())
+                .collect(),
+            _ => Vec::new(),
         }
     }
 }
@@ -102,14 +124,14 @@ struct Footprint {
 
 /// Build the counter, press its button three times, and report the heap the
 /// runner used (the framebuffer itself is the board's, not counted).
-fn measure(static_font: bool, band_rows: Option<u32>) -> Footprint {
+fn measure(fonts: Fonts, band_rows: Option<u32>) -> Footprint {
     let mut fb = Panel(vec![0; 640 * 240]);
     let base = LIVE.load(Relaxed);
     PEAK.store(base, Relaxed);
     let app = Counter {
         n: 0,
         label: None,
-        static_font,
+        fonts,
     };
     let mut r = match band_rows {
         Some(rows) => Runner::new_banded(app, fb.info(), 1.0, rows),
@@ -136,7 +158,7 @@ fn measure(static_font: bool, band_rows: Option<u32>) -> Footprint {
 fn a_small_ui_fits_a_small_heap() {
     // The baseline: the font copied into the heap (~300 KiB) and a
     // whole-screen 4-byte shadow (300 KiB).
-    let owned = measure(false, None);
+    let owned = measure(Fonts::Owned, None);
     eprintln!(
         "320x240, heap font, whole-screen shadow: live {} KiB, peak {} KiB",
         owned.live_kib, owned.peak_kib
@@ -148,7 +170,7 @@ fn a_small_ui_fits_a_small_heap() {
     );
 
     // The font used in place: the copy is gone, the pixels are the same.
-    let fixed = measure(true, None);
+    let fixed = measure(Fonts::Static, None);
     eprintln!(
         "320x240, static font, whole-screen shadow: live {} KiB, peak {} KiB",
         fixed.live_kib, fixed.peak_kib
@@ -160,7 +182,7 @@ fn a_small_ui_fits_a_small_heap() {
     assert!(fixed.screen == owned.screen);
 
     // And painted through a 16-row band: the small-MCU configuration.
-    let banded = measure(true, Some(16));
+    let banded = measure(Fonts::Static, Some(16));
     eprintln!(
         "320x240, static font, 16-row band: live {} KiB, peak {} KiB",
         banded.live_kib, banded.peak_kib
@@ -171,4 +193,24 @@ fn a_small_ui_fits_a_small_heap() {
         banded.peak_kib
     );
     assert!(banded.screen == owned.screen, "banding changed the pixels");
+
+    // Bitmap fonts: no shaping engine, glyph rasterizer or glyph cache.
+    let bitmap = measure(Fonts::Bitmap, Some(16));
+    eprintln!(
+        "320x240, bitmap fonts, 16-row band: live {} KiB, peak {} KiB",
+        bitmap.live_kib, bitmap.peak_kib
+    );
+    // Measured: 45 KiB live, 97 KiB peak (the transient is the first,
+    // full-screen frame).
+    assert!(
+        bitmap.peak_kib < 128,
+        "bitmap-font peak {} KiB over the 128 KiB budget",
+        bitmap.peak_kib
+    );
+    let lit = |s: &[u8]| s.chunks_exact(2).filter(|p| p != &[0, 0]).count();
+    let (a, b) = (lit(&bitmap.screen), lit(&banded.screen));
+    assert!(
+        a.abs_diff(b) * 20 < b,
+        "the same UI, drawn: {a} vs {b} lit pixels"
+    );
 }

@@ -6,8 +6,10 @@
 
 use super::LengthU32;
 
-#[cfg(not(feature = "std"))]
-use tiny_skia_path::NoStdFloat;
+// fbui: float math through fbui-render's libm shim, not tiny-skia-path's
+// (whose `std` feature may be unified on when this crate's is off).
+#[allow(unused_imports)]
+use crate::math::F32Ext;
 
 // Perfectly safe.
 pub const LENGTH_U32_ONE: LengthU32 = unsafe { LengthU32::new_unchecked(1) };

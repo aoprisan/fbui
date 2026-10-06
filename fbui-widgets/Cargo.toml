@@ -13,7 +13,7 @@ categories.workspace = true
 readme = "README.md"
 
 [features]
-default = ["std", "harness", "all-widgets"]
+default = ["std", "harness", "all-widgets", "outline-text"]
 # The hosted build. Off (`default-features = false`) the crate is
 # `no_std + alloc` for bare-metal targets — the whole widget tree, layout,
 # focus, gestures and animation, minus what needs files or threads: the flow
@@ -26,6 +26,10 @@ std = ["fbui-render/std", "taffy/std", "taffy/detailed_layout_info", "slotmap/st
 # come with this feature (they build fine without std too; it is a size
 # choice, not a capability one).
 all-widgets = []
+# Outline text (cosmic-text + swash) in fbui-render. On by default; off, text
+# comes only from bitmap fonts (`FontContext::with_bitmap_fonts`) and the
+# shaping engine leaves the binary.
+outline-text = ["fbui-render/outline-text"]
 # Flow scripts and the in-process test harness: the `fbui-rec 2` parser, the
 # reference resolver, and an executor that drives a `Ui` through the same
 # `Event` path the behavior tests use. On by default because the umbrella

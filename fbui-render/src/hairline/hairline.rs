@@ -17,8 +17,10 @@ use super::line_clipper;
 use super::math::LENGTH_U32_ONE;
 use super::path_geometry;
 
-#[cfg(not(feature = "std"))]
-use tiny_skia_path::NoStdFloat;
+// fbui: float math through fbui-render's libm shim, not tiny-skia-path's
+// (whose `std` feature may be unified on when this crate's is off).
+#[allow(unused_imports)]
+use crate::math::F32Ext;
 
 const FLOAT_PI: f32 = 3.14159265;
 
