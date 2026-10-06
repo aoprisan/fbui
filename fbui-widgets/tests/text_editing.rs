@@ -19,7 +19,9 @@ enum Msg {
 }
 
 fn fonts() -> FontContext {
-    FontContext::with_fonts([include_bytes!("../../fbui-render/fonts/Inter-Regular.ttf").to_vec()])
+    // The bundled Inter, from the dev-dependency's `bundled-font` (not a path
+    // into the sibling crate, which a published package doesn't have).
+    FontContext::with_fonts([fbui_render::text::DEFAULT_FONT.to_vec()])
 }
 
 fn ui() -> Ui<Msg> {

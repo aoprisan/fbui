@@ -2,24 +2,20 @@
 //! with no shaping engine underneath.
 
 use fbui_render::geom::{Point, Size};
-use fbui_render::text::BitmapFont;
 use fbui_render::{FontContext, Scale, Surface};
 use fbui_widgets::event::{Event, Key, Modifiers, PointerButton};
 use fbui_widgets::widgets::{Button, Container, Label, List, TextArea, TextInput};
 use fbui_widgets::{Theme, Ui, WidgetId};
 
-const FBF: [&[u8]; 4] = [
-    include_bytes!("../../fbui-render/fonts/Inter-12.fbf"),
-    include_bytes!("../../fbui-render/fonts/Inter-16.fbf"),
-    include_bytes!("../../fbui-render/fonts/Inter-20.fbf"),
-    include_bytes!("../../fbui-render/fonts/Inter-24.fbf"),
-];
-
 #[derive(Clone)]
 enum Msg {}
 
+/// The bundled bitmap Inter (12/16/20/24 px), via the dev-dependency's
+/// `bundled-bitmap-font`.
 fn bitmap_fonts() -> FontContext {
-    FontContext::with_bitmap_fonts(FBF.iter().map(|f| BitmapFont::from_bytes(f).unwrap()))
+    let fc = FontContext::with_default_bitmap_fonts();
+    assert!(fc.uses_bitmap_fonts());
+    fc
 }
 
 struct Screen {

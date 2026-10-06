@@ -6,7 +6,11 @@ edition.workspace = true
 # Not the workspace's 1.76: cosmic-text (1.89) and image (1.88) pull the floor up.
 # fbui-platform keeps the lower MSRV; the render stack tracks its heavier deps.
 rust-version = "1.89"
-license.workspace = true
+# Our code is MIT OR Apache-2.0; `src/hairline/` is tiny-skia's hairline
+# rasterizer, vendored under BSD-3-Clause (`src/hairline/LICENSE-tiny-skia`),
+# and `fonts/` holds Inter and bitmap fonts derived from it under OFL-1.1
+# (`fonts/Inter-LICENSE.txt`).
+license = "(MIT OR Apache-2.0) AND BSD-3-Clause AND OFL-1.1"
 repository.workspace = true
 homepage.workspace = true
 keywords.workspace = true

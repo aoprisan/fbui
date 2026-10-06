@@ -17,6 +17,8 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-06 — small heaps: banded rendering and bitmap fonts
+
 ### Added
 
 - **`fbui-bare` timers:** `Timers<M>` — `send`, `send_after`, `send_every`,
@@ -92,6 +94,11 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 - `Painter` no longer clones the clip mask (a full surface-sized buffer) for
   every primitive drawn under a clip; peak heap while painting a clipped
   region drops by one mask (75 KiB at 320×240). Output is unchanged.
+- `fbui-render`'s license expression is now
+  `(MIT OR Apache-2.0) AND BSD-3-Clause AND OFL-1.1`: the crate's own code
+  is unchanged in license, but it ships the vendored tiny-skia hairline
+  rasterizer (BSD-3-Clause) and the Inter font files (OFL-1.1), whose
+  license texts are included in the package.
 
 ## [0.4.0] — 2026-10-06 — fbui with no operating system
 
@@ -915,7 +922,8 @@ real devices.
 - libinput's `set_surface` rescale-on-hotplug override is left to the
   feature-gated backend (not in the default/CI build).
 
-[Unreleased]: https://github.com/aoprisan/fbui/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/aoprisan/fbui/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/aoprisan/fbui/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/aoprisan/fbui/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aoprisan/fbui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aoprisan/fbui/compare/v0.1.0...v0.2.0
