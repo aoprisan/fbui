@@ -83,6 +83,7 @@ pub mod color;
 pub mod copyout;
 pub mod damage;
 pub mod geom;
+mod hairline;
 pub mod image;
 pub mod math;
 pub mod painter;

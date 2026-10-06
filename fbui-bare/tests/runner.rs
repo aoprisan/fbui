@@ -530,3 +530,145 @@ fn a_pending_timer_does_not_shorten_the_animation_frame_period() {
     r.frame(&mut fb, 1_000); // past the long-press window: gesture over
     assert_eq!(r.next_deadline(1_000), Some(10_000));
 }
+
+// --- banded painting ---------------------------------------------------------
+
+/// Drive a whole-screen runner and a banded one through the same frames and
+/// input, and require their framebuffers to agree after every frame.
+fn lockstep<F: Framebuffer + PartialEqPx>(
+    make_fb: fn() -> F,
+    rows: u32,
+    rotation: Rotation,
+    script: &[(u64, Option<Input>)],
+) {
+    let (app_a, log_a) = probe();
+    let (app_b, log_b) = probe();
+    let (mut fa, mut fb) = (make_fb(), make_fb());
+    let mut a = Runner::new(app_a, fa.info(), 1.0).with_rotation(rotation);
+    let mut b = Runner::new_banded(app_b, fb.info(), 1.0, rows).with_rotation(rotation);
+    a.frame(&mut fa, 0);
+    b.frame(&mut fb, 0);
+    assert!(
+        fa.same_pixels(&fb),
+        "first frame, {rows} rows, {rotation:?}"
+    );
+    for (i, (now, input)) in script.iter().enumerate() {
+        if let Some(input) = input {
+            a.handle(input.clone(), *now);
+            b.handle(input.clone(), *now);
+        }
+        let (pa, pb) = (a.frame(&mut fa, *now), b.frame(&mut fb, *now));
+        assert_eq!(pa, pb, "step {i}: one runner painted, the other didn't");
+        assert!(
+            fa.same_pixels(&fb),
+            "step {i}, {rows} rows, {rotation:?}: framebuffers differ"
+        );
+    }
+    assert_eq!(*log_a.borrow(), *log_b.borrow());
+}
+
+trait PartialEqPx {
+    fn same_pixels(&self, other: &Self) -> bool;
+}
+impl PartialEqPx for Ram {
+    fn same_pixels(&self, other: &Self) -> bool {
+        self.px == other.px
+    }
+}
+impl PartialEqPx for Ram565 {
+    fn same_pixels(&self, other: &Self) -> bool {
+        self.px == other.px
+    }
+}
+
+/// Keys and taps over the probe's button (and empty space), plus idle frames.
+fn script() -> Vec<(u64, Option<Input>)> {
+    vec![
+        (16, Some(Input::KeyTap(Key::Tab))),
+        (32, Some(Input::KeyTap(Key::Enter))),
+        (48, None),
+        (64, Some(Input::PointerDown { x: 20.0, y: 12.0 })),
+        (80, Some(Input::PointerUp { x: 20.0, y: 12.0 })),
+        (96, None),
+        (400, Some(Input::PointerDown { x: 60.0, y: 50.0 })),
+        (420, Some(Input::PointerUp { x: 60.0, y: 50.0 })),
+        (900, None),
+    ]
+}
+
+#[test]
+fn a_banded_runner_puts_the_same_pixels_on_screen() {
+    for rows in [1, 7, 16] {
+        for rotation in [
+            Rotation::Rot0,
+            Rotation::Rot90,
+            Rotation::Rot180,
+            Rotation::Rot270,
+        ] {
+            lockstep(|| Ram::new(120, 80), rows, rotation, &script());
+        }
+    }
+}
+
+#[test]
+fn a_banded_runner_dithers_rgb565_identically() {
+    for rows in [4, 16] {
+        lockstep(|| Ram565::new(120, 80), rows, Rotation::Rot0, &script());
+        lockstep(|| Ram565::new(120, 80), rows, Rotation::Rot90, &script());
+    }
+}
+
+#[test]
+fn a_banded_runner_holds_one_band_and_repaints_after_invalidate() {
+    let (app, _) = probe();
+    let mut fb = Ram::new(120, 80);
+    let mut r = Runner::new_banded(app, fb.info(), 1.0, 16);
+    assert_eq!(r.surface().band_rows(), Some(16));
+    assert_eq!(
+        r.surface().pixmap().height(),
+        18,
+        "16 rows plus a guard row each side"
+    );
+    assert!(r.frame(&mut fb, 0));
+    let first = fb.px.clone();
+    assert!(!r.frame(&mut fb, 16), "idle: nothing to do");
+    assert_eq!(r.next_deadline(16), None);
+
+    // Something else drew on the panel: nothing in RAM can restore it, so
+    // the whole tree is painted again.
+    for y in 0..80 {
+        fb.px[y * fb.stride..y * fb.stride + 120 * 4].fill(0);
+    }
+    r.invalidate();
+    assert!(r.frame(&mut fb, 32));
+    assert!(fb.px == first);
+    // Band by band, every row of the panel was flushed.
+    let rects = fb.flushed.last().unwrap();
+    let rows: u32 = rects.iter().map(|r| r.h).sum();
+    assert_eq!(rows, 80);
+    assert!(rects.iter().all(|r| r.h <= 16 && r.w == 120));
+}
+
+#[test]
+fn a_banded_runner_paints_timer_updates_identically() {
+    let (app_a, _) = probe();
+    let (app_b, _) = probe();
+    let (mut fa, mut fb) = (Ram::new(120, 80), Ram::new(120, 80));
+    let mut a = Runner::new(app_a, fa.info(), 1.0);
+    let mut b = Runner::new_banded(app_b, fb.info(), 1.0, 8);
+    a.frame(&mut fa, 0);
+    b.frame(&mut fb, 0);
+    for r in [&a, &b] {
+        for n in 1..=5u32 {
+            let _ = timers(r).send_after(Duration::from_millis(100 * n as u64), Msg::Tick(n * 111));
+        }
+    }
+    for (i, now) in (100..=500).step_by(100).enumerate() {
+        // Each tick relabels: the label's damage is painted band by band.
+        assert!(
+            a.frame(&mut fa, now) & b.frame(&mut fb, now),
+            "tick {i} painted"
+        );
+        assert!(fa.px == fb.px, "tick {i}");
+    }
+}

@@ -454,6 +454,7 @@ dependencies = [
  "libm",
  "resvg",
  "tiny-skia",
+ "tiny-skia-path",
 ]
 
 [[package]]

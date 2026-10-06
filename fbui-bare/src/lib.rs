@@ -185,8 +185,19 @@ pub trait App {
         Theme::dark()
     }
 
-    /// Fonts (TTF/OTF bytes). With none, the runner uses the bundled font
-    /// under `bundled-font`, and otherwise text lays out empty.
+    /// Fonts compiled into the image (TTF/OTF bytes, e.g.
+    /// `include_bytes!`), used **in place** — no heap copy, which on a small
+    /// target saves the size of every font. With no fonts from this or
+    /// [`fonts`](Self::fonts), the runner uses the bundled font under
+    /// `bundled-font` (also in place), and otherwise text lays out empty.
+    fn static_fonts(&self) -> Vec<&'static [u8]> {
+        Vec::new()
+    }
+
+    /// Fonts (TTF/OTF bytes) **copied into the heap**. Prefer
+    /// [`static_fonts`](Self::static_fonts) for fonts compiled into the
+    /// image; use this for fonts loaded at run time. Both may be given
+    /// (static ones come first, and the first face is the default).
     fn fonts(&self) -> Vec<Vec<u8>> {
         Vec::new()
     }
@@ -206,6 +217,8 @@ pub struct Runner<A: App> {
     rotation: Rotation,
     /// Ordered dithering on the RGB565 copy-out (see `set_dither`).
     dither: bool,
+    /// `Some(rows)` when painting through a band (see `new_banded`).
+    band_rows: Option<u32>,
     /// `now_ms` of the previous frame, for the animation `dt`.
     last_frame_ms: Option<u64>,
     /// Whether the framebuffer already holds the previous frame (copy only
@@ -216,12 +229,39 @@ pub struct Runner<A: App> {
 impl<A: App> Runner<A> {
     /// Build the app's tree for a framebuffer of shape `info` at UI `scale`
     /// (logical size = device size / scale).
-    pub fn new(mut app: A, info: FbInfo, scale: f32) -> Self {
-        let fonts = app.fonts();
-        let fonts = if fonts.is_empty() {
+    pub fn new(app: A, info: FbInfo, scale: f32) -> Self {
+        Self::build(app, info, scale, None)
+    }
+
+    /// As [`new`](Self::new), but painting through a shadow only
+    /// `band_rows` rows tall instead of a whole-screen one: each frame's
+    /// damage is drawn a band at a time and copied out band by band. At 4
+    /// bytes a pixel the shadow is usually a UI's largest allocation; a
+    /// 16-row band of a 320×240 panel is ~20 KiB instead of 300 KiB.
+    ///
+    /// The framebuffer must keep what is written to it between frames (it
+    /// becomes the only full-screen copy — true of a single-buffered scanout
+    /// and of a panel with its own frame memory). Nothing is retained in RAM,
+    /// so scrolling repaints instead of blitting, and taller bands mean fewer
+    /// passes over the tree. See `NOSTD.md` for what banding draws
+    /// identically to a whole-screen shadow.
+    pub fn new_banded(app: A, info: FbInfo, scale: f32, band_rows: u32) -> Self {
+        Self::build(app, info, scale, Some(band_rows.max(1)))
+    }
+
+    fn build(mut app: A, info: FbInfo, scale: f32, band_rows: Option<u32>) -> Self {
+        let statics = app.static_fonts();
+        let owned = app.fonts();
+        let fonts = if statics.is_empty() && owned.is_empty() {
             default_fonts()
+        } else if statics.is_empty() {
+            FontContext::with_fonts(owned)
         } else {
-            FontContext::with_fonts(fonts)
+            let mut fc = FontContext::with_static_fonts(statics);
+            for f in owned {
+                fc.load_font_data(f);
+            }
+            fc
         };
         let sc = Scale::new(scale);
         let size = Size::new(info.width as f32 / scale, info.height as f32 / scale);
@@ -232,7 +272,7 @@ impl<A: App> Runner<A> {
         // 16-bit panels band badly on gradients; dither them, as the Linux
         // runner does.
         let dither = info.format == TargetFormat::Rgb565;
-        let mut surface = Surface::new(info.width, info.height, sc);
+        let mut surface = new_surface(info.width, info.height, sc, band_rows);
         surface.set_dither(dither);
         let mut runner = Runner {
             app,
@@ -244,6 +284,7 @@ impl<A: App> Runner<A> {
             panel: (info.width, info.height),
             rotation: Rotation::Rot0,
             dither,
+            band_rows,
             last_frame_ms: None,
             fb_current: false,
         };
@@ -280,7 +321,7 @@ impl<A: App> Runner<A> {
         }
         let (sw, sh) = rotation.surface_size(self.panel.0, self.panel.1);
         let sc = Scale::new(self.scale);
-        let mut surface = Surface::new(sw, sh, sc);
+        let mut surface = new_surface(sw, sh, sc, self.band_rows);
         surface.set_rotation(rotation);
         surface.set_dither(self.dither);
         self.surface = surface;
@@ -438,14 +479,24 @@ impl<A: App> Runner<A> {
             return false;
         }
 
-        self.ui.paint(&mut self.surface);
         let info = fb.info();
-        // Single-buffered scanout: once a frame landed, the buffer holds it
-        // (age 1) and only damage needs copying; before that, age 0 = all.
-        let age = u32::from(self.fb_current);
-        let rects = self
-            .surface
-            .present_to_buffer(fb.pixels(), info.stride, info.format, age);
+        let rects = if self.band_rows.is_some() {
+            // No shadow holds the last frame: a framebuffer that doesn't
+            // either (first frame, `invalidate`) gets the whole tree again.
+            if !self.fb_current {
+                self.ui.request_full_paint();
+            }
+            self.ui
+                .paint_banded(&mut self.surface, fb.pixels(), info.stride, info.format)
+        } else {
+            self.ui.paint(&mut self.surface);
+            // Single-buffered scanout: once a frame landed, the buffer holds
+            // it (age 1) and only damage needs copying; before that, age 0 =
+            // all.
+            let age = u32::from(self.fb_current);
+            self.surface
+                .present_to_buffer(fb.pixels(), info.stride, info.format, age)
+        };
         self.fb_current = true;
         if !rects.is_empty() {
             fb.flush(&rects);
@@ -534,6 +585,14 @@ impl<A: App> Runner<A> {
 /// the [`Runner`] yourself to configure it first (e.g. a rotation).
 pub fn run<A: App>(app: A, fb: &mut impl Framebuffer, board: &mut impl Board, scale: f32) -> ! {
     Runner::new(app, fb.info(), scale).run(fb, board)
+}
+
+/// A whole-screen shadow, or a banded one.
+fn new_surface(w: u32, h: u32, scale: Scale, band_rows: Option<u32>) -> Surface {
+    match band_rows {
+        Some(rows) => Surface::banded(w, h, rows, scale),
+        None => Surface::new(w, h, scale),
+    }
 }
 
 #[cfg(feature = "bundled-font")]

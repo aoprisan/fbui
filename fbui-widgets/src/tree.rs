@@ -17,8 +17,8 @@
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use fbui_render::geom::{Point, Rect, Size};
-use fbui_render::{FontContext, Scale, Surface};
+use fbui_render::geom::{IRect, Point, Rect, Size};
+use fbui_render::{FontContext, Painter, Scale, Surface, TargetFormat};
 use slotmap::{SecondaryMap, SlotMap};
 use taffy::{AvailableSpace, TaffyTree};
 
@@ -2097,6 +2097,53 @@ impl<Msg: 'static> Ui<Msg> {
     /// are skipped. The surface's own damage tracker bounds the copy-out.
     pub fn paint(&mut self, surface: &mut Surface) {
         crate::span!("ui.paint");
+        let Some((region, overlays)) = self.begin_paint(surface) else {
+            return;
+        };
+        self.with_paint_parts(|parts| surface.paint(|p| parts.paint_region(p, region, &overlays)));
+        self.finish_paint();
+    }
+
+    /// Like [`paint`](Self::paint), but for a [banded](Surface::banded)
+    /// surface (any surface works): the damaged region is painted a band at
+    /// a time and each band is copied into `dst` — a buffer that holds the
+    /// previous frame, like a single-buffered scanout — as soon as it is
+    /// drawn, so no whole-screen shadow is needed. Returns the
+    /// destination-space rects written, for the display's flush. See
+    /// [`Surface::paint_banded`].
+    pub fn paint_banded(
+        &mut self,
+        surface: &mut Surface,
+        dst: &mut [u8],
+        stride: usize,
+        format: TargetFormat,
+    ) -> Vec<IRect> {
+        crate::span!("ui.paint_banded");
+        let Some((region, overlays)) = self.begin_paint(surface) else {
+            return Vec::new();
+        };
+        let dev = self.scale.to_device_rect(region);
+        let written = self.with_paint_parts(|parts| {
+            surface.paint_banded(dev, dst, stride, format, |p| {
+                parts.paint_region(p, region, &overlays)
+            })
+        });
+        self.finish_paint();
+        written
+    }
+
+    /// Repaint everything on the next paint — after the destination lost
+    /// what it showed (a [banded](Surface::banded) target that something
+    /// else drew over, say). Whole-screen surfaces rarely need this: a
+    /// present at buffer age 0 already copies everything.
+    pub fn request_full_paint(&mut self) {
+        self.mark_full();
+    }
+
+    /// The first half of a paint: relayout, scroll-blit, and the region to
+    /// repaint (snapped out to device pixels) with the overlays it touches;
+    /// `None` when there is nothing to paint.
+    fn begin_paint(&mut self, surface: &mut Surface) -> Option<(Rect, Vec<(WidgetId, Rect)>)> {
         if self.needs_layout {
             self.relayout();
         }
@@ -2126,12 +2173,12 @@ impl<Msg: 'static> Ui<Msg> {
         }
         self.account_damage();
         if self.damage.is_empty() {
-            return;
+            return None;
         }
         let Some(root) = self.root else {
             self.damage.clear();
             self.damage_counted = 0;
-            return;
+            return None;
         };
 
         // The repaint region: union of all pending damage, clamped to the surface.
@@ -2142,7 +2189,7 @@ impl<Msg: 'static> Ui<Msg> {
         self.damage_counted = 0;
         let region = intersect_rect(region, Rect::new(0.0, 0.0, self.size.w, self.size.h));
         if region.is_empty() {
-            return;
+            return None;
         }
         self.diag.paints += 1;
         // Snap the region *out* to whole device pixels. The region-sized
@@ -2167,62 +2214,38 @@ impl<Msg: 'static> Ui<Msg> {
         let mut overlays: Vec<(WidgetId, Rect)> = Vec::new();
         self.collect_overlays(root, &mut overlays);
 
+        Some((region, overlays))
+    }
+
+    /// Split the borrows a region paint needs out of `self`.
+    fn with_paint_parts<R>(&mut self, f: impl FnOnce(&mut PaintParts<'_, Msg>) -> R) -> R {
         let Self {
             nodes,
             fonts,
             theme,
             hover,
             focus,
-            size,
             tooltips,
             tip,
+            root,
             ..
         } = self;
-        let (hover, focus, size) = (*hover, *focus, *size);
-        let tip_shown = tip.shown;
-        surface.paint(|p| {
-            p.push_clip(region);
-            // Clear the region to the window background first.
-            p.fill_rect(region, theme.palette.bg);
-            paint_node(p, fonts, theme, nodes, root, hover, focus, region);
-            for &(id, rect) in &overlays {
-                // The 1px pad matches `damage_overlay`: border ink can sit
-                // just outside the reported rect.
-                if intersect_rect(rect.inset(-1.0), region).is_empty() {
-                    continue;
-                }
-                let Some(node) = nodes.get(id) else { continue };
-                let mut ctx = PaintCtx {
-                    painter: p,
-                    fonts,
-                    theme,
-                    bounds: rect,
-                    region,
-                    hovered: hover == Some(id),
-                    focused: focus == Some(id),
-                };
-                node.widget.paint_overlay(&mut ctx);
-            }
-            // A visible tooltip paints above everything, overlays included.
-            if let Some((owner, rect)) = tip_shown {
-                if !intersect_rect(rect.inset(-1.0), region).is_empty() {
-                    if let Some(t) = tooltips.get(owner) {
-                        let st = text_style(theme, theme.metrics.font_size, theme.palette.text);
-                        p.fill_rounded_rect(rect, 4.0, theme.palette.surface_alt);
-                        p.stroke_rounded_rect(rect, 4.0, theme.palette.line, 1.0);
-                        fonts.draw_text(
-                            p,
-                            &t.text,
-                            &st,
-                            Point::new(rect.x + TIP_PAD_X, rect.y + TIP_PAD_Y),
-                            None,
-                        );
-                    }
-                }
-            }
-            p.pop_clip();
-        });
+        let mut parts = PaintParts {
+            nodes,
+            fonts,
+            theme,
+            tooltips,
+            hover: *hover,
+            focus: *focus,
+            tip_shown: tip.shown,
+            root: root.expect("begin_paint checked the root"),
+        };
+        f(&mut parts)
+    }
 
+    /// The last half of a paint: bookkeeping after the pixels are down.
+    fn finish_paint(&mut self) {
+        let size = self.size;
         // Remember where each overlay painted, so its pixels can be damaged
         // after it changes or vanishes.
         let ids: Vec<WidgetId> = self.nodes.keys().collect();
@@ -2304,6 +2327,78 @@ impl<Msg: 'static> Ui<Msg> {
         node.children
             .iter()
             .any(|&c| self.subtree_intersects(c, bounds))
+    }
+}
+
+/// The pieces of a [`Ui`] one region paint reads, borrowed apart so a banded
+/// surface can run the paint once per band.
+struct PaintParts<'a, Msg: 'static> {
+    nodes: &'a SlotMap<WidgetId, Node<Msg>>,
+    fonts: &'a mut FontContext,
+    theme: &'a Theme,
+    tooltips: &'a SecondaryMap<WidgetId, Tooltip>,
+    hover: Option<WidgetId>,
+    focus: Option<WidgetId>,
+    tip_shown: Option<(WidgetId, Rect)>,
+    root: WidgetId,
+}
+
+impl<Msg: 'static> PaintParts<'_, Msg> {
+    /// Repaint everything visible in `region`: clear it to the background,
+    /// draw the tree, then overlays and the tooltip on top.
+    fn paint_region(&mut self, p: &mut Painter<'_>, region: Rect, overlays: &[(WidgetId, Rect)]) {
+        let Self {
+            nodes,
+            fonts,
+            theme,
+            tooltips,
+            hover,
+            focus,
+            tip_shown,
+            root,
+        } = self;
+        let (nodes, theme, tooltips) = (*nodes, *theme, *tooltips);
+        let (hover, focus, tip_shown, root) = (*hover, *focus, *tip_shown, *root);
+        p.push_clip(region);
+        // Clear the region to the window background first.
+        p.fill_rect(region, theme.palette.bg);
+        paint_node(p, fonts, theme, nodes, root, hover, focus, region);
+        for &(id, rect) in overlays {
+            // The 1px pad matches `damage_overlay`: border ink can sit
+            // just outside the reported rect.
+            if intersect_rect(rect.inset(-1.0), region).is_empty() {
+                continue;
+            }
+            let Some(node) = nodes.get(id) else { continue };
+            let mut ctx = PaintCtx {
+                painter: p,
+                fonts,
+                theme,
+                bounds: rect,
+                region,
+                hovered: hover == Some(id),
+                focused: focus == Some(id),
+            };
+            node.widget.paint_overlay(&mut ctx);
+        }
+        // A visible tooltip paints above everything, overlays included.
+        if let Some((owner, rect)) = tip_shown {
+            if !intersect_rect(rect.inset(-1.0), region).is_empty() {
+                if let Some(t) = tooltips.get(owner) {
+                    let st = text_style(theme, theme.metrics.font_size, theme.palette.text);
+                    p.fill_rounded_rect(rect, 4.0, theme.palette.surface_alt);
+                    p.stroke_rounded_rect(rect, 4.0, theme.palette.line, 1.0);
+                    fonts.draw_text(
+                        p,
+                        &t.text,
+                        &st,
+                        Point::new(rect.x + TIP_PAD_X, rect.y + TIP_PAD_Y),
+                        None,
+                    );
+                }
+            }
+        }
+        p.pop_clip();
     }
 }
 

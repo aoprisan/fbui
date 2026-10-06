@@ -306,6 +306,26 @@ impl FontContext {
         for data in fonts {
             db.load_font_data(data);
         }
+        Self::from_db(db)
+    }
+
+    /// As [`with_fonts`](Self::with_fonts), for font data that lives for the
+    /// whole program — `include_bytes!` in flash, say. The bytes are used in
+    /// place: nothing is copied into the heap, which on a small target saves
+    /// the size of every font (Inter alone is ~300 KiB).
+    pub fn with_static_fonts(fonts: impl IntoIterator<Item = &'static [u8]>) -> Self {
+        let mut db = cosmic_text::fontdb::Database::new();
+        for data in fonts {
+            db.load_font_source(cosmic_text::fontdb::Source::Binary(alloc::sync::Arc::new(
+                data,
+            )));
+        }
+        Self::from_db(db)
+    }
+
+    /// Install the first face as every generic family's default and build
+    /// the context around `db`.
+    fn from_db(mut db: cosmic_text::fontdb::Database) -> Self {
         // Point the generic families at the first loaded face so `Family::SansSerif`
         // (the `TextStyle` default) matches it; otherwise cosmic-text looks for its
         // built-in default names ("Open Sans", …) which an empty db never has.
@@ -334,13 +354,23 @@ impl FontContext {
     /// via [`with_fonts`](Self::with_fonts).
     #[cfg(feature = "bundled-font")]
     pub fn with_default_font() -> Self {
-        Self::with_fonts([DEFAULT_FONT.to_vec()])
+        Self::with_static_fonts([DEFAULT_FONT])
     }
 
     /// Add a font from in-memory bytes (TTF/OTF). Useful for bundling a fixed
     /// font so rendering is reproducible regardless of the host's installed set.
     pub fn load_font_data(&mut self, data: Vec<u8>) {
         self.font_system.db_mut().load_font_data(data);
+    }
+
+    /// Add a font whose bytes live for the whole program, used in place (see
+    /// [`with_static_fonts`](Self::with_static_fonts)).
+    pub fn load_static_font(&mut self, data: &'static [u8]) {
+        self.font_system
+            .db_mut()
+            .load_font_source(cosmic_text::fontdb::Source::Binary(alloc::sync::Arc::new(
+                data,
+            )));
     }
 
     /// Shape and lay out `text` in `style`, wrapping at `max_width` logical
@@ -394,6 +424,10 @@ impl FontContext {
         let clip = painter.clip();
         let base_x = (at.x * scale).round() as i32;
         let base_y = (at.y * scale).round() as i32;
+        // Glyphs are composited by hand, so apply a band's offset here: the
+        // clip and damage stay in surface space, pixel writes go to the band.
+        let (ox, oy) = painter.origin();
+        let target_clip = IRect::new(clip.x - ox, clip.y - oy, clip.w, clip.h);
         let target = painter.target();
         let (tw, th) = (target.width() as i32, target.height() as i32);
 
@@ -415,7 +449,16 @@ impl FontContext {
                 let gx = base_x + physical.x + raster.left;
                 let gy = base_y + line_y + physical.y - raster.top;
 
-                composite_glyph(target.pixels_mut(), tw, th, raster, gx, gy, gc, clip);
+                composite_glyph(
+                    target.pixels_mut(),
+                    tw,
+                    th,
+                    raster,
+                    gx - ox,
+                    gy - oy,
+                    gc,
+                    target_clip,
+                );
                 dirty = dirty.union(IRect::new(gx, gy, raster.width, raster.height));
             }
         }

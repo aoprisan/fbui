@@ -11,6 +11,16 @@
 //! on any full repaint, so copy-out can treat premultiplied pixels as straight
 //! and the scanout never shows through to garbage.
 //!
+//! **Banded surfaces.** [`Surface::banded`] trades the whole-screen shadow for
+//! one a few rows tall: [`paint_banded`](Surface::paint_banded) paints the
+//! damaged region a band at a time and copies each band out as soon as it is
+//! drawn, so the scanout buffer becomes the only full-screen copy. At 4 bytes
+//! a pixel the shadow is usually the largest allocation in a UI; a 16-row
+//! band of a 320×240 screen is 20 KiB instead of 300 KiB. The price is that
+//! nothing is retained between frames — scroll-blit falls back to a repaint,
+//! and the destination must be a buffer that keeps what was written to it (a
+//! single-buffered scanout or a panel's own frame memory).
+//!
 //! [`present_to_buffer`]: Surface::present_to_buffer
 
 #[allow(unused_imports)]
@@ -52,7 +62,12 @@ pub fn encode_png_rgba(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, 
 
 /// A CPU render target plus its damage bookkeeping.
 pub struct Surface {
+    /// The whole screen — or, when banded, `band_rows` rows of it.
     shadow: tiny_skia::Pixmap,
+    /// The surface size in device pixels (the shadow's, unless banded).
+    size: (u32, u32),
+    /// `Some(rows)` for a banded surface (see [`Surface::banded`]).
+    band_rows: Option<u32>,
     scale: Scale,
     damage: DamageTracker,
     base: Color,
@@ -78,13 +93,41 @@ impl Surface {
             tiny_skia::Pixmap::new(width.max(1), height.max(1)).expect("shadow buffer allocation");
         shadow.fill(base.to_tiny());
         Surface {
+            size: (shadow.width(), shadow.height()),
             shadow,
+            band_rows: None,
             scale,
             damage: DamageTracker::new(),
             base,
             dither_565: false,
             rotation: Rotation::Rot0,
         }
+    }
+
+    /// A **banded** `width × height` surface whose shadow holds only
+    /// `band_rows` rows (clamped to `1..=height`): see the
+    /// [module docs](self). Draw into it with
+    /// [`paint_banded`](Self::paint_banded), which copies each band to the
+    /// destination as it goes; [`paint`](Self::paint),
+    /// [`repaint_full`](Self::repaint_full) and
+    /// [`present_to_buffer`](Self::present_to_buffer) have no whole-screen
+    /// buffer to work on and do nothing. [`pixmap`](Self::pixmap) is the
+    /// last band painted (plus a guard row either side).
+    pub fn banded(width: u32, height: u32, band_rows: u32, scale: Scale) -> Self {
+        let (width, height) = (width.max(1), height.max(1));
+        let rows = band_rows.clamp(1, height);
+        // Plus a guard row above and below: see `paint_banded`.
+        let held = (rows + 2).min(height);
+        let mut s = Surface::with_base(width, held, scale, Color::BLACK);
+        s.size = (width, height);
+        s.band_rows = Some(rows);
+        s
+    }
+
+    /// The band height of a [banded](Self::banded) surface, `None` for a
+    /// whole-screen one.
+    pub fn band_rows(&self) -> Option<u32> {
+        self.band_rows
     }
 
     /// Rotate the copy-out: the surface stays in UI orientation (create it at
@@ -117,11 +160,11 @@ impl Surface {
     }
 
     pub fn width(&self) -> u32 {
-        self.shadow.width()
+        self.size.0
     }
 
     pub fn height(&self) -> u32 {
-        self.shadow.height()
+        self.size.1
     }
 
     pub fn scale(&self) -> Scale {
@@ -192,6 +235,9 @@ impl Surface {
     /// Run a paint pass. The closure gets a [`Painter`] bound to this surface's
     /// shadow buffer and scale; whatever it draws accumulates damage.
     pub fn paint(&mut self, f: impl FnOnce(&mut Painter<'_>)) {
+        if self.band_rows.is_some() {
+            return;
+        }
         let mut painter = Painter::new(&mut self.shadow, &mut self.damage, self.scale);
         f(&mut painter);
     }
@@ -200,6 +246,9 @@ impl Surface {
     /// marking everything damaged. Use after a resume/mode-change where the back
     /// buffers hold unknown contents.
     pub fn repaint_full(&mut self, f: impl FnOnce(&mut Painter<'_>)) {
+        if self.band_rows.is_some() {
+            return;
+        }
         let full = IRect::from_wh(self.shadow.width(), self.shadow.height());
         self.shadow.fill(self.base.to_tiny());
         let mut painter = Painter::new(&mut self.shadow, &mut self.damage, self.scale);
@@ -236,6 +285,10 @@ impl Surface {
     /// streaming strip chart rides: each new sample is a per-row `memmove`
     /// left plus a repaint of just the strip that scrolled into view.
     pub fn scroll_region_xy(&mut self, rect: Rect, dx: f32, dy: f32) -> Rect {
+        // A banded surface keeps no pixels to reuse: repaint it all.
+        if self.band_rows.is_some() {
+            return rect;
+        }
         let dev = self
             .scale
             .to_device_rect(rect)
@@ -316,6 +369,10 @@ impl Surface {
         format: TargetFormat,
         age: u32,
     ) -> Vec<IRect> {
+        if self.band_rows.is_some() {
+            // Bands were copied out as they were painted.
+            return Vec::new();
+        }
         let (w, h) = (self.shadow.width(), self.shadow.height());
         let damage = self.damage.flush(age, w, h);
         let dither = self.dither_565 && format == TargetFormat::Rgb565;
@@ -340,6 +397,83 @@ impl Surface {
             copyout::copy_out(&self.shadow, dst, stride, format, &damage);
         }
         damage
+    }
+
+    /// Repaint the device-space `region` **directly into `dst`**: run `f`
+    /// once per band (once in all, on a whole-screen surface) with a painter
+    /// clipped to that band, and copy the band's part of `region` out as
+    /// soon as it is drawn. Returns the destination-space rects written (panel
+    /// space under a rotation), for a `flush`.
+    ///
+    /// `f` must repaint everything visible in `region` — it is called with
+    /// the band's previous contents underneath, not the last frame's. That is
+    /// what `fbui_widgets::Ui::paint_banded` does: clear the region to the
+    /// background and draw every widget that intersects it. `dst` must hold
+    /// the previous frame outside `region` (it is written in place, like a
+    /// single-buffered scanout), `stride` is its pitch, and dithering and
+    /// rotation apply as in [`present_to_buffer`](Self::present_to_buffer).
+    pub fn paint_banded(
+        &mut self,
+        region: IRect,
+        dst: &mut [u8],
+        stride: usize,
+        format: TargetFormat,
+        mut f: impl FnMut(&mut Painter<'_>),
+    ) -> Vec<IRect> {
+        let (w, h) = self.size;
+        let full = IRect::from_wh(w, h);
+        let region = region.intersect(full);
+        if region.is_empty() {
+            return Vec::new();
+        }
+        let dither = self.dither_565 && format == TargetFormat::Rgb565;
+        let rows = self.band_rows.unwrap_or(h) as i32;
+        let mut written = Vec::new();
+        let mut y = region.y;
+        while y < region.bottom() {
+            let band_h = rows.min(region.bottom() - y);
+            let band = IRect::new(region.x, y, region.w, band_h as u32);
+            // A whole-screen shadow is its own origin. A band buffer starts a
+            // row above the band and ends a row below it (kept inside the
+            // screen): drawing is masked to the band, but a shape crossing
+            // the band's edge is then never cut down to a single row by the
+            // buffer's own edge, which tiny-skia anti-aliases differently
+            // (its one-scanline rect case) from the same row of a taller
+            // shape.
+            let origin_y = if self.band_rows.is_some() {
+                (y - 1).max(0).min(h as i32 - self.shadow.height() as i32)
+            } else {
+                0
+            };
+            {
+                let mut painter = Painter::banded(
+                    &mut self.shadow,
+                    &mut self.damage,
+                    self.scale,
+                    full,
+                    (0, origin_y),
+                    band,
+                );
+                f(&mut painter);
+            }
+            copyout::copy_out_band(
+                &self.shadow,
+                origin_y as u32,
+                (w, h),
+                dst,
+                stride,
+                format,
+                &[band],
+                self.rotation,
+                dither,
+            );
+            written.push(self.rotation.map_rect(band, w, h));
+            y += band_h;
+        }
+        // The region reached `dst` directly: retire the damage it recorded
+        // (as a present to a single-buffered target would).
+        let _ = self.damage.flush(1, w, h);
+        written
     }
 }
 

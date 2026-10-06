@@ -139,6 +139,7 @@ dependencies = [
  "hashbrown",
  "libm",
  "tiny-skia",
+ "tiny-skia-path",
 ]
 
 [[package]]

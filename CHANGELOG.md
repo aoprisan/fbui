@@ -37,12 +37,33 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
   already does, so gradients don't band on 16-bit panels. This changes what
   existing RGB565 boards show (32-bit ones are unaffected);
   `Runner::set_dither(false)` restores the plain truncation.
+- **Banded rendering** (`NOSTD.md` §6.1): `Runner::new_banded(app, info,
+  scale, band_rows)` paints through a shadow a few rows tall instead of a
+  whole-screen one, copying each band to the framebuffer as it is drawn
+  (`Surface::banded`, `Surface::paint_banded`, `Ui::paint_banded`,
+  `Ui::request_full_paint`). A 320×240 UI's peak heap drops from 800 KiB to
+  191 KiB with static fonts and 16-row bands. Output is byte-identical to a
+  whole-screen paint — pinned by `fbui-render/tests/banded.rs` and
+  `fbui-widgets/tests/banded.rs` — except bilinear-scaled images (±1 level).
+  tiny-skia's hairline rasterizer is vendored (`fbui-render/src/hairline/`,
+  BSD-3) so hairlines stay exact across band edges.
+- **Fonts used in place:** `FontContext::with_static_fonts` /
+  `load_static_font` and `fbui_bare::App::static_fonts` take `&'static`
+  font data without copying it into the heap (~300 KiB for Inter).
+  `FontContext::with_default_font` now uses the bundled font in place too —
+  on Linux as well. The doc viewer passes its compiled-in font this way.
 - `Runner::run` — the main loop on a runner you configured; `fbui_bare::run`
   is now shorthand for `Runner::new(..).run(..)`.
 - `fbui-bare/tests/runner.rs`: direct tests of the bare runner — copy-out
   and padded stride, idle, `invalidate`, key and scaled pointer input,
   rotation (pixels and input for every quarter turn), RGB565 dithering,
   and timers.
+
+### Changed
+
+- `Painter` no longer clones the clip mask (a full surface-sized buffer) for
+  every primitive drawn under a clip; peak heap while painting a clipped
+  region drops by one mask (75 KiB at 320×240). Output is unchanged.
 
 ## [0.4.0] — 2026-10-06 — fbui with no operating system
 

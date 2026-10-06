@@ -18,13 +18,22 @@
 //!
 //! The painter never owns the shadow buffer; it borrows it (and the damage
 //! tracker) from [`crate::Surface`] for the duration of one paint pass.
+//!
+//! **Band origin.** A banded surface (see [`crate::Surface::banded`]) paints
+//! the screen a strip at a time through a buffer only a few rows tall. The
+//! painter then holds an `origin`: the device-space position of the buffer's
+//! top-left pixel. Everything the painter tracks — clip, damage, the surface
+//! rect — stays in full-surface device space; only the final pixel writes are
+//! shifted by `-origin`, so a widget can't tell a band from the whole screen.
+//! With a zero origin (every non-banded surface) the painter takes exactly
+//! the code path it always did.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
 
 use tiny_skia::{
     BlendMode, FillRule, FilterQuality, GradientStop, LinearGradient, Mask, Paint, PathBuilder,
-    PixmapPaint, RadialGradient, Shader, SpreadMode, Stroke, Transform,
+    PathStroker, PixmapPaint, RadialGradient, Shader, SpreadMode, Stroke, Transform,
 };
 
 use crate::color::Color;
@@ -45,7 +54,18 @@ pub struct Painter<'a> {
     base: &'a mut tiny_skia::Pixmap,
     damage: &'a mut DamageTracker,
     scale: Scale,
+    /// The whole surface in device pixels — larger than `base` when banded.
     surface: IRect,
+    /// Device-space position of `base`'s top-left pixel (`(0, 0)` unless
+    /// banded).
+    origin: (i32, i32),
+    /// `base` is one band of a taller surface (see [`Painter::banded`]).
+    banded: bool,
+    /// Entries at the bottom of `clip_stack` that bound drawing without a
+    /// mask: a band's own rows. A mask changes how tiny-skia rounds its
+    /// blending, and stray ink outside the band lands in rows that are never
+    /// copied out, so the band clips by rect (text, damage, culling) only.
+    unmasked_clips: usize,
     /// Active opacity groups; the innermost is drawn into, `base` if empty.
     layers: Vec<Layer>,
     /// Intersected clip rectangles in device space; top is the active clip.
@@ -66,10 +86,48 @@ impl<'a> Painter<'a> {
             damage,
             scale,
             surface,
+            origin: (0, 0),
+            banded: false,
+            unmasked_clips: 0,
             layers: Vec::new(),
             clip_stack: Vec::new(),
             clip_mask: None,
         }
+    }
+
+    /// A painter over one band of a larger surface: `base` holds the device
+    /// pixels starting at `origin` of a `surface`-sized screen. Drawing is
+    /// clipped to `band` (device space, inside `base`'s extent) for text,
+    /// damage and culling; shapes may spill into the rest of `base`, which
+    /// the caller doesn't copy out.
+    pub(crate) fn banded(
+        base: &'a mut tiny_skia::Pixmap,
+        damage: &'a mut DamageTracker,
+        scale: Scale,
+        surface: IRect,
+        origin: (i32, i32),
+        band: IRect,
+    ) -> Self {
+        let banded = base.height() < surface.h || base.width() < surface.w;
+        let mut p = Painter {
+            base,
+            damage,
+            scale,
+            surface,
+            origin,
+            banded,
+            unmasked_clips: 1,
+            layers: Vec::new(),
+            clip_stack: Vec::new(),
+            clip_mask: None,
+        };
+        p.clip_stack.push(band.intersect(surface));
+        p
+    }
+
+    /// Device-space position of the target buffer's top-left pixel.
+    pub(crate) fn origin(&self) -> (i32, i32) {
+        self.origin
     }
 
     /// The scale factor in effect.
@@ -88,6 +146,46 @@ impl<'a> Painter<'a> {
         match self.layers.last_mut() {
             Some(layer) => &mut layer.pixmap,
             None => self.base,
+        }
+    }
+
+    /// The target together with the active clip mask. Borrowing both at
+    /// once (rather than cloning the mask, a full target-sized buffer, for
+    /// every primitive) keeps a clipped paint at one mask's worth of memory.
+    fn target_and_mask(&mut self) -> (&mut tiny_skia::Pixmap, Option<&Mask>) {
+        let target = match self.layers.last_mut() {
+            Some(layer) => &mut layer.pixmap,
+            None => &mut *self.base,
+        };
+        (target, self.clip_mask.as_ref())
+    }
+
+    /// A rect fill's geometry and transform. tiny-skia only takes its exact
+    /// rectangle rasterizer under an identity transform, so at 1× a band's
+    /// offset is folded into the rect itself rather than the transform —
+    /// otherwise a banded fill would go through the path rasterizer and
+    /// anti-alias its edges differently from the whole-screen one.
+    fn rect_geometry(&self, r: tiny_skia::Rect) -> Option<(tiny_skia::Rect, Transform)> {
+        if self.origin == (0, 0) || self.scale.factor() != 1.0 {
+            return Some((r, self.transform()));
+        }
+        let (ox, oy) = (self.origin.0 as f32, self.origin.1 as f32);
+        let moved = tiny_skia::Rect::from_ltrb(
+            r.left() - ox,
+            r.top() - oy,
+            r.right() - ox,
+            r.bottom() - oy,
+        )?;
+        Some((moved, Transform::identity()))
+    }
+
+    /// The logical → target-pixel transform: the scale, then the band offset.
+    fn transform(&self) -> Transform {
+        let t = self.scale.transform();
+        if self.origin == (0, 0) {
+            t
+        } else {
+            t.post_translate(-self.origin.0 as f32, -self.origin.1 as f32)
         }
     }
 
@@ -124,8 +222,11 @@ impl<'a> Painter<'a> {
         let mut paint = Paint::default();
         paint.set_color(color.to_tiny());
         paint.anti_alias = true;
-        let (t, mask) = (self.scale.transform(), self.clip_mask.clone());
-        self.target().fill_rect(ts_rect, &paint, t, mask.as_ref());
+        let Some((ts_rect, t)) = self.rect_geometry(ts_rect) else {
+            return;
+        };
+        let (target, mask) = self.target_and_mask();
+        target.fill_rect(ts_rect, &paint, t, mask);
         self.damage_logical(rect);
     }
 
@@ -156,9 +257,13 @@ impl<'a> Painter<'a> {
         let mut paint = Paint::default();
         paint.set_color(color.to_tiny());
         paint.anti_alias = true;
-        let (t, mask) = (self.scale.transform(), self.clip_mask.clone());
-        self.target()
-            .fill_path(&path.0, &paint, FillRule::Winding, t, mask.as_ref());
+        if self.banded {
+            self.fill_path_banded(&path.0, &paint);
+        } else {
+            let t = self.transform();
+            let (target, mask) = self.target_and_mask();
+            target.fill_path(&path.0, &paint, FillRule::Winding, t, mask);
+        }
         self.damage_logical(path.bounds());
     }
 
@@ -171,11 +276,197 @@ impl<'a> Painter<'a> {
             width,
             ..Stroke::default()
         };
-        let (t, mask) = (self.scale.transform(), self.clip_mask.clone());
-        self.target()
-            .stroke_path(&path.0, &paint, &stroke, t, mask.as_ref());
+        let hairline = width * self.scale.factor() <= 1.0;
+        if self.banded && !hairline {
+            // What tiny-skia's `stroke_path` does for a thick stroke — outline
+            // at the transform's resolution, then fill — but through the band
+            // route below.
+            let res = PathStroker::compute_resolution_scale(&self.scale.transform());
+            if let Some(outline) = path.0.stroke(&stroke, res) {
+                self.fill_path_banded(&outline, &paint);
+            }
+        } else if self.banded {
+            self.stroke_hairline_banded(&path.0, color, width);
+        } else {
+            let t = self.transform();
+            let (target, mask) = self.target_and_mask();
+            target.stroke_path(&path.0, &paint, &stroke, t, mask);
+        }
         // Grow damage by half the stroke width on each side.
         self.damage_logical(path.bounds().inset(-(width / 2.0 + 1.0)));
+    }
+
+    /// A hairline (a stroke at most one device pixel wide) on a banded
+    /// target. tiny-skia draws these with a dedicated scan converter that
+    /// clips each line to its target, so the band would change them; instead
+    /// the converter (vendored in [`crate::hairline`]) runs against the whole
+    /// screen and a blitter keeps the band's rows. The setup mirrors
+    /// tiny-skia's `stroke_path` hairline branch step for step.
+    fn stroke_hairline_banded(&mut self, path: &tiny_skia::Path, color: Color, width: f32) {
+        let mut c = color.to_tiny();
+        // `treat_as_hairline`: a sub-pixel width is a full hairline at
+        // reduced opacity, quantized the way tiny-skia does it.
+        let coverage = if width == 0.0 {
+            1.0
+        } else {
+            let len = width * self.scale.factor();
+            (len + len) * 0.5
+        };
+        if coverage != 1.0 {
+            let scale = (coverage * 256.0) as i32;
+            let new_alpha = (255 * scale) >> 8;
+            c.apply_opacity(new_alpha as f32 / 255.0);
+        }
+        let t = self.scale.transform();
+        let dev = if t.is_identity() {
+            path.clone()
+        } else {
+            match path.clone().transform(t) {
+                Some(p) => p,
+                None => return,
+            }
+        };
+        let masked = self.clip_stack.len() > self.unmasked_clips;
+        let write = self.clip();
+        let (sw, sh) = (self.surface.w, self.surface.h);
+        let origin = self.origin;
+        let mut blitter =
+            crate::hairline::BandBlitter::new(self.target(), origin, write, c, masked);
+        crate::hairline::stroke(&dev, tiny_skia::LineCap::Butt, sw, sh, &mut blitter);
+    }
+
+    /// Fill a logical-space path on a banded target so the pixels come out as
+    /// they would on the whole screen.
+    ///
+    /// tiny-skia rasterizes a shape that sticks out of the target by clipping
+    /// its edges to the target first, which nudges anti-aliasing along every
+    /// clipped edge. A band clips almost every shape the whole screen
+    /// wouldn't, so a path that leaves the band takes a detour: its coverage
+    /// is rasterized into a mask over its own bounds — where it is clipped by
+    /// nothing the whole screen doesn't clip it by — and the band's rows of
+    /// that coverage are blended in. A path inside the band (and the screen)
+    /// is drawn directly, merely shifted.
+    fn fill_path_banded(&mut self, path: &tiny_skia::Path, paint: &Paint) {
+        let Some(dev) = path.clone().transform(self.scale.transform()) else {
+            return;
+        };
+        let b = dev.bounds();
+        let (l, t, r, bt) = (
+            b.left().floor() as i32,
+            b.top().floor() as i32,
+            b.right().ceil() as i32,
+            b.bottom().ceil() as i32,
+        );
+        let (ox, oy) = self.origin;
+        let (tw, th) = (self.base.width() as i32, self.base.height() as i32);
+        let (sw, sh) = (self.surface.w as i32, self.surface.h as i32);
+        let inside_target = l >= ox && t >= oy && r <= ox + tw && bt <= oy + th;
+        if inside_target {
+            let shift = Transform::from_translate(-ox as f32, -oy as f32);
+            let (target, mask) = self.target_and_mask();
+            target.fill_path(&dev, paint, FillRule::Winding, shift, mask);
+            return;
+        }
+        // What of the shape this band shows: its bounds ∩ band ∩ clip.
+        let band = IRect::new(ox, oy, tw as u32, th as u32);
+        let show = IRect::new(l, t, (r - l).max(0) as u32, (bt - t).max(0) as u32)
+            .intersect(band)
+            .intersect(self.clip());
+        if show.is_empty() {
+            return;
+        }
+        // The coverage mask. Clipped by the screen (it pokes out), it must be
+        // rasterized against the screen's own edges with no offset at all —
+        // tiny-skia's edge clipping isn't translation-invariant — so it spans
+        // from the origin; otherwise it covers just the shape's bounds.
+        let clipped = l < 0 || t < 0 || r > sw || bt > sh;
+        let (mx, my) = if clipped { (0, 0) } else { (l, t) };
+        let (mw, mh) = (r.min(sw) - mx, bt.min(sh) - my);
+        if mw <= 0 || mh <= 0 {
+            return;
+        }
+        let Some(mut coverage) = Mask::new(mw as u32, mh as u32) else {
+            return;
+        };
+        let to_mask = if clipped {
+            Transform::identity()
+        } else {
+            Transform::from_translate(-mx as f32, -my as f32)
+        };
+        coverage.fill_path(&dev, FillRule::Winding, true, to_mask);
+        // An opaque colour with no clip mask is one tiny-skia blends
+        // differently: it strength-reduces source-over to a plain lerp by
+        // coverage (and a memset where coverage is full), which rounds unlike
+        // its masked path. Apply that lerp here, exactly as it does.
+        let opaque = match &paint.shader {
+            Shader::SolidColor(c) => c.is_opaque(),
+            _ => false,
+        };
+        if opaque && self.clip_stack.len() <= self.unmasked_clips {
+            let Shader::SolidColor(c) = &paint.shader else {
+                return;
+            };
+            let src = c.premultiply().to_color_u8();
+            let src = [src.red(), src.green(), src.blue(), src.alpha()];
+            let cov = coverage.data();
+            let target = self.target();
+            let px = target.pixels_mut();
+            for y in show.y..show.bottom() {
+                for x in show.x..show.right() {
+                    let a = cov[(y - my) as usize * mw as usize + (x - mx) as usize];
+                    let d = &mut px[(y - oy) as usize * tw as usize + (x - ox) as usize];
+                    *d = match a {
+                        0 => continue,
+                        255 => tiny_skia::PremultipliedColorU8::from_rgba(
+                            src[0], src[1], src[2], src[3],
+                        )
+                        .unwrap_or(*d),
+                        a => {
+                            // lowp `Lerp1Float`: coverage through f32 the way
+                            // tiny-skia carries it, then div255.
+                            let t = ((a as f32 * (1.0 / 255.0)) * 255.0 + 0.5) as u16;
+                            let lerp = |from: u8, to: u8| {
+                                ((from as u16 * (255 - t) + to as u16 * t + 255) >> 8) as u8
+                            };
+                            tiny_skia::PremultipliedColorU8::from_rgba(
+                                lerp(d.red(), src[0]),
+                                lerp(d.green(), src[1]),
+                                lerp(d.blue(), src[2]),
+                                lerp(d.alpha(), src[3]),
+                            )
+                            .unwrap_or(*d)
+                        }
+                    };
+                }
+            }
+            return;
+        }
+        // Re-home the visible rows into a band-sized mask (zero outside
+        // `show`, which also applies the clip) and blend through it.
+        let Some(mut band_mask) = Mask::new(tw as u32, th as u32) else {
+            return;
+        };
+        {
+            let src = coverage.data();
+            let dst = band_mask.data_mut();
+            let cols = show.w as usize;
+            for y in show.y..show.bottom() {
+                let s = (y - my) as usize * mw as usize + (show.x - mx) as usize;
+                let d = (y - oy) as usize * tw as usize + (show.x - ox) as usize;
+                dst[d..d + cols].copy_from_slice(&src[s..s + cols]);
+            }
+        }
+        drop(coverage);
+        let Some(rect) = tiny_skia::Rect::from_xywh(
+            (show.x - ox) as f32,
+            (show.y - oy) as f32,
+            show.w as f32,
+            show.h as f32,
+        ) else {
+            return;
+        };
+        self.target()
+            .fill_rect(rect, paint, Transform::identity(), Some(&band_mask));
     }
 
     // ---- gradients -------------------------------------------------------
@@ -238,8 +529,18 @@ impl<'a> Painter<'a> {
             ..Paint::default()
         };
         paint.anti_alias = true;
-        let (t, mask) = (self.scale.transform(), self.clip_mask.clone());
-        self.target().fill_rect(ts_rect, &paint, t, mask.as_ref());
+        let Some((moved, t)) = self.rect_geometry(ts_rect) else {
+            return;
+        };
+        if t.is_identity() && moved != ts_rect {
+            // The gradient was defined against the unmoved rect.
+            paint.shader.transform(Transform::from_translate(
+                moved.left() - ts_rect.left(),
+                moved.top() - ts_rect.top(),
+            ));
+        }
+        let (target, mask) = self.target_and_mask();
+        target.fill_rect(moved, &paint, t, mask);
     }
 
     // ---- images ----------------------------------------------------------
@@ -254,14 +555,15 @@ impl<'a> Painter<'a> {
             blend_mode: BlendMode::SourceOver,
             ..PixmapPaint::default()
         };
-        let mask = self.clip_mask.clone();
-        self.target().draw_pixmap(
-            dx,
-            dy,
+        let (ox, oy) = self.origin;
+        let (target, mask) = self.target_and_mask();
+        target.draw_pixmap(
+            dx - ox,
+            dy - oy,
             image.pixmap.as_ref(),
             &paint,
             Transform::identity(),
-            mask.as_ref(),
+            mask,
         );
         self.add_damage(IRect::new(dx, dy, image.width(), image.height()));
     }
@@ -287,10 +589,10 @@ impl<'a> Painter<'a> {
                 FilterQuality::Bilinear
             },
         };
-        let t = Transform::from_row(sx, 0.0, 0.0, sy, dev.x as f32, dev.y as f32);
-        let mask = self.clip_mask.clone();
-        self.target()
-            .draw_pixmap(0, 0, image.pixmap.as_ref(), &paint, t, mask.as_ref());
+        let (ox, oy) = self.origin;
+        let t = Transform::from_row(sx, 0.0, 0.0, sy, (dev.x - ox) as f32, (dev.y - oy) as f32);
+        let (target, mask) = self.target_and_mask();
+        target.draw_pixmap(0, 0, image.pixmap.as_ref(), &paint, t, mask);
         self.add_damage(dev);
     }
 
@@ -311,13 +613,21 @@ impl<'a> Painter<'a> {
     }
 
     fn rebuild_clip_mask(&mut self) {
-        let (w, h) = (self.surface.w.max(1), self.surface.h.max(1));
+        // The mask covers the buffer actually drawn into (a band, when
+        // banded), in that buffer's pixel space.
+        let (w, h) = (self.base.width().max(1), self.base.height().max(1));
+        let (ox, oy) = self.origin;
+        // Free the old mask before allocating its replacement.
+        self.clip_mask = None;
+        if self.clip_stack.len() <= self.unmasked_clips {
+            return;
+        }
         self.clip_mask = match self.clip_stack.last().copied() {
             // No explicit clip -> no mask (draw to the whole surface).
             None => None,
             // Fully clipped out: an all-zero mask discards every pixel.
             Some(c) if c.is_empty() => Mask::new(w, h),
-            Some(c) => Self::rect_mask(w, h, c),
+            Some(c) => Self::rect_mask(w, h, IRect::new(c.x - ox, c.y - oy, c.w, c.h)),
         };
     }
 
@@ -339,7 +649,7 @@ impl<'a> Painter<'a> {
     /// Begin an opacity group: subsequent drawing accumulates in an off-screen
     /// layer, composited back at `alpha` (0–1) on `pop_opacity`.
     pub fn push_opacity(&mut self, alpha: f32) {
-        let pixmap = tiny_skia::Pixmap::new(self.surface.w.max(1), self.surface.h.max(1))
+        let pixmap = tiny_skia::Pixmap::new(self.base.width().max(1), self.base.height().max(1))
             .expect("opacity layer alloc");
         self.layers.push(Layer {
             pixmap,
@@ -357,14 +667,14 @@ impl<'a> Painter<'a> {
             blend_mode: BlendMode::SourceOver,
             ..PixmapPaint::default()
         };
-        let mask = self.clip_mask.clone();
-        self.target().draw_pixmap(
+        let (target, mask) = self.target_and_mask();
+        target.draw_pixmap(
             0,
             0,
             layer.pixmap.as_ref(),
             &paint,
             Transform::identity(),
-            mask.as_ref(),
+            mask,
         );
     }
 }

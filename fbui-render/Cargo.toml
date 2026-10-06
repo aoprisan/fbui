@@ -28,6 +28,7 @@ default = ["std"]
 std = [
     "dep:image",
     "tiny-skia/std",
+    "tiny-skia-path/std",
     "tiny-skia/simd",
     "cosmic-text/std",
     "cosmic-text/fontconfig",
@@ -62,6 +63,7 @@ features = ["platform", "bundled-font", "svg"]
 # their libm-backed float paths; the `std` feature above turns the hosted
 # defaults back on.
 tiny-skia = { version = "0.12", default-features = false, features = ["no-std-float"] }
+tiny-skia-path = { version = "0.12", default-features = false, features = ["no-std-float"] }
 cosmic-text = { version = "0.19", default-features = false, features = ["swash", "no_std"] }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"], optional = true }
 # Float math (`floor`, `sin`, …) for the no_std build; with `std` the inherent

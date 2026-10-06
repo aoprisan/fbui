@@ -193,9 +193,12 @@ fbui-testkit   golden-PNG snapshot harness (dev-dependency only)
   functions in `lib.rs`. When adding a backend, keep this pattern: feature-gate
   the impl, box it behind the trait, and fall back gracefully.
 - **`fbui-render/src/`** — `surface.rs` (shadow buffer + damage + `copy_out` +
-  `scroll_region`), `painter.rs`, `text/` (cosmic-text + glyph atlas),
-  `copyout.rs` (XRGB/RGB565+dither), `platform_glue.rs` (the only
-  render↔platform coupling, behind the `platform` feature).
+  `scroll_region`, and the banded mode: `Surface::banded`/`paint_banded`),
+  `painter.rs`, `text/` (cosmic-text + glyph atlas), `copyout.rs`
+  (XRGB/RGB565+dither), `platform_glue.rs` (the only render↔platform
+  coupling, behind the `platform` feature), `hairline/` (tiny-skia's hairline
+  rasterizer, **vendored** for exact banded hairlines — keep it in step with
+  the tiny-skia version; `tests/banded.rs` fails if they drift).
 - **`fbui-widgets/src/`** — `tree.rs` (`Ui`: event→update→layout→paint→animate,
   plus `inspect`/`inspect_text`, names, `diagnostics`, `lint`), `describe.rs`,
   `script.rs` (flow parser/resolver), `harness.rs` (in-process executor),
@@ -255,7 +258,9 @@ These come from the Phase 0 spike's hardware findings and recur throughout:
   unit-testable.
 - **The fast path must never diverge from the slow one.** Scroll-blit is pinned
   byte-for-byte against a full repaint (`scroll_blit_matches_a_full_repaint`);
-  any new fast path needs the same equivalence test.
+  banded rendering against a whole-screen paint (`fbui-render/tests/banded.rs`,
+  `fbui-widgets/tests/banded.rs`); any new fast path needs the same
+  equivalence test.
 - `Frame::age` is the EGL-style buffer-age hint for correct partial redraw under
   double buffering (`0` = repaint everything).
 
