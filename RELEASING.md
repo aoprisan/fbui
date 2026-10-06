@@ -44,7 +44,7 @@ anything inconsistent.
    ```sh
    ./scripts/release-check.sh vX.Y.Z   # pins, changelog, tag/version agreement
    cargo test --workspace
-   cargo package --workspace           # builds each crate from its .crate file
+   cargo package --workspace --exclude fbui-doc-viewer   # builds each crate from its .crate file
    ```
 5. **Merge** the bump to `main` through a PR as usual, and let CI go green.
 6. **Tag the merge commit and push the tag**:

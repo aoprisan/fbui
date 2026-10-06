@@ -88,7 +88,9 @@ jobs:
       - name: crates.io packaging
         run: |
           ./scripts/release-check.sh
-          cargo package --workspace
+          # The doc-viewer app depends on unpublished crates (fbui-bare,
+          # fbui-doc), which cargo can't resolve when verifying a package.
+          cargo package --workspace --exclude fbui-doc-viewer
 
   # The developer-tooling track's exit criterion (docs/tooling.md): the shipped
   # examples driven through the *real* runner with no display, no tty and no
