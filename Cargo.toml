@@ -29,6 +29,10 @@ fbui-platform = { path = "fbui-platform", version = "=0.3.0" }
 fbui-render = { path = "fbui-render", version = "=0.3.0", default-features = false }
 fbui-widgets = { path = "fbui-widgets", version = "=0.3.0", default-features = false }
 fbui-testkit = { path = "fbui-testkit", version = "=0.3.0" }
+# The no_std track's crates (publish = false for now). Pinned like the rest so
+# `cargo package --workspace` can verify the viewer app that uses them.
+fbui-bare = { path = "fbui-bare", version = "=0.3.0" }
+fbui-doc = { path = "fbui-doc", version = "=0.3.0" }
 
 # Release tuned for shipping on an embedded / boot-image target: small and fast.
 # `opt-level = 3` keeps the CPU renderer quick (it's the perf-sensitive part);

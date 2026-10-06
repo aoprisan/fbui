@@ -14,8 +14,8 @@ default = []
 std = []
 
 [dependencies]
-fbui-bare = { path = "../../fbui-bare" }
-fbui-doc = { path = "../../fbui-doc" }
+fbui-bare = { workspace = true }
+fbui-doc = { workspace = true }
 fbui-render = { workspace = true }
 fbui-widgets = { workspace = true }
 # The custom page widget fills its slot through a taffy style.
