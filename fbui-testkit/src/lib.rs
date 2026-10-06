@@ -73,7 +73,13 @@ pub fn compare(a: &Pixmap, b: &Pixmap, per_channel: u8) -> Comparison {
         b.height()
     );
     let (mut changed, mut max_delta) = (0u32, 0u8);
-    for (pa, pb) in a.data().chunks_exact(4).zip(b.data().chunks_exact(4)) {
+    for (pa, pb) in a
+        .data()
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(b.data().as_chunks::<4>().0.iter())
+    {
         let mut over = false;
         for c in 0..4 {
             let d = pa[c].abs_diff(pb[c]);
@@ -96,11 +102,13 @@ pub fn compare(a: &Pixmap, b: &Pixmap, per_channel: u8) -> Comparison {
 /// delta where they don't. Handy to eyeball *where* a regression landed.
 pub fn diff_image(a: &Pixmap, b: &Pixmap) -> Pixmap {
     let mut out = Pixmap::new(a.width(), a.height()).expect("diff pixmap");
-    for (dst, (pa, pb)) in out
-        .data_mut()
-        .chunks_exact_mut(4)
-        .zip(a.data().chunks_exact(4).zip(b.data().chunks_exact(4)))
-    {
+    for (dst, (pa, pb)) in out.data_mut().as_chunks_mut::<4>().0.iter_mut().zip(
+        a.data()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(b.data().as_chunks::<4>().0.iter()),
+    ) {
         let delta = (0..4).map(|c| pa[c].abs_diff(pb[c])).max().unwrap_or(0);
         // Amplify so even a 1-LSB difference is visible, then clamp.
         let v = (delta as u32 * 8).min(255) as u8;

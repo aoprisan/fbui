@@ -81,6 +81,14 @@ jobs:
         run: |
           cargo bench -p fbui-render --no-run
           cargo bench -p fbui-widgets --no-run
+      # The crates.io release must not bit-rot either: lockstep pins and the
+      # changelog stay consistent, and every crate builds from its packaged
+      # .crate (siblings resolved from the other tarballs, not the workspace) —
+      # what `cargo publish` will upload. See RELEASING.md.
+      - name: crates.io packaging
+        run: |
+          ./scripts/release-check.sh
+          cargo package --workspace
 
   # The developer-tooling track's exit criterion (docs/tooling.md): the shipped
   # examples driven through the *real* runner with no display, no tty and no

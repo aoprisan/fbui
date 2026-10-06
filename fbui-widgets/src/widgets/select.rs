@@ -358,8 +358,8 @@ impl<Msg: 'static> Widget<Msg> for Select<Msg> {
                         self.open_menu(ctx);
                     }
                 }
-                // Closed: leave Esc unhandled so it bubbles (e.g. to a
-                // Dialog hosting this select).
+                // Closed: Esc falls through unhandled so it bubbles (e.g. to
+                // a Dialog hosting this select).
                 Key::Escape if self.open => self.close_menu(ctx),
                 _ => {}
             },

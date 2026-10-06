@@ -179,7 +179,12 @@ fn copy_out_inner(
 
 /// `[R,G,B,A]` -> `[B,G,R,X]` with a fixed X byte (Xrgb8888 fast path).
 fn convert_row_32(src: &[u8], dst: &mut [u8], x: u8) {
-    for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
+    for (s, d) in src
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(dst.as_chunks_mut::<4>().0.iter_mut())
+    {
         d[0] = s[2];
         d[1] = s[1];
         d[2] = s[0];
@@ -189,7 +194,12 @@ fn convert_row_32(src: &[u8], dst: &mut [u8], x: u8) {
 
 /// `[R,G,B,A]` -> `[B,G,R,A]`, preserving alpha (Argb8888).
 fn convert_row_argb(src: &[u8], dst: &mut [u8]) {
-    for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(4)) {
+    for (s, d) in src
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(dst.as_chunks_mut::<4>().0.iter_mut())
+    {
         d[0] = s[2];
         d[1] = s[1];
         d[2] = s[0];
@@ -199,7 +209,12 @@ fn convert_row_argb(src: &[u8], dst: &mut [u8]) {
 
 /// `[R,G,B,A]` -> little-endian RGB565 (`[lo, hi]`).
 fn convert_row_565(src: &[u8], dst: &mut [u8]) {
-    for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(2)) {
+    for (s, d) in src
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(dst.as_chunks_mut::<2>().0.iter_mut())
+    {
         let v: u16 =
             ((s[0] as u16 & 0xf8) << 8) | ((s[1] as u16 & 0xfc) << 3) | ((s[2] as u16) >> 3);
         d[0] = v as u8;
@@ -224,7 +239,13 @@ fn dither_channel(c: u8, bayer: i32, step: i32) -> u8 {
 /// position-stable.
 fn convert_row_565_dithered(src: &[u8], dst: &mut [u8], x0: usize, y: usize) {
     let by = y & 3;
-    for (i, (s, d)) in src.chunks_exact(4).zip(dst.chunks_exact_mut(2)).enumerate() {
+    for (i, (s, d)) in src
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .zip(dst.as_chunks_mut::<2>().0.iter_mut())
+        .enumerate()
+    {
         let b = BAYER4[by][(x0 + i) & 3];
         // R/B carry 5 bits (step 8), G carries 6 (step 4).
         let r = dither_channel(s[0], b, 8);
@@ -334,7 +355,7 @@ mod tests {
         // 565 words: a flat input should produce *more than one* level (proof the
         // dither fired) yet every red channel stays within one step of 133.
         let mut words = alloc::collections::BTreeSet::new();
-        for px in dst.chunks_exact(2) {
+        for px in dst.as_chunks::<2>().0.iter() {
             let v = u16::from_le_bytes([px[0], px[1]]);
             words.insert(v);
             let r5 = ((v >> 11) & 0x1f) as i32;

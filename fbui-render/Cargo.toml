@@ -8,7 +8,10 @@ edition.workspace = true
 rust-version = "1.89"
 license.workspace = true
 repository.workspace = true
-publish = false
+homepage.workspace = true
+keywords.workspace = true
+categories.workspace = true
+readme = "../README.md"
 
 [features]
 # Core is headless and self-contained: it draws into a normal-RAM shadow buffer
@@ -47,6 +50,11 @@ bundled-font = []
 # raster-images-in-SVG are deliberately not enabled — icons are pure vectors.
 svg = ["std", "dep:resvg"]
 
+# docs.rs builds with the optional, pure-Rust features on so every public
+# item shows up (the C-library backends stay off: they need system headers).
+[package.metadata.docs.rs]
+features = ["platform", "bundled-font", "svg"]
+
 [dependencies]
 # tiny-skia is the CPU rasterizer; cosmic-text shapes/lays out text and re-exports
 # the swash rasterizer + fontdb font loading; image decodes PNG/JPEG for blits.
@@ -67,12 +75,12 @@ hashbrown = { version = "0.17", default-features = false, features = ["default-h
 resvg = { version = "0.47", optional = true, default-features = false }
 
 # Only linked when the `platform` glue is enabled.
-fbui-platform = { path = "../fbui-platform", optional = true }
+fbui-platform = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Snapshot tests compare painter output against committed golden PNGs through the
 # testkit harness; criterion drives the repaint benchmarks.
-fbui-testkit = { path = "../fbui-testkit" }
+fbui-testkit = { workspace = true }
 criterion = { version = "0.5", default-features = false }
 
 [[bench]]

@@ -46,8 +46,9 @@ pub unsafe fn enable() {
     // 1-2 GiB: the ARM-local peripherals (0x4000_0000: timers, mailboxes).
     (*l1).0[1] = (1u64 << 30) | VALID | BLOCK | AF | ATTR_DEVICE | OUTER_SHAREABLE | PXN_UXN;
 
-    // MAIR: attr0 = Normal WB RW-allocate, attr1 = Device-nGnRnE.
-    let mair: u64 = 0xFF; // attr1 (bits 8..16) = 0x00
+    // MAIR: attr0 = Normal WB RW-allocate (0xFF), attr1 = Device-nGnRnE
+    // (0x00 in bits 8..16).
+    let mair: u64 = 0xFF;
     // TCR: T0SZ=25 (39-bit VA, walks start at L1), 4 KiB granule,
     // inner/outer WB cacheable walks, inner shareable, TTBR1 walks off,
     // 32-bit physical addresses.

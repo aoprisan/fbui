@@ -2068,8 +2068,10 @@ fn chart_stream_blit_matches_a_full_repaint() {
             let exact_diffs = sa
                 .pixmap()
                 .data()
-                .chunks_exact(4)
-                .zip(sb.pixmap().data().chunks_exact(4))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .zip(sb.pixmap().data().as_chunks::<4>().0.iter())
                 .filter(|(a, b)| a != b)
                 .count();
             assert!(

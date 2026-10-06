@@ -19,5 +19,5 @@ bundled-font = ["fbui-render/bundled-font"]
 all-widgets = ["fbui-widgets/all-widgets"]
 
 [dependencies]
-fbui-render = { path = "../fbui-render", default-features = false }
-fbui-widgets = { path = "../fbui-widgets", default-features = false }
+fbui-render = { workspace = true }
+fbui-widgets = { workspace = true }
