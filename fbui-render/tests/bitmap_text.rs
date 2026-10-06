@@ -35,7 +35,7 @@ fn render(fc: &mut FontContext, text: &str, size: f32, w: u32, h: u32) -> Vec<u8
 fn ink(rgba: &[u8], w: usize) -> (u64, [usize; 4], f64) {
     let (mut sum, mut wy) = (0u64, 0f64);
     let mut bb = [usize::MAX, usize::MAX, 0, 0];
-    for (i, px) in rgba.chunks_exact(4).enumerate() {
+    for (i, px) in rgba.as_chunks::<4>().0.iter().enumerate() {
         let v = px[0] as u64;
         if v == 0 {
             continue;

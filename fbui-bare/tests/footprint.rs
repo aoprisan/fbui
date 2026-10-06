@@ -209,7 +209,13 @@ fn a_small_ui_fits_a_small_heap() {
         "bitmap-font peak {} KiB over the 96 KiB budget",
         bitmap.peak_kib
     );
-    let lit = |s: &[u8]| s.chunks_exact(2).filter(|p| p != &[0, 0]).count();
+    let lit = |s: &[u8]| {
+        s.as_chunks::<2>()
+            .0
+            .iter()
+            .filter(|p| **p != [0, 0])
+            .count()
+    };
     let (a, b) = (lit(&bitmap.screen), lit(&banded.screen));
     assert!(
         a.abs_diff(b) * 20 < b,
