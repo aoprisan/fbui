@@ -78,6 +78,13 @@ If the tagged code itself is broken, yank whatever was uploaded
 Each crate ships its sources, tests, examples, benches, the root `README.md`
 (`fbui-widgets` its own), and the two license texts (symlinked into each crate
 directory; cargo copies the targets). `fbui-render` also ships the bundled Inter
-font and its OFL license. Inspect a package with
+font, the bitmap fonts generated from it (`fonts/*.fbf`) and their OFL
+license, and the vendored tiny-skia hairline rasterizer (`src/hairline/`) with
+its BSD-3-Clause license — which is why its `license` field is
+`(MIT OR Apache-2.0) AND BSD-3-Clause AND OFL-1.1`. Tests and examples must
+not reach outside their crate (`include_bytes!("../../…")` into a sibling):
+the published package doesn't have the sibling. To prove it, extract each
+`target/package/*.crate` and run its tests with the siblings patched in from
+their packages. Inspect a package with
 `cargo package --list -p <crate>`. docs.rs builds with the pure-Rust optional
 features on (`[package.metadata.docs.rs]` in each manifest).

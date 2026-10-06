@@ -18,7 +18,10 @@
 //!   timing — and a way to sleep, [`Board::wait`] (`wfi`, `wfe`, or a spin).
 //!
 //! and the app implements [`App`] — the same `build`/`update` shape as the
-//! Linux `fbui::App`, minus threads and file I/O.
+//! Linux `fbui::App`, minus threads and file I/O. Deferred and repeating
+//! messages (a clock, a sensor poll, a timeout) go through [`Timers`], handed
+//! to [`App::on_start`]; a panel mounted sideways or upside down is handled
+//! with [`Runner::with_rotation`].
 //!
 //! [`run`] is the whole main loop. It keeps fbui's idle rule: with no damage,
 //! no animation and no pending gesture it calls [`Board::wait`] with no
@@ -58,6 +61,8 @@
 
 extern crate alloc;
 
+mod timer;
+
 use alloc::vec::Vec;
 
 use fbui_render::geom::{IRect, Point, Size};
@@ -65,6 +70,9 @@ use fbui_render::{FontContext, Scale, Surface, TargetFormat};
 use fbui_widgets::event::{Event, Key, Modifiers, PointerButton};
 use fbui_widgets::gesture::{Gesture, GestureRecognizer};
 use fbui_widgets::{Theme, Ui};
+
+pub use fbui_render::Rotation;
+pub use timer::{Timer, Timers};
 
 /// Frame period while animating or mid-gesture (~60 Hz).
 pub const FRAME_MS: u64 = 16;
@@ -156,6 +164,14 @@ pub trait App {
     /// Handle one message.
     fn update(&mut self, msg: Self::Message, ui: &mut Ui<Self::Message>);
 
+    /// Called once, right after [`build`](Self::build), with the handle for
+    /// deferred and repeating messages — keep it to arm timers later from
+    /// `update`. Timers armed here count from the runner's first clock
+    /// reading. Default: no timers.
+    fn on_start(&mut self, timers: Timers<Self::Message>) {
+        let _ = timers;
+    }
+
     /// See a key before the focused widget does — app-wide shortcuts (page
     /// keys in a viewer, a menu key). Return `true` to consume it. Default:
     /// nothing is intercepted.
@@ -169,8 +185,33 @@ pub trait App {
         Theme::dark()
     }
 
-    /// Fonts (TTF/OTF bytes). With none, the runner uses the bundled font
-    /// under `bundled-font`, and otherwise text lays out empty.
+    /// Fonts compiled into the image (TTF/OTF bytes, e.g.
+    /// `include_bytes!`), used **in place** — no heap copy, which on a small
+    /// target saves the size of every font. With no fonts from this or
+    /// [`fonts`](Self::fonts) (nor [`bitmap_fonts`](Self::bitmap_fonts)),
+    /// the runner uses the bundled font under `bundled-font` (also in place),
+    /// else the bundled bitmap fonts under `bundled-bitmap-font`, and
+    /// otherwise text lays out empty. Needs the `outline-text` feature (on by
+    /// default); without it these are ignored.
+    fn static_fonts(&self) -> Vec<&'static [u8]> {
+        Vec::new()
+    }
+
+    /// Pre-rasterized [bitmap fonts](fbui_render::text::bitmap) — e.g.
+    /// `BitmapFont::from_bytes(include_bytes!("Inter-16.fbf"))`. When any are
+    /// given they set **all** the app's text and the outline fonts are not
+    /// used: no shaping engine or rasterizer runs, and nothing is copied, so
+    /// text costs almost no heap. With the `outline-text` feature off this is
+    /// the only way to have text. Fixed sizes (the nearest is used) and no
+    /// shaping: see the module docs for what that gives up.
+    fn bitmap_fonts(&self) -> Vec<fbui_render::text::BitmapFont> {
+        Vec::new()
+    }
+
+    /// Fonts (TTF/OTF bytes) **copied into the heap**. Prefer
+    /// [`static_fonts`](Self::static_fonts) for fonts compiled into the
+    /// image; use this for fonts loaded at run time. Both may be given
+    /// (static ones come first, and the first face is the default).
     fn fonts(&self) -> Vec<Vec<u8>> {
         Vec::new()
     }
@@ -182,7 +223,16 @@ pub struct Runner<A: App> {
     ui: Ui<A::Message>,
     surface: Surface,
     gestures: GestureRecognizer,
+    timers: Timers<A::Message>,
     scale: f32,
+    /// The panel (framebuffer) size in device pixels — what input speaks.
+    panel: (u32, u32),
+    /// How the UI is turned on the panel; the surface is UI-oriented.
+    rotation: Rotation,
+    /// Ordered dithering on the RGB565 copy-out (see `set_dither`).
+    dither: bool,
+    /// `Some(rows)` when painting through a band (see `new_banded`).
+    band_rows: Option<u32>,
     /// `now_ms` of the previous frame, for the animation `dt`.
     last_frame_ms: Option<u64>,
     /// Whether the framebuffer already holds the previous frame (copy only
@@ -193,28 +243,132 @@ pub struct Runner<A: App> {
 impl<A: App> Runner<A> {
     /// Build the app's tree for a framebuffer of shape `info` at UI `scale`
     /// (logical size = device size / scale).
-    pub fn new(mut app: A, info: FbInfo, scale: f32) -> Self {
-        let fonts = app.fonts();
-        let fonts = if fonts.is_empty() {
-            default_fonts()
-        } else {
-            FontContext::with_fonts(fonts)
-        };
+    pub fn new(app: A, info: FbInfo, scale: f32) -> Self {
+        Self::build(app, info, scale, None)
+    }
+
+    /// As [`new`](Self::new), but painting through a shadow only
+    /// `band_rows` rows tall instead of a whole-screen one: each frame's
+    /// damage is drawn a band at a time and copied out band by band. At 4
+    /// bytes a pixel the shadow is usually a UI's largest allocation; a
+    /// 16-row band of a 320×240 panel is ~20 KiB instead of 300 KiB.
+    ///
+    /// The framebuffer must keep what is written to it between frames (it
+    /// becomes the only full-screen copy — true of a single-buffered scanout
+    /// and of a panel with its own frame memory). Nothing is retained in RAM,
+    /// so scrolling repaints instead of blitting, and taller bands mean fewer
+    /// passes over the tree. See `NOSTD.md` for what banding draws
+    /// identically to a whole-screen shadow.
+    pub fn new_banded(app: A, info: FbInfo, scale: f32, band_rows: u32) -> Self {
+        Self::build(app, info, scale, Some(band_rows.max(1)))
+    }
+
+    fn build(mut app: A, info: FbInfo, scale: f32, band_rows: Option<u32>) -> Self {
+        let fonts = font_context(&app);
         let sc = Scale::new(scale);
         let size = Size::new(info.width as f32 / scale, info.height as f32 / scale);
         let mut ui = Ui::with_fonts(size, sc, app.theme(), fonts);
         app.build(&mut ui);
+        let timers = Timers::new();
+        app.on_start(timers.clone());
+        // 16-bit panels band badly on gradients; dither them, as the Linux
+        // runner does.
+        let dither = info.format == TargetFormat::Rgb565;
+        let mut surface = new_surface(info.width, info.height, sc, band_rows);
+        surface.set_dither(dither);
         let mut runner = Runner {
             app,
             ui,
-            surface: Surface::new(info.width, info.height, sc),
+            surface,
             gestures: GestureRecognizer::default(),
+            timers,
             scale,
+            panel: (info.width, info.height),
+            rotation: Rotation::Rot0,
+            dither,
+            band_rows,
             last_frame_ms: None,
             fb_current: false,
         };
         runner.drain_messages();
         runner
+    }
+
+    /// [`set_rotation`](Self::set_rotation), builder-style — for a panel
+    /// that is mounted turned:
+    ///
+    /// ```ignore
+    /// Runner::new(app, fb.info(), 1.0)
+    ///     .with_rotation(Rotation::Rot90)
+    ///     .run(&mut fb, &mut board)
+    /// ```
+    pub fn with_rotation(mut self, rotation: Rotation) -> Self {
+        self.set_rotation(rotation);
+        self
+    }
+
+    /// Turn the UI on the panel: `rotation` is how far the UI appears turned
+    /// **clockwise** (a landscape panel stood on its left edge shows an
+    /// upright portrait UI at [`Rotation::Rot90`]). The UI is laid out in the
+    /// rotated orientation — width and height swap for the quarter turns — and
+    /// the rotation is applied at copy-out, so the framebuffer keeps its
+    /// physical shape and [`Framebuffer::flush`] gets panel-space rects.
+    /// [`Input`] stays in panel coordinates; the runner maps it back.
+    ///
+    /// Can be called at any time (an accelerometer flip): the tree relays out
+    /// and the next frame repaints the whole panel.
+    pub fn set_rotation(&mut self, rotation: Rotation) {
+        if rotation == self.rotation {
+            return;
+        }
+        let (sw, sh) = rotation.surface_size(self.panel.0, self.panel.1);
+        let sc = Scale::new(self.scale);
+        let mut surface = new_surface(sw, sh, sc, self.band_rows);
+        surface.set_rotation(rotation);
+        surface.set_dither(self.dither);
+        self.surface = surface;
+        self.rotation = rotation;
+        self.ui.set_size(
+            Size::new(sw as f32 / self.scale, sh as f32 / self.scale),
+            sc,
+        );
+        // A gesture in flight was tracked in the old orientation.
+        self.gestures = GestureRecognizer::default();
+        self.fb_current = false;
+    }
+
+    /// The current rotation (see [`set_rotation`](Self::set_rotation)).
+    pub fn rotation(&self) -> Rotation {
+        self.rotation
+    }
+
+    /// Ordered (4×4 Bayer) dithering on the RGB565 copy-out, which hides the
+    /// banding 16-bit panels show on gradients. **On by default for an
+    /// [`Rgb565`](TargetFormat::Rgb565) framebuffer**, like the Linux runner;
+    /// turn it off when the scanout must be the plain truncation of the
+    /// painted colours (pixel-exact comparisons, a panel that dithers in
+    /// hardware). No effect on 32-bit formats. The pattern is keyed to pixel
+    /// position, so partial updates stay seamless; changing it repaints the
+    /// whole panel on the next frame.
+    pub fn set_dither(&mut self, on: bool) {
+        if on == self.dither {
+            return;
+        }
+        self.dither = on;
+        self.surface.set_dither(on);
+        // Re-copy everything: what the panel holds used the old pattern.
+        self.fb_current = false;
+    }
+
+    /// Whether RGB565 dithering is on (see [`set_dither`](Self::set_dither)).
+    pub fn dither(&self) -> bool {
+        self.dither
+    }
+
+    /// Another handle on the app's timer queue — for board code that wants
+    /// to post the app a message (a card-detect pin, a sensor reading).
+    pub fn timers(&self) -> Timers<A::Message> {
+        self.timers.clone()
     }
 
     pub fn app(&self) -> &A {
@@ -251,6 +405,7 @@ impl<A: App> Runner<A> {
 
     /// Feed one input event at time `now_ms`.
     pub fn handle(&mut self, input: Input, now_ms: u64) {
+        self.timers.set_now(now_ms);
         match input {
             Input::Key { key, pressed, mods } => self.key(key, pressed, mods),
             Input::KeyTap(key) => {
@@ -304,6 +459,16 @@ impl<A: App> Runner<A> {
             None => 0.0,
         };
         self.last_frame_ms = Some(now_ms);
+        self.timers.set_now(now_ms);
+
+        // Due timers first, so what they change paints in this frame.
+        let due = self.timers.take_due(now_ms);
+        if !due.is_empty() {
+            for m in due {
+                self.app.update(m, &mut self.ui);
+            }
+            self.drain_messages();
+        }
 
         for g in self.gestures.poll(now_ms) {
             self.gesture(g);
@@ -316,14 +481,24 @@ impl<A: App> Runner<A> {
             return false;
         }
 
-        self.ui.paint(&mut self.surface);
         let info = fb.info();
-        // Single-buffered scanout: once a frame landed, the buffer holds it
-        // (age 1) and only damage needs copying; before that, age 0 = all.
-        let age = u32::from(self.fb_current);
-        let rects = self
-            .surface
-            .present_to_buffer(fb.pixels(), info.stride, info.format, age);
+        let rects = if self.band_rows.is_some() {
+            // No shadow holds the last frame: a framebuffer that doesn't
+            // either (first frame, `invalidate`) gets the whole tree again.
+            if !self.fb_current {
+                self.ui.request_full_paint();
+            }
+            self.ui
+                .paint_banded(&mut self.surface, fb.pixels(), info.stride, info.format)
+        } else {
+            self.ui.paint(&mut self.surface);
+            // Single-buffered scanout: once a frame landed, the buffer holds
+            // it (age 1) and only damage needs copying; before that, age 0 =
+            // all.
+            let age = u32::from(self.fb_current);
+            self.surface
+                .present_to_buffer(fb.pixels(), info.stride, info.format, age)
+        };
         self.fb_current = true;
         if !rects.is_empty() {
             fb.flush(&rects);
@@ -333,17 +508,40 @@ impl<A: App> Runner<A> {
 
     /// When the loop must wake next even with no input: a frame period from
     /// now while animating or a gesture is in flight (a long-press timer),
-    /// otherwise `None` — idle until input.
+    /// the next [`Timers`] deadline if that is sooner, otherwise `None` —
+    /// idle until input.
     pub fn next_deadline(&self, now_ms: u64) -> Option<u64> {
-        if self.ui.is_animating() || self.gestures.is_active() || self.ui.needs_paint() {
-            Some(now_ms + FRAME_MS)
-        } else {
-            None
+        self.timers.set_now(now_ms);
+        let frame = (self.ui.is_animating() || self.gestures.is_active() || self.ui.needs_paint())
+            .then_some(now_ms + FRAME_MS);
+        let timer = self.timers.next_due().map(|due| due.max(now_ms));
+        match (frame, timer) {
+            (Some(f), Some(t)) => Some(f.min(t)),
+            (f, t) => f.or(t),
         }
     }
 
+    /// The whole main loop on a configured runner (see [`run`]): forever
+    /// drain input, produce a frame if anything changed, and sleep until the
+    /// next deadline.
+    pub fn run(mut self, fb: &mut impl Framebuffer, board: &mut impl Board) -> ! {
+        loop {
+            while let Some(input) = board.poll_input() {
+                let now = board.now_ms();
+                self.handle(input, now);
+            }
+            let now = board.now_ms();
+            self.frame(fb, now);
+            let deadline = self.next_deadline(now);
+            board.wait(deadline);
+        }
+    }
+
+    /// A panel-space device pixel → UI logical coordinates.
     fn logical(&self, x: f32, y: f32) -> Point {
-        Point::new(x / self.scale, y / self.scale)
+        let (pw, ph) = (self.panel.0 as f32, self.panel.1 as f32);
+        let (ux, uy) = self.rotation.map_panel_point(x, y, pw, ph);
+        Point::new(ux / self.scale, uy / self.scale)
     }
 
     fn key(&mut self, key: Key, pressed: bool, mods: Modifiers) {
@@ -384,18 +582,44 @@ impl<A: App> Runner<A> {
 
 /// The whole bare-metal main loop: build `app`, then forever drain input,
 /// produce a frame if anything changed, and sleep until the next deadline.
+///
+/// Shorthand for `Runner::new(app, fb.info(), scale).run(fb, board)`; build
+/// the [`Runner`] yourself to configure it first (e.g. a rotation).
 pub fn run<A: App>(app: A, fb: &mut impl Framebuffer, board: &mut impl Board, scale: f32) -> ! {
-    let mut runner = Runner::new(app, fb.info(), scale);
-    loop {
-        while let Some(input) = board.poll_input() {
-            let now = board.now_ms();
-            runner.handle(input, now);
-        }
-        let now = board.now_ms();
-        runner.frame(fb, now);
-        let deadline = runner.next_deadline(now);
-        board.wait(deadline);
+    Runner::new(app, fb.info(), scale).run(fb, board)
+}
+
+/// A whole-screen shadow, or a banded one.
+fn new_surface(w: u32, h: u32, scale: Scale, band_rows: Option<u32>) -> Surface {
+    match band_rows {
+        Some(rows) => Surface::banded(w, h, rows, scale),
+        None => Surface::new(w, h, scale),
     }
+}
+
+/// The app's fonts: bitmap fonts if it has any, else its outline fonts,
+/// else whatever is bundled.
+fn font_context<A: App>(app: &A) -> FontContext {
+    let bitmaps = app.bitmap_fonts();
+    if !bitmaps.is_empty() {
+        return FontContext::with_bitmap_fonts(bitmaps);
+    }
+    #[cfg(feature = "outline-text")]
+    {
+        let statics = app.static_fonts();
+        let owned = app.fonts();
+        if !statics.is_empty() {
+            let mut fc = FontContext::with_static_fonts(statics);
+            for f in owned {
+                fc.load_font_data(f);
+            }
+            return fc;
+        }
+        if !owned.is_empty() {
+            return FontContext::with_fonts(owned);
+        }
+    }
+    default_fonts()
 }
 
 #[cfg(feature = "bundled-font")]
@@ -403,7 +627,12 @@ fn default_fonts() -> FontContext {
     FontContext::with_default_font()
 }
 
-#[cfg(not(feature = "bundled-font"))]
+#[cfg(all(not(feature = "bundled-font"), feature = "bundled-bitmap-font"))]
+fn default_fonts() -> FontContext {
+    FontContext::with_default_bitmap_fonts()
+}
+
+#[cfg(not(any(feature = "bundled-font", feature = "bundled-bitmap-font")))]
 fn default_fonts() -> FontContext {
     FontContext::new()
 }

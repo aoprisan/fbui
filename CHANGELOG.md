@@ -17,6 +17,89 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-06 — small heaps: banded rendering and bitmap fonts
+
+### Added
+
+- **`fbui-bare` timers:** `Timers<M>` — `send`, `send_after`, `send_every`,
+  cancelled through a `Timer` handle — the `no_std` counterpart of
+  `fbui::Proxy`'s timers (fixed-delay repeats; dropping a handle detaches).
+  The app gets the handle in the new `App::on_start` (default: no-op, so
+  existing apps are unchanged); board code gets one from `Runner::timers`.
+  Deadlines feed `Runner::next_deadline`, so `Board::wait` sleeps exactly
+  until the next timer and idle still costs nothing. Timers armed before the
+  runner has seen the clock count from its first reading.
+- **`fbui-bare` rotation:** `Runner::with_rotation` / `set_rotation` (also at
+  run time) turn the UI on a sideways- or upside-down-mounted panel through
+  the existing copy-out rotation; input stays in panel coordinates and is
+  mapped back, and `Framebuffer::flush` gets panel-space rects.
+  `fbui_bare::Rotation` re-exports `fbui_render::Rotation`.
+- **`fbui-bare` RGB565 dithering:** an `Rgb565` framebuffer now gets the
+  ordered (4×4 Bayer) dithered copy-out by default, as the Linux runner
+  already does, so gradients don't band on 16-bit panels. This changes what
+  existing RGB565 boards show (32-bit ones are unaffected);
+  `Runner::set_dither(false)` restores the plain truncation.
+- **Banded rendering** (`NOSTD.md` §6.1): `Runner::new_banded(app, info,
+  scale, band_rows)` paints through a shadow a few rows tall instead of a
+  whole-screen one, copying each band to the framebuffer as it is drawn
+  (`Surface::banded`, `Surface::paint_banded`, `Ui::paint_banded`,
+  `Ui::request_full_paint`). A 320×240 UI's peak heap drops from 800 KiB to
+  161 KiB with static fonts and 16-row bands. Output is byte-identical to a
+  whole-screen paint — pinned by `fbui-render/tests/banded.rs` and
+  `fbui-widgets/tests/banded.rs` — except bilinear-scaled images (±1 level).
+  tiny-skia's hairline rasterizer is vendored (`fbui-render/src/hairline/`,
+  BSD-3) so hairlines stay exact across band edges.
+- **Bitmap fonts** (`NOSTD.md` §6.2, `fbui_render::text::bitmap`): text
+  with no shaping engine or rasterizer at run time. `.fbf` files hold glyphs
+  pre-rasterized at fixed sizes (4-bit coverage, read in place, validated
+  without panics); `FontContext::with_bitmap_fonts`, `add_bitmap_font`,
+  `BitmapFont`, `BitmapFontWriter`, and `fbui_bare::App::bitmap_fonts`. The
+  `make_bitmap_font` example generates them from any TTF/OTF;
+  `bundled-bitmap-font` ships Inter at 12/16/20/24 px (Latin-1, 75 KB). Every
+  widget works on them. The 320×240 counter UI drops to 45 KiB live / 68 KiB
+  peak heap, and its firmware from 1.78 MiB to 0.66 MiB of flash with
+  `outline-text` off. No kerning or shaping, fixed sizes, whole-pixel glyph
+  positions.
+- **`outline-text` feature** (default on in `fbui-render`, `fbui-widgets` and
+  `fbui-bare`): cosmic-text and swash are now optional. `FontContext::set_scale`
+  (called by `Ui`) lets bitmap fonts choose their size in device pixels.
+- **Fonts used in place:** `FontContext::with_static_fonts` /
+  `load_static_font` and `fbui_bare::App::static_fonts` take `&'static`
+  font data without copying it into the heap (~300 KiB for Inter).
+  `FontContext::with_default_font` now uses the bundled font in place too —
+  on Linux as well. The doc viewer passes its compiled-in font this way.
+- `Runner::run` — the main loop on a runner you configured; `fbui_bare::run`
+  is now shorthand for `Runner::new(..).run(..)`.
+- `fbui-bare/tests/runner.rs`: direct tests of the bare runner — copy-out
+  and padded stride, idle, `invalidate`, key and scaled pointer input,
+  rotation (pixels and input for every quarter turn), RGB565 dithering,
+  and timers.
+
+### Fixed
+
+- `ProgressBar`, `Slider` and `TextInput` no longer stretch vertically in a
+  column with free space. They set `flex_grow` to fill a row, but in a column
+  it grew them in height: a counter screen's progress bar was laid out
+  296×139 instead of 296×8. They now cap their height at their control
+  height (`max_size`), keeping the row behaviour. Found while tracing a 41 KB
+  first-frame allocation, which was the stretched bar's coverage mask.
+
+### Changed
+
+- **Breaking for `default-features = false` users of `fbui-render` /
+  `fbui-widgets` / `fbui-bare`:** outline text is now the `outline-text`
+  feature. A dependent that turns default features off must add it to keep
+  TTF/OTF text (`FontContext::with_fonts` and friends); without it only
+  bitmap fonts are available. Default builds are unchanged.
+- `Painter` no longer clones the clip mask (a full surface-sized buffer) for
+  every primitive drawn under a clip; peak heap while painting a clipped
+  region drops by one mask (75 KiB at 320×240). Output is unchanged.
+- `fbui-render`'s license expression is now
+  `(MIT OR Apache-2.0) AND BSD-3-Clause AND OFL-1.1`: the crate's own code
+  is unchanged in license, but it ships the vendored tiny-skia hairline
+  rasterizer (BSD-3-Clause) and the Inter font files (OFL-1.1), whose
+  license texts are included in the package.
+
 ## [0.4.0] — 2026-10-06 — fbui with no operating system
 
 ### Changed
@@ -839,7 +922,8 @@ real devices.
 - libinput's `set_surface` rescale-on-hotplug override is left to the
   feature-gated backend (not in the default/CI build).
 
-[Unreleased]: https://github.com/aoprisan/fbui/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/aoprisan/fbui/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/aoprisan/fbui/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/aoprisan/fbui/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aoprisan/fbui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aoprisan/fbui/compare/v0.1.0...v0.2.0

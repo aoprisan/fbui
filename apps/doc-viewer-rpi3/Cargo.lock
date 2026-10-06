@@ -101,7 +101,7 @@ dependencies = [
 
 [[package]]
 name = "fbui-bare"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "fbui-render",
  "fbui-widgets",
@@ -109,7 +109,7 @@ dependencies = [
 
 [[package]]
 name = "fbui-doc"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "libm",
  "miniz_oxide",
@@ -122,7 +122,7 @@ dependencies = [
 
 [[package]]
 name = "fbui-doc-viewer"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "fbui-bare",
  "fbui-doc",
@@ -133,17 +133,18 @@ dependencies = [
 
 [[package]]
 name = "fbui-render"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "cosmic-text",
  "hashbrown",
  "libm",
  "tiny-skia",
+ "tiny-skia-path",
 ]
 
 [[package]]
 name = "fbui-widgets"
-version = "0.4.0"
+version = "0.5.0"
 dependencies = [
  "fbui-render",
  "hashbrown",

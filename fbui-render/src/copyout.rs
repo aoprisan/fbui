@@ -57,7 +57,7 @@ pub fn copy_out(
     format: TargetFormat,
     damage: &[IRect],
 ) {
-    copy_out_inner(shadow, dst, dst_stride, format, damage, false)
+    copy_out_inner(shadow, 0, dst, dst_stride, format, damage, false)
 }
 
 /// As [`copy_out`], but applies ordered (4×4 Bayer) dithering on the
@@ -72,7 +72,7 @@ pub fn copy_out_dithered(
     format: TargetFormat,
     damage: &[IRect],
 ) {
-    copy_out_inner(shadow, dst, dst_stride, format, damage, true)
+    copy_out_inner(shadow, 0, dst, dst_stride, format, damage, true)
 }
 
 /// As [`copy_out`]/[`copy_out_dithered`], but writing each shadow pixel to its
@@ -94,11 +94,41 @@ pub fn copy_out_rotated(
     rotation: Rotation,
     dither: bool,
 ) {
+    let size = (shadow.width(), shadow.height());
+    copy_out_band(
+        shadow, 0, size, dst, dst_stride, format, damage, rotation, dither,
+    );
+}
+
+/// The general copy-out: `shadow` holds the rows of a `surface`-sized screen
+/// starting at device row `origin_y` (a band; `0` and the shadow's own size
+/// for a whole-screen shadow). `damage` is in surface space and is clipped to
+/// the rows the shadow holds. Dithering stays keyed to absolute position.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn copy_out_band(
+    shadow: &tiny_skia::Pixmap,
+    origin_y: u32,
+    surface: (u32, u32),
+    dst: &mut [u8],
+    dst_stride: usize,
+    format: TargetFormat,
+    damage: &[IRect],
+    rotation: Rotation,
+    dither: bool,
+) {
     if rotation == Rotation::Rot0 {
-        return copy_out_inner(shadow, dst, dst_stride, format, damage, dither);
+        return copy_out_inner(
+            shadow,
+            origin_y as usize,
+            dst,
+            dst_stride,
+            format,
+            damage,
+            dither,
+        );
     }
-    let sw = shadow.width();
-    let sh = shadow.height();
+    let (sw, sh) = surface;
+    let held = IRect::new(0, origin_y as i32, shadow.width(), shadow.height());
     let src = shadow.data();
     let inv = rotation.inverse();
     // Axis swap is symmetric: the panel dims are the surface dims swapped.
@@ -108,7 +138,7 @@ pub fn copy_out_rotated(
     let mut scratch: Vec<u8> = Vec::new();
 
     for rect in damage {
-        let r = rect.clamp_to(sw, sh);
+        let r = rect.clamp_to(sw, sh).intersect(held);
         if r.is_empty() {
             continue;
         }
@@ -122,7 +152,8 @@ pub fn copy_out_rotated(
             // Gather this panel row's pixels from the (rotated) shadow…
             for (i, px) in (d.x..d.x + d.w as i32).enumerate() {
                 let (sx, sy) = inv.map_pixel(px as u32, py as u32, pw, ph);
-                let off = (sy as usize * sw as usize + sx as usize) * 4;
+                let row = (sy - origin_y) as usize;
+                let off = (row * held.w as usize + sx as usize) * 4;
                 scratch[i * 4..i * 4 + 4].copy_from_slice(&src[off..off + 4]);
             }
             // …then convert and write the row sequentially, as ever.
@@ -140,8 +171,11 @@ pub fn copy_out_rotated(
     }
 }
 
+/// `shadow` holds the device rows starting at `origin_y` (`0` for a
+/// whole-screen shadow); `damage` is in surface space.
 fn copy_out_inner(
     shadow: &tiny_skia::Pixmap,
+    origin_y: usize,
     dst: &mut [u8],
     dst_stride: usize,
     format: TargetFormat,
@@ -150,12 +184,13 @@ fn copy_out_inner(
 ) {
     let sw = shadow.width() as usize;
     let sh = shadow.height() as usize;
+    let held = IRect::new(0, origin_y as i32, sw as u32, sh as u32);
     let src = shadow.data();
     let bpp = format.bytes_per_pixel();
 
     for rect in damage {
         // Defensive clamp: never index outside either buffer.
-        let r = rect.clamp_to(sw as u32, sh as u32);
+        let r = rect.intersect(held);
         if r.is_empty() {
             continue;
         }
@@ -164,7 +199,8 @@ fn copy_out_inner(
         let cols = r.w as usize;
 
         for y in y0..y0 + r.h as usize {
-            let src_row = &src[(y * sw + x0) * 4..(y * sw + x0 + cols) * 4];
+            let sy = y - origin_y;
+            let src_row = &src[(sy * sw + x0) * 4..(sy * sw + x0 + cols) * 4];
             let dst_off = y * dst_stride + x0 * bpp;
             let dst_row = &mut dst[dst_off..dst_off + cols * bpp];
             match format {

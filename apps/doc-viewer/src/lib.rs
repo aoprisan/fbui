@@ -109,7 +109,8 @@ pub enum Screen {
 pub struct Viewer {
     entries: Vec<Entry>,
     fallback_font: Option<Cow<'static, [u8]>>,
-    ui_fonts: Vec<Vec<u8>>,
+    /// The interface font: borrowed (compiled in) fonts are used in place.
+    ui_font: Cow<'static, [u8]>,
     loaded: Option<(usize, Loaded)>,
     page: usize,
     zoom: Zoom,
@@ -138,8 +139,8 @@ impl Viewer {
         let ui_font = ui_font.into();
         Viewer {
             entries,
-            ui_fonts: alloc::vec![ui_font.to_vec()],
-            fallback_font: Some(ui_font),
+            fallback_font: Some(ui_font.clone()),
+            ui_font,
             loaded: None,
             page: 0,
             zoom: Zoom::FitWidth,
@@ -398,8 +399,18 @@ impl App for Viewer {
         Theme::dark()
     }
 
+    fn static_fonts(&self) -> Vec<&'static [u8]> {
+        match self.ui_font {
+            Cow::Borrowed(f) => alloc::vec![f],
+            Cow::Owned(_) => Vec::new(),
+        }
+    }
+
     fn fonts(&self) -> Vec<Vec<u8>> {
-        self.ui_fonts.clone()
+        match &self.ui_font {
+            Cow::Borrowed(_) => Vec::new(),
+            Cow::Owned(f) => alloc::vec![f.clone()],
+        }
     }
 
     fn build(&mut self, ui: &mut Ui<Msg>) {

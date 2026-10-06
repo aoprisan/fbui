@@ -9,10 +9,18 @@ repository.workspace = true
 publish = false
 
 [features]
-default = []
+default = ["outline-text"]
+# Outline text: cosmic-text shaping and swash rasterization, from TTF/OTF
+# fonts (`App::static_fonts` / `App::fonts`). On by default. A firmware that
+# sets all its text in bitmap fonts (`App::bitmap_fonts`) can turn default
+# features off and leave the shaping engine out of the image.
+outline-text = ["fbui-render/outline-text", "fbui-widgets/outline-text"]
 # Compile in fbui-render's default font (Inter, ~300 KB) so an app that
 # returns no fonts still has legible text.
-bundled-font = ["fbui-render/bundled-font"]
+bundled-font = ["outline-text", "fbui-render/bundled-font"]
+# Compile in pre-rasterized Inter (12/16/20/24 px, Latin-1, ~75 KB) and use
+# it when an app supplies no fonts: text with no font file or shaping engine.
+bundled-bitmap-font = ["fbui-render/bundled-bitmap-font"]
 # The full widget set. Off by default: a firmware image gets fbui-widgets'
 # minimal set (Label, Button, Container, Stack, ScrollView, List, ImageView,
 # ProgressBar) and opts into the rest only if it needs them.

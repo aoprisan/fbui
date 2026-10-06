@@ -160,13 +160,18 @@ jobs:
             apps/doc-viewer-rpi3
       - name: no_std builds (thumbv7em-none-eabihf)
         run: |
-          cargo build --target thumbv7em-none-eabihf -p fbui-render --no-default-features
+          # Bitmap text only (no cosmic-text/swash), then with outline text.
+          cargo build --target thumbv7em-none-eabihf -p fbui-render --no-default-features --features bundled-bitmap-font
+          cargo build --target thumbv7em-none-eabihf -p fbui-render --no-default-features --features outline-text
           cargo build --target thumbv7em-none-eabihf -p fbui-widgets --no-default-features
-          cargo build --target thumbv7em-none-eabihf -p fbui-widgets --no-default-features --features all-widgets
+          cargo build --target thumbv7em-none-eabihf -p fbui-widgets --no-default-features --features all-widgets,outline-text
+          cargo build --target thumbv7em-none-eabihf -p fbui-bare --no-default-features --features bundled-bitmap-font,all-widgets
           cargo build --target thumbv7em-none-eabihf -p fbui-bare -p fbui-doc -p fbui-doc-viewer
       - name: no_std unit tests on the host
         run: |
-          cargo test -p fbui-render --no-default-features --lib
+          cargo test -p fbui-render --no-default-features --features bundled-bitmap-font --lib
+          cargo test -p fbui-render --no-default-features --features outline-text --lib
+          RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p fbui-render --no-default-features --features bundled-bitmap-font
           cargo test -p fbui-widgets --no-default-features --lib
           cargo test -p fbui-bare -p fbui-doc -p fbui-doc-viewer
       - name: Raspberry Pi 3 image (aarch64-unknown-none)

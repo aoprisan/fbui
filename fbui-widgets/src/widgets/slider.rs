@@ -105,6 +105,12 @@ impl<Msg: 'static> Widget<Msg> for Slider<Msg> {
                 width: style::auto(),
                 height: style::length(HEIGHT),
             },
+            // Grow to fill a row, but never taller than the control: in a
+            // column, flex-grow is vertical and would stretch it.
+            max_size: taffy::Size {
+                width: style::auto(),
+                height: style::length(HEIGHT),
+            },
             flex_grow: 1.0,
             ..Style::default()
         }

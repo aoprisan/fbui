@@ -2596,3 +2596,29 @@ fn navigator_slide_blit_matches_a_full_repaint() {
         cmp.max_delta
     );
 }
+
+/// Fixed-height controls grow to fill a row's width, but must not grow
+/// taller in a column with free space: there flex-grow is vertical. (A
+/// progress bar once laid out 296×139.)
+#[test]
+fn fixed_height_controls_keep_their_height_in_a_column() {
+    use fbui_widgets::widgets::{ProgressBar, Slider};
+
+    let mut ui = ui();
+    let root = ui.set_root(Container::column().fill().padding(10.0).gap(8.0));
+    let slider = ui.add_child(root, Slider::new(0.0, 1.0, 0.5));
+    let bar = ui.add_child(root, ProgressBar::new(0.3));
+    let input = ui.add_child(root, TextInput::new());
+    let row = ui.add_child(root, Container::row().gap(8.0));
+    let row_bar = ui.add_child(row, ProgressBar::new(0.6));
+    ui.layout_now();
+
+    let h = |ui: &Ui<Msg>, id| ui.bounds(id).unwrap().h;
+    assert_eq!(h(&ui, slider), 28.0);
+    assert_eq!(h(&ui, bar), 8.0);
+    assert_eq!(h(&ui, input), 36.0);
+    // Still filling the column's width, and a row's free width.
+    assert_eq!(ui.bounds(bar).unwrap().w, 380.0);
+    assert_eq!(ui.bounds(row_bar).unwrap().w, 380.0);
+    assert_eq!(h(&ui, row_bar), 8.0);
+}

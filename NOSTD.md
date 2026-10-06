@@ -89,9 +89,35 @@ pub trait Board {
 ```
 
 `fbui_bare::run(app, &mut fb, &mut board, scale) -> !` is the whole main
-loop: drain input → (gestures, animation) → paint if damaged → copy damaged
-spans out → `flush` → `wait(next_deadline)`. `Runner` exposes the same steps
-one at a time for tests and for boards that own their loop.
+loop: drain input → (due timers, gestures, animation) → paint if damaged →
+copy damaged spans out → `flush` → `wait(next_deadline)`. `Runner` exposes
+the same steps one at a time for tests and for boards that own their loop;
+`Runner::new(..).with_rotation(..).run(..)` configures it first.
+
+**Timers.** The hosted runner's `Proxy::send_after`/`send_every` rely on
+threads and `Instant`; the bare equivalent is `Timers<M>` (`send`,
+`send_after`, `send_every`, cancel via `Timer`), an `Rc<RefCell<_>>` queue
+of millisecond deadlines on the board clock. The app receives it in
+`App::on_start`; board code (an interrupt flag polled in its loop) gets one
+from `Runner::timers`. It has to live in the runner, not the app: `run`
+owns the sleep, and `next_deadline` folds in the earliest timer so
+`Board::wait` wakes for it — a timer kept anywhere else would be slept
+through. Due messages are delivered at the start of `frame`, so what they
+change paints in the same frame. Timers armed before the runner has seen
+any time count from the first clock reading.
+
+**Rotation.** A panel mounted sideways or upside down: `set_rotation` lays
+the UI out in the turned orientation and applies the rotation at copy-out
+(the same `Surface` path `FBUI_ROTATE` uses on Linux). `Input` stays in
+panel coordinates and is mapped back; `flush` gets panel-space rects. It
+can change at run time (an accelerometer flip) — the next frame repaints
+everything.
+
+**RGB565 dithering.** As on Linux, an `Rgb565` framebuffer gets the ordered
+(4×4 Bayer) dithered copy-out by default, so gradients don't band on 16-bit
+panels; the pattern is keyed to pixel position, so partial updates stay
+seamless. `Runner::set_dither(false)` gives the plain truncation (pixel-exact
+checks, a controller that dithers in hardware).
 
 The fbui invariants carry over:
 
@@ -121,7 +147,7 @@ fling), so touch boards get kinetic scrolling for free.
 | `image` crate (decode, PNG encode) | `std`-only; `no_std` gets `Image::from_rgba_bytes` and the new `Image::from_pixmap` — `fbui-doc` decodes into tiny-skia pixmaps directly |
 | file paths (`Image::open`, `Surface::write_png`, `Ui::request_screenshot`) | `std`-only |
 | flow harness, `profile` tracing | `std`-only (`harness`/`profile` imply `std`) |
-| cosmic-text system fonts | none in `no_std`; fonts come from bytes (`App::fonts`). `FontContext::layout` no longer panics on an empty font database — it lays out nothing — so a firmware that forgot a font shows no text rather than crashing |
+| cosmic-text system fonts | none in `no_std`; fonts come from bytes — `App::static_fonts` (`&'static`, used in place by `FontContext::with_static_fonts`: no heap copy) or `App::fonts` (copied) — or as pre-rasterized bitmap fonts with no shaping engine at all (`App::bitmap_fonts`, §6.2; with `outline-text` off, cosmic-text isn't built). The bundled font is used in place too. `FontContext::layout` no longer panics on an empty font database — it lays out nothing — so a firmware that forgot a font shows no text rather than crashing |
 | taffy `std` | `alloc` + the default layout algorithms; `detailed_layout_info` is `std`-only (taffy 0.11 doesn't build it without `std`; fbui never read it) |
 
 ### 4.1 Minimal widget set
@@ -178,23 +204,124 @@ Counting allocators in the tests and the viewer's `shots` example give:
 
 | scenario | live heap | peak heap |
 |---|---|---|
-| 320×240 RGB565, minimal widgets, one font (`fbui-bare/tests/footprint.rs`, gated < 2 MiB) | 718 KiB | 875 KiB |
-| viewer at 1024×768, library screen | 3.9 MiB | 6.3 MiB |
-| viewer, a PDF page at fit-width | 9.9 MiB | 12.5–15.3 MiB |
-| viewer, zoomed to ~280% | 16.6 MiB | 25.1 MiB |
+| 320×240 RGB565, minimal widgets, font copied into the heap, whole-screen shadow (`fbui-bare/tests/footprint.rs`) | 718 KiB | 800 KiB |
+| … the font used in place (`App::static_fonts`) | 416 KiB | 497 KiB |
+| … and painted through a 16-row band (`Runner::new_banded`, gated < 300 KiB) | 138 KiB | 161 KiB |
+| … with bitmap fonts instead (`App::bitmap_fonts`, §6.2, gated < 96 KiB) | **45 KiB** | **68 KiB** |
+| viewer at 1024×768, library screen | 3.3 MiB | 5.7 MiB |
+| viewer, a PDF page at fit-width | 9.3 MiB | 11.9–14.7 MiB |
+| viewer, zoomed to ~280% | 16.1 MiB | 24.5 MiB |
 
-Where it goes: the shadow surface is 4 bytes/pixel (3 MiB at 1024×768); a
-rendered page is another 4 bytes/pixel of page; clip masks are 1 byte/pixel
-while active; the glyph atlas is budgeted at 4 MiB; `App::fonts` copies each
-font into the heap (Inter is ~300 KiB). The board sizes its heap
-(`RenderOptions::max_pixels` and the viewer's `max_pixels` cap page rasters
-so a huge page fails cleanly instead of exhausting it).
+The first three 320×240 rows put the same bytes on screen; the bitmap-font
+row draws the same UI with glyphs snapped to whole pixels (§6.2).
+
+Where it goes: the whole-screen shadow is 4 bytes/pixel (300 KiB at
+320×240, 3 MiB at 1024×768) — a band of it is 4 bytes × width × (rows + 2);
+a rendered page is another 4 bytes/pixel of page; clip masks are 1 byte/pixel
+of whatever is being drawn into (the band, when banded) while active; the
+glyph atlas is budgeted at 4 MiB but holds only the glyphs in use;
+`App::fonts` copies each font into the heap (Inter is ~300 KiB) while
+`App::static_fonts` doesn't; cosmic-text's own state for a shaped font is
+~90 KiB. The board sizes its heap (`RenderOptions::max_pixels` and the
+viewer's `max_pixels` cap page rasters so a huge page fails cleanly instead of
+exhausting it).
 
 **Target classes this implies:** a Cortex-A or Cortex-M7 with external
 SDRAM/PSRAM (STM32H7 + SDRAM, i.MX RT, ESP32-S3 + PSRAM, any Pi) runs the
-viewer comfortably; a 320×240 control panel fits in ~1 MiB. Parts with
-≤ 512 KiB of RAM and no external memory are out of reach without the
-follow-ups in §9.
+viewer comfortably. A 320×240 control panel with static fonts and banding
+needs ~200 KiB of heap, which brings parts with 512 KiB of internal RAM and
+no external memory (STM32F7/H7 internal SRAM, RP2350, ESP32-S3 without PSRAM)
+within reach.
+
+### 6.1 Banded rendering
+
+`Runner::new_banded(app, info, scale, band_rows)` paints through a shadow
+`band_rows` tall instead of a whole-screen one (`Surface::banded`,
+`Ui::paint_banded`, `Surface::paint_banded`). Each frame's damaged region is
+painted a band at a time — the whole tree clipped to that band — and each band
+is copied to the framebuffer as soon as it is drawn. It works because
+`Ui::paint` already repaints its damaged region from scratch (clear, then
+every widget that intersects it); banding only splits that region.
+
+What it costs: the framebuffer becomes the only full-screen copy, so it must
+keep what is written to it (a single-buffered scanout, a panel with its own
+frame memory); scroll-blit has nothing to shift and repaints instead; and the
+tree is walked once per band, so taller bands mean less CPU.
+
+**Exactness.** fbui's rule is that a cheaper path never changes the pixels,
+and banding is held to it: `fbui-render/tests/banded.rs` (every primitive,
+every band height from 1 row, 1×/1.5×/2×, every rotation, both formats,
+partial regions) and `fbui-widgets/tests/banded.rs` (real widget screens,
+frame by frame through input, animation, chart streaming and list scrolling)
+compare a banded paint byte for byte with a whole-screen one. Getting there
+took more than an offset, because tiny-skia rasterizes differently once a
+shape is clipped by its target's edge:
+
+- *Filled paths and thick strokes* that leave the band are rasterized into a
+  coverage mask over their own bounds (or from the screen's origin when the
+  screen clips them, since tiny-skia's edge clipping isn't
+  translation-invariant), and the band's rows of that coverage are blended in.
+- *Opaque colours with no clip mask* are blended with tiny-skia's own
+  strength-reduced lerp, not its masked path, which rounds differently.
+- *Rectangles* at 1× fold the band offset into the rect (tiny-skia's exact
+  rectangle rasterizer only runs under an identity transform), and each band
+  is drawn with a **guard row** above and below so no shape is cut down to a
+  single scanline by the buffer edge.
+- *The band itself is not a clip mask* — a mask changes tiny-skia's blending
+  arithmetic; ink in the guard rows is simply never copied out.
+- *Hairlines* (strokes ≤ 1 device pixel) use tiny-skia's dedicated scan
+  converter, which clips every line to its target and has no mask form. It is
+  **vendored** in `fbui-render/src/hairline/` (BSD-3, tiny-skia 0.12.0,
+  unmodified but for module paths) and run against the whole screen, feeding a
+  blitter that keeps the band's rows and reproduces tiny-skia's blend
+  arithmetic. Keep it in step with the tiny-skia version: the equivalence
+  tests fail if they drift.
+
+The one exception: a **bilinear-scaled image** (`draw_image_scaled`, used by
+`VideoView`) may differ by one level per channel — tiny-skia samples through
+the inverse of its transform in f32, and the band offset changes that
+rounding. A test pins the difference at ≤ 1.
+
+### 6.2 Bitmap fonts
+
+Outline text (cosmic-text shaping, swash rasterizing) is the default and the
+right choice when you need any size, any script, kerning or ligatures. On a
+small device it is also the biggest remaining cost: ~70 KiB of heap once text
+is shaped, the font file in flash, and the shaping/rasterizing code itself.
+**Bitmap fonts** (`fbui_render::text::bitmap`) drop all three:
+
+- A `.fbf` file is one face at one pixel size: a sorted glyph table and 4-bit
+  coverage, read **in place** from flash and validated up front (a bad file
+  is an error, never a panic or an out-of-bounds read).
+- `make_bitmap_font` (an `fbui-render` example) rasterizes any TTF/OTF with
+  the same cosmic-text + swash calls the outline path uses, so glyph shapes,
+  advances, bearings and baselines match. Inter at 12/16/20/24 px, Latin-1
+  plus common punctuation, is 75 KB in all (the TTF is 300 KB) and ships
+  behind the `bundled-bitmap-font` feature.
+- `FontContext::with_bitmap_fonts` sets all text in them; `fbui-bare` apps
+  return them from `App::bitmap_fonts`. Layout, wrapping, hit-testing, carets
+  and selection are implemented directly, so every widget — text editing
+  included — works unchanged (`fbui-widgets/tests/bitmap_fonts.rs`).
+- With the `outline-text` feature off (it is on by default in
+  `fbui-render`, `fbui-widgets` and `fbui-bare`), cosmic-text, swash and
+  harfrust leave the build.
+
+Measured on a linked `thumbv7em-none-eabihf` firmware running the 320×240
+counter UI with 16-row bands (`opt-level = "s"`, LTO):
+
+| text | `.text` | `.rodata` | flash | heap (live / peak) |
+|---|---|---|---|---|
+| outline, Inter TTF in place | 1,313 KB | 548 KB | 1.78 MiB | 138 / 161 KiB |
+| bitmap fonts, `outline-text` off | 590 KB | 85 KB | 0.66 MiB | 45 / 68 KiB |
+
+What bitmap fonts give up: sizes are the ones generated (text uses the
+nearest; generate the sizes your theme uses at your device scale); no shaping,
+so no kerning, ligatures, complex scripts or right-to-left text; characters
+the font lacks draw as its `?`; and each glyph's pen is snapped to a whole
+pixel (the outline path renders quarter-pixel variants), so glyphs sit up to
+half a pixel from where outline text puts them — same ink, same lines
+(`fbui-render/tests/bitmap_text.rs`). Bitmap text is band-exact like
+everything else.
 
 ## 7. The sample app
 
@@ -234,6 +361,24 @@ same commands; its first run is pending at the time of writing):
       standard-14 fallback, vector graphics, gradients, images, soft masks),
       zoom, fit-page, the PNG document — no panic, no blank screen.
 - [x] Idle on bare metal: 0 CPU ticks over 5 s with the UI idle (QEMU).
+- [x] Banded rendering is byte-identical to whole-screen rendering (§6.1)
+      across the primitive matrix and the widget screens; the banded runner
+      matches the whole-screen runner frame by frame (input, rotation,
+      RGB565 dithering, timers, `invalidate`); a 320×240 UI with static fonts
+      and 16-row bands peaks at 161 KiB (gated < 300 KiB).
+- [x] Bitmap fonts (§6.2): format validation and mutation, layout, wrapping,
+      hit/caret/selection, fidelity against outline Inter, band exactness,
+      the widget set (text editing included) on bitmap fonts, and a 68 KiB
+      peak for the 320×240 UI (gated < 96 KiB). `fbui-render`,
+      `fbui-widgets` and `fbui-bare` build for `thumbv7em` with
+      `outline-text` off, and the firmware sizes above were measured there.
+- [x] The bare runner on its own (`fbui-bare/tests/runner.rs`): padded-stride
+      copy-out, idle, `invalidate`, key and scaled pointer input; rotation —
+      every panel pixel equals the rotated surface pixel, and taps map back
+      for each quarter turn; timers — deadline delivery, `next_deadline`
+      waking for them, anchoring to the first clock reading, fixed-delay
+      repeats, cancel, ordering; RGB565 dithering on by default (and off
+      for 32-bit), kept across rotation, toggled with a full repaint.
 
 Pending (hardware-gated or out of scope here):
 
@@ -250,10 +395,15 @@ Pending (hardware-gated or out of scope here):
 
 ## 9. Follow-ups
 
-- **Smaller targets.** A banded/tiled render mode (paint the damage in
-  strips through a small RGB565 shadow) would lift the 4 bytes/pixel shadow
-  requirement; `FontContext` from `&'static` font data would drop the font
-  copy. Both would bring a 320×240 UI under ~300 KiB.
+- **Smaller still.** With bitmap fonts the heap is ~45 KiB live and peaks at
+  ~68 KiB on the first, full-screen frame. What the transient is: the band
+  buffer, the coverage mask of each shape that crosses a band edge (1 byte
+  per pixel of the shape's bounds, so the largest such shape sets it), and
+  a second taffy tree (`Ui::set_root` builds a fresh one while the one from
+  `Ui::with_fonts` is still alive, ~20 KB each). Bitmap fonts could store quarter-pixel variants (4× the flash) to
+  match outline positioning exactly, or 2-bit coverage to halve it.
+  Bilinear-scaled images could be made band-exact by sampling in whole-screen
+  coordinates.
 - **More boards.** UEFI (GOP framebuffer, `wfi`-free event waits), a
   Cortex-M7 + SPI panel (exercising `Framebuffer::flush` as a DMA push), the
   Pi 4 (GIC-400 instead of the BCM2836 local controller).

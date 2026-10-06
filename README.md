@@ -16,6 +16,10 @@ owns the screen, fullscreen.
   `Drop`, `panic!`, and fatal signals.
 - **Tooling with no screen**: a headless backend, widget-tree dumps, flow
   scripts with expectations, traces, lints, and a remote console.
+- **No OS at all**: the render and widget crates build `no_std` + `alloc` for
+  bare-metal targets. Banded rendering (a shadow a few rows tall) and
+  pre-rasterized bitmap fonts run a 320×240 UI in under 70 KiB of heap; see
+  [NOSTD.md](https://github.com/aoprisan/fbui/blob/main/NOSTD.md).
 
 ## Crates
 
@@ -33,7 +37,7 @@ The crates are versioned in lockstep; depend on the same version of each.
 
 ```toml
 [dependencies]
-fbui = { version = "0.4", features = ["platform", "bundled-font"] }
+fbui = { version = "0.5", features = ["platform", "bundled-font"] }
 ```
 
 ```rust,ignore
@@ -97,5 +101,8 @@ umbrella) needs **1.89**.
 
 Licensed under either of [Apache License, Version 2.0](LICENSE-APACHE) or
 [MIT license](LICENSE-MIT) at your option. The bundled Inter font
-(`bundled-font` feature) is under the SIL Open Font License; see
-`fbui-render/fonts/Inter-LICENSE.txt`.
+(`bundled-font` feature) and the bitmap fonts derived from it
+(`bundled-bitmap-font`) are under the SIL Open Font License; see
+`fbui-render/fonts/Inter-LICENSE.txt`. `fbui-render/src/hairline/` is
+tiny-skia's hairline rasterizer, vendored under its BSD-3-Clause license
+(`fbui-render/src/hairline/LICENSE-tiny-skia`).
