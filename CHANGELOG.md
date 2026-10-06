@@ -17,6 +17,16 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-06 — fbui with no operating system
+
+### Changed
+
+- **Breaking for `default-features = false` users:** `fbui-render` and
+  `fbui-widgets` gain a default **`std`** feature (and `fbui-widgets` a
+  default **`all-widgets`**). A dependent that already turned default
+  features off must now list `std` (plus `all-widgets`, and `harness` as
+  before) to keep the API it had. Default builds are unchanged.
+
 ### Added
 
 - **fbui with no operating system** — the `no_std` track (`NOSTD.md`).
@@ -829,7 +839,8 @@ real devices.
 - libinput's `set_surface` rescale-on-hotplug override is left to the
   feature-gated backend (not in the default/CI build).
 
-[Unreleased]: https://github.com/aoprisan/fbui/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/aoprisan/fbui/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/aoprisan/fbui/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aoprisan/fbui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aoprisan/fbui/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/aoprisan/fbui/releases/tag/v0.1.0

@@ -33,7 +33,7 @@ The crates are versioned in lockstep; depend on the same version of each.
 
 ```toml
 [dependencies]
-fbui = { version = "0.3", features = ["platform", "bundled-font"] }
+fbui = { version = "0.4", features = ["platform", "bundled-font"] }
 ```
 
 ```rust,ignore

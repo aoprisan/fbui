@@ -382,7 +382,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "fbui"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "fbui-platform",
  "fbui-render",
@@ -394,7 +394,7 @@ dependencies = [
 
 [[package]]
 name = "fbui-bare"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "fbui-render",
  "fbui-widgets",
@@ -402,7 +402,7 @@ dependencies = [
 
 [[package]]
 name = "fbui-doc"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "image",
  "libm",
@@ -416,7 +416,7 @@ dependencies = [
 
 [[package]]
 name = "fbui-doc-viewer"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "fbui-bare",
  "fbui-doc",
@@ -428,7 +428,7 @@ dependencies = [
 
 [[package]]
 name = "fbui-platform"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bitflags",
  "calloop",
@@ -443,7 +443,7 @@ dependencies = [
 
 [[package]]
 name = "fbui-render"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cosmic-text",
  "criterion",
@@ -458,7 +458,7 @@ dependencies = [
 
 [[package]]
 name = "fbui-testkit"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "image",
  "tiny-skia",
@@ -466,7 +466,7 @@ dependencies = [
 
 [[package]]
 name = "fbui-widgets"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "criterion",
  "fbui-render",
