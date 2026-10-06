@@ -278,6 +278,137 @@ fn rotating_at_runtime_relays_out_and_repaints_everything() {
     assert!(!r.frame(&mut fb, 48), "same rotation again is a no-op");
 }
 
+// --- RGB565 dithering ------------------------------------------------------
+
+/// An RGB565 panel with a padded stride, recording flushes.
+struct Ram565 {
+    w: u32,
+    h: u32,
+    stride: usize,
+    px: Vec<u8>,
+    flushed: Vec<Vec<IRect>>,
+}
+
+impl Ram565 {
+    fn new(w: u32, h: u32) -> Self {
+        let stride = w as usize * 2 + PAD;
+        Ram565 {
+            w,
+            h,
+            stride,
+            px: vec![FILL; stride * h as usize],
+            flushed: Vec::new(),
+        }
+    }
+    fn at(&self, x: u32, y: u32) -> u16 {
+        let o = y as usize * self.stride + x as usize * 2;
+        u16::from_le_bytes([self.px[o], self.px[o + 1]])
+    }
+    /// The distinct values in the panel's bottom-left 4×4 block — one whole
+    /// Bayer period, and in the root container's padding (flat background)
+    /// whichever way the UI is turned.
+    fn corner_values(&self) -> Vec<u16> {
+        let mut v: Vec<u16> = (self.h - 4..self.h)
+            .flat_map(|y| (0..4).map(move |x| (x, y)))
+            .map(|(x, y)| self.at(x, y))
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v
+    }
+}
+
+impl Framebuffer for Ram565 {
+    fn info(&self) -> FbInfo {
+        FbInfo {
+            width: self.w,
+            height: self.h,
+            stride: self.stride,
+            format: TargetFormat::Rgb565,
+        }
+    }
+    fn pixels(&mut self) -> &mut [u8] {
+        &mut self.px
+    }
+    fn flush(&mut self, damage: &[IRect]) {
+        self.flushed.push(damage.to_vec());
+    }
+}
+
+/// Split RGB565 into its 5/6/5-bit channels.
+fn channels(v: u16) -> [i32; 3] {
+    [
+        (v >> 11) as i32,
+        ((v >> 5) & 0x3f) as i32,
+        (v & 0x1f) as i32,
+    ]
+}
+
+#[test]
+fn rgb565_panels_are_dithered_by_default_and_32_bit_ones_are_not() {
+    let (app, _) = probe();
+    assert!(!Runner::new(app, Ram::new(120, 80).info(), 1.0).dither());
+
+    let (app, _) = probe();
+    let mut fb = Ram565::new(120, 80);
+    let mut r = Runner::new(app, fb.info(), 1.0);
+    assert!(r.dither());
+    r.frame(&mut fb, 0);
+    // The dark theme's background (#14161b) has no exact RGB565 value, so the
+    // flat area becomes a pattern of the neighbouring values.
+    let dithered = fb.corner_values();
+    assert!(
+        dithered.len() > 1,
+        "flat background is dithered: {dithered:x?}"
+    );
+    for y in 0..80 {
+        let row_end = y * fb.stride + 120 * 2;
+        assert!(fb.px[row_end..row_end + PAD].iter().all(|&b| b == FILL));
+    }
+
+    // Off, the same area is the plain truncation: one value, and each
+    // dithered value is within one step of it per channel.
+    let (app, _) = probe();
+    let mut plain_fb = Ram565::new(120, 80);
+    let mut plain = Runner::new(app, plain_fb.info(), 1.0);
+    plain.set_dither(false);
+    plain.frame(&mut plain_fb, 0);
+    let flat = plain_fb.corner_values();
+    assert_eq!(flat.len(), 1, "undithered background is flat: {flat:x?}");
+    let base = channels(flat[0]);
+    for v in dithered {
+        let c = channels(v);
+        assert!(
+            (0..3).all(|i| (c[i] - base[i]).abs() <= 1),
+            "{v:04x} vs {:04x}",
+            flat[0]
+        );
+    }
+}
+
+#[test]
+fn dithering_survives_rotation_and_toggling_repaints_the_panel() {
+    let (app, _) = probe();
+    let mut fb = Ram565::new(120, 80);
+    let mut r = Runner::new(app, fb.info(), 1.0).with_rotation(Rotation::Rot90);
+    assert!(r.dither(), "the rotated surface keeps the setting");
+    r.frame(&mut fb, 0);
+    assert!(fb.corner_values().len() > 1);
+    assert!(!r.frame(&mut fb, 16));
+
+    r.set_dither(false);
+    assert!(r.frame(&mut fb, 32), "the new copy-out reaches the panel");
+    assert_eq!(fb.flushed.last().unwrap(), &vec![IRect::new(0, 0, 120, 80)]);
+    assert_eq!(fb.corner_values().len(), 1);
+
+    r.set_dither(false);
+    assert!(!r.frame(&mut fb, 48), "unchanged setting: nothing to do");
+    // And a later rotation doesn't turn it back on.
+    r.set_rotation(Rotation::Rot0);
+    r.frame(&mut fb, 64);
+    assert_eq!(fb.corner_values().len(), 1);
+}
+
 // --- timers -----------------------------------------------------------------
 
 fn timers(r: &Runner<Probe>) -> Timers<Msg> {

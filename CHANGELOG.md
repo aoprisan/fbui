@@ -32,11 +32,17 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
   the existing copy-out rotation; input stays in panel coordinates and is
   mapped back, and `Framebuffer::flush` gets panel-space rects.
   `fbui_bare::Rotation` re-exports `fbui_render::Rotation`.
+- **`fbui-bare` RGB565 dithering:** an `Rgb565` framebuffer now gets the
+  ordered (4×4 Bayer) dithered copy-out by default, as the Linux runner
+  already does, so gradients don't band on 16-bit panels. This changes what
+  existing RGB565 boards show (32-bit ones are unaffected);
+  `Runner::set_dither(false)` restores the plain truncation.
 - `Runner::run` — the main loop on a runner you configured; `fbui_bare::run`
   is now shorthand for `Runner::new(..).run(..)`.
 - `fbui-bare/tests/runner.rs`: direct tests of the bare runner — copy-out
   and padded stride, idle, `invalidate`, key and scaled pointer input,
-  rotation (pixels and input for every quarter turn), and timers.
+  rotation (pixels and input for every quarter turn), RGB565 dithering,
+  and timers.
 
 ## [0.4.0] — 2026-10-06 — fbui with no operating system
 

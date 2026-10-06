@@ -113,6 +113,12 @@ panel coordinates and is mapped back; `flush` gets panel-space rects. It
 can change at run time (an accelerometer flip) — the next frame repaints
 everything.
 
+**RGB565 dithering.** As on Linux, an `Rgb565` framebuffer gets the ordered
+(4×4 Bayer) dithered copy-out by default, so gradients don't band on 16-bit
+panels; the pattern is keyed to pixel position, so partial updates stay
+seamless. `Runner::set_dither(false)` gives the plain truncation (pixel-exact
+checks, a controller that dithers in hardware).
+
 The fbui invariants carry over:
 
 - **Stride is never computed** — `FbInfo::stride` is the controller's pitch.
@@ -259,7 +265,8 @@ same commands; its first run is pending at the time of writing):
       every panel pixel equals the rotated surface pixel, and taps map back
       for each quarter turn; timers — deadline delivery, `next_deadline`
       waking for them, anchoring to the first clock reading, fixed-delay
-      repeats, cancel, ordering.
+      repeats, cancel, ordering; RGB565 dithering on by default (and off
+      for 32-bit), kept across rotation, toggled with a full repaint.
 
 Pending (hardware-gated or out of scope here):
 

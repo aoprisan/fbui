@@ -204,6 +204,8 @@ pub struct Runner<A: App> {
     panel: (u32, u32),
     /// How the UI is turned on the panel; the surface is UI-oriented.
     rotation: Rotation,
+    /// Ordered dithering on the RGB565 copy-out (see `set_dither`).
+    dither: bool,
     /// `now_ms` of the previous frame, for the animation `dt`.
     last_frame_ms: Option<u64>,
     /// Whether the framebuffer already holds the previous frame (copy only
@@ -227,15 +229,21 @@ impl<A: App> Runner<A> {
         app.build(&mut ui);
         let timers = Timers::new();
         app.on_start(timers.clone());
+        // 16-bit panels band badly on gradients; dither them, as the Linux
+        // runner does.
+        let dither = info.format == TargetFormat::Rgb565;
+        let mut surface = Surface::new(info.width, info.height, sc);
+        surface.set_dither(dither);
         let mut runner = Runner {
             app,
             ui,
-            surface: Surface::new(info.width, info.height, sc),
+            surface,
             gestures: GestureRecognizer::default(),
             timers,
             scale,
             panel: (info.width, info.height),
             rotation: Rotation::Rot0,
+            dither,
             last_frame_ms: None,
             fb_current: false,
         };
@@ -274,6 +282,7 @@ impl<A: App> Runner<A> {
         let sc = Scale::new(self.scale);
         let mut surface = Surface::new(sw, sh, sc);
         surface.set_rotation(rotation);
+        surface.set_dither(self.dither);
         self.surface = surface;
         self.rotation = rotation;
         self.ui.set_size(
@@ -288,6 +297,29 @@ impl<A: App> Runner<A> {
     /// The current rotation (see [`set_rotation`](Self::set_rotation)).
     pub fn rotation(&self) -> Rotation {
         self.rotation
+    }
+
+    /// Ordered (4×4 Bayer) dithering on the RGB565 copy-out, which hides the
+    /// banding 16-bit panels show on gradients. **On by default for an
+    /// [`Rgb565`](TargetFormat::Rgb565) framebuffer**, like the Linux runner;
+    /// turn it off when the scanout must be the plain truncation of the
+    /// painted colours (pixel-exact comparisons, a panel that dithers in
+    /// hardware). No effect on 32-bit formats. The pattern is keyed to pixel
+    /// position, so partial updates stay seamless; changing it repaints the
+    /// whole panel on the next frame.
+    pub fn set_dither(&mut self, on: bool) {
+        if on == self.dither {
+            return;
+        }
+        self.dither = on;
+        self.surface.set_dither(on);
+        // Re-copy everything: what the panel holds used the old pattern.
+        self.fb_current = false;
+    }
+
+    /// Whether RGB565 dithering is on (see [`set_dither`](Self::set_dither)).
+    pub fn dither(&self) -> bool {
+        self.dither
     }
 
     /// Another handle on the app's timer queue — for board code that wants
