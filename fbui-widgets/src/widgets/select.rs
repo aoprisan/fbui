@@ -8,7 +8,10 @@
 //! pointer events inside the menu here, dismisses on click-away (consumed),
 //! and swallows outside scrolls — the widget only hit-tests its own rows.
 
-use std::any::Any;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::any::Any;
 
 use fbui_render::geom::{Point, Rect, Size};
 use fbui_render::{FontContext, Painter, PathBuilder};

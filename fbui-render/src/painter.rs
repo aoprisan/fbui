@@ -19,6 +19,9 @@
 //! The painter never owns the shadow buffer; it borrows it (and the damage
 //! tracker) from [`crate::Surface`] for the duration of one paint pass.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use tiny_skia::{
     BlendMode, FillRule, FilterQuality, GradientStop, LinearGradient, Mask, Paint, PathBuilder,
     PixmapPaint, RadialGradient, Shader, SpreadMode, Stroke, Transform,

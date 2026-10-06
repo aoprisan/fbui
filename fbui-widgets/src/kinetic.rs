@@ -7,6 +7,9 @@
 //! settles. Kept separate so the two widgets share identical feel and one place
 //! to tune.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 /// Exponential decay rate (1/s): higher stops sooner. Tuned for a natural coast
 /// of roughly half a second from a brisk flick.
 const DECAY_PER_S: f32 = 5.5;

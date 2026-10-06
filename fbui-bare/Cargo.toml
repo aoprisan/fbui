@@ -1,0 +1,23 @@
+[package]
+name = "fbui-bare"
+version.workspace = true
+description = "fbui on bare metal: a no_std + alloc app runner that drives the fbui widget tree on any linear framebuffer a board can hand it — no OS, no Linux, no event loop. The board supplies three things (a Framebuffer, an input poll, a millisecond clock); the runner does event → update → layout → paint → damaged-span copy-out, and sleeps between frames. See NOSTD.md."
+edition.workspace = true
+rust-version = "1.89"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+default = []
+# Compile in fbui-render's default font (Inter, ~300 KB) so an app that
+# returns no fonts still has legible text.
+bundled-font = ["fbui-render/bundled-font"]
+# The full widget set. Off by default: a firmware image gets fbui-widgets'
+# minimal set (Label, Button, Container, Stack, ScrollView, List, ImageView,
+# ProgressBar) and opts into the rest only if it needs them.
+all-widgets = ["fbui-widgets/all-widgets"]
+
+[dependencies]
+fbui-render = { workspace = true }
+fbui-widgets = { workspace = true }

@@ -19,6 +19,9 @@
 //! something is actually wrong, and each has an escape hatch
 //! ([`Ui::allow_lint`](crate::Ui::allow_lint)) for the deliberate case.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use fbui_render::geom::Rect;
 
 use crate::tree::WidgetId;
@@ -79,8 +82,8 @@ impl Rule {
     }
 }
 
-impl std::fmt::Display for Rule {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Rule {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str(self.id())
     }
 }
@@ -99,8 +102,8 @@ pub struct Lint {
     pub message: String,
 }
 
-impl std::fmt::Display for Lint {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Lint {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(f, "{}: {}", self.rule, self.kind)?;
         if let Some(n) = &self.name {
             write!(f, " #{n}")?;

@@ -17,6 +17,57 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-06 — fbui with no operating system
+
+### Changed
+
+- **Breaking for `default-features = false` users:** `fbui-render` and
+  `fbui-widgets` gain a default **`std`** feature (and `fbui-widgets` a
+  default **`all-widgets`**). A dependent that already turned default
+  features off must now list `std` (plus `all-widgets`, and `harness` as
+  before) to keep the API it had. Default builds are unchanged.
+
+### Added
+
+- **fbui with no operating system** — the `no_std` track (`NOSTD.md`).
+  - **`fbui-render` and `fbui-widgets` build `#![no_std]` + `alloc`** with
+    `default-features = false`. A new default **`std`** feature keeps the
+    hosted build exactly as it was; without it the `image`-crate codecs, PNG
+    export, file paths, `Ui::request_screenshot`, the flow harness and
+    `profile` are unavailable. `fbui_render::math::F32Ext` supplies the `f32`
+    math API from `libm` (inherent methods still win under `std`).
+  - **Minimal widget set:** `fbui-widgets` without the new **`all-widgets`**
+    feature (on by default) compiles only `Label`, `Button`, `Container`,
+    `Stack`, `ScrollView`, `List`, `ImageView` and `ProgressBar`.
+  - **`fbui-bare`** (new crate): the bare-metal runner. A board supplies a
+    `Framebuffer` (`info`/`pixels`/`flush`) and a `Board` (`poll_input`,
+    `now_ms`, `wait`); `fbui_bare::run` is the main loop, keeping the idle
+    rule (no damage, no animation → `wait(None)`). `Runner` steps it for
+    tests. A footprint test gates a 320×240 UI under 2 MiB of heap
+    (measured: 875 KiB peak).
+  - **`fbui-doc`** (new crate, always `no_std`): PNG/JPEG decoding to
+    tiny-skia pixmaps and a PDF subset renderer — xref tables/streams,
+    object streams, a reconstructing fallback; Flate/LZW/ASCII85/ASCIIHex/
+    RunLength/DCT; paths, clipping, shadings, tiling patterns, images with
+    soft masks; embedded TrueType/OpenType/CFF/Type 1/Type 3 fonts, Type 0
+    with Identity-H, and a fallback face for non-embedded fonts. Fixtures
+    from reportlab, fpdf2 and pikepdf, and a no-panic mutation test.
+  - **`fbui_render::Image::from_pixmap`** wraps a premultiplied tiny-skia
+    pixmap without a copy.
+  - **`apps/doc-viewer`**: a `no_std` PDF/PNG/JPEG viewer app (library,
+    paging, zoom, pan) on `fbui-bare`, built from the minimal widgets plus a
+    custom `PageView`; **`apps/doc-viewer-rpi3`** boots it on a Raspberry Pi
+    3 with no OS (MMU, mailbox framebuffer, UART keys, `wfi` idle), verified
+    in QEMU `raspi3b` by `scripts/qemu_drive.py`.
+  - CI gains a `nostd` job: `thumbv7em-none-eabihf` builds, host `no_std`
+    tests, the Pi 3 image, and a scripted QEMU session.
+
+### Fixed
+
+- `FontContext::layout` no longer panics when the font database is empty
+  (it lays out nothing) — a `no_std` target that loaded no font shows no
+  text instead of crashing.
+
 ## [0.3.0] — 2026-10-05 — Developer tooling, and the first crates.io release
 
 ### Added
@@ -788,7 +839,8 @@ real devices.
 - libinput's `set_surface` rescale-on-hotplug override is left to the
   feature-gated backend (not in the default/CI build).
 
-[Unreleased]: https://github.com/aoprisan/fbui/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/aoprisan/fbui/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/aoprisan/fbui/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/aoprisan/fbui/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/aoprisan/fbui/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/aoprisan/fbui/releases/tag/v0.1.0

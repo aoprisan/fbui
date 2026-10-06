@@ -13,7 +13,10 @@
 //! the saving is in *paint*: only the children intersecting the strip
 //! re-rasterize instead of the whole viewport.
 
-use std::any::Any;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::any::Any;
 
 use fbui_render::geom::{Point, Rect, Size};
 
@@ -231,7 +234,7 @@ impl<Msg: 'static> Widget<Msg> for ScrollView {
         if self.blit_dy.abs() < f32::EPSILON {
             None
         } else {
-            Some(std::mem::take(&mut self.blit_dy))
+            Some(core::mem::take(&mut self.blit_dy))
         }
     }
 

@@ -1,0 +1,7 @@
+[build]
+target = "aarch64-unknown-none"
+
+[target.aarch64-unknown-none]
+# Tuning only; the linker script comes from build.rs so that a RUSTFLAGS
+# override (as CI's `-D warnings`) can't drop it.
+rustflags = ["-C", "target-cpu=cortex-a53"]

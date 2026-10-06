@@ -28,6 +28,9 @@
 //!
 //! [`tap_slop`]: GestureConfig::tap_slop
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use fbui_render::geom::Point;
 
 /// Tunables for the recognizer. [`Default`] is a sensible touch-and-mouse set.
@@ -173,7 +176,7 @@ impl GestureRecognizer {
     /// The active contact lifted at `pos` at time `now_ms`.
     pub fn pointer_up(&mut self, now_ms: u64, pos: Point) -> Vec<Gesture> {
         let mut out = Vec::new();
-        let phase = std::mem::replace(&mut self.phase, Phase::Idle);
+        let phase = core::mem::replace(&mut self.phase, Phase::Idle);
         match phase {
             Phase::Idle => {}
             Phase::LongPressed => {} // long-press already consumed the contact

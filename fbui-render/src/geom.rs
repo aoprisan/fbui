@@ -8,6 +8,9 @@
 //! between them, rounding device rects *outward* so anti-aliased edges are never
 //! clipped off a repaint.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 /// A point in logical coordinates.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Point {

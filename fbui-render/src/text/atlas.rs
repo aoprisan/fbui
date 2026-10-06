@@ -9,8 +9,11 @@
 //! [`Budgeted`] map so it can be unit-tested without rasterizing a single glyph;
 //! [`GlyphAtlas`] layers the swash rasterization on top.
 
-use std::collections::HashMap;
-use std::hash::Hash;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::hash::Hash;
+use hashbrown::HashMap;
 
 use cosmic_text::{CacheKey, FontSystem, SwashCache, SwashContent};
 

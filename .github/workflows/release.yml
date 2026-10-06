@@ -74,7 +74,8 @@ jobs:
       # Build every crate from its packaged .crate file, siblings resolved from
       # the other tarballs — exactly what crates.io will see.
       - name: package + verify
-        run: cargo package --workspace
+        # fbui-doc-viewer is an app on unpublished crates: not packageable.
+        run: cargo package --workspace --exclude fbui-doc-viewer
 
       # Trusted publishing: exchanges the job's OIDC token for a short-lived
       # crates.io token. Needs each crate configured on crates.io (Settings →

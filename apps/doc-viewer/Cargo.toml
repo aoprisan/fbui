@@ -1,0 +1,29 @@
+[package]
+name = "fbui-doc-viewer"
+version.workspace = true
+description = "A PDF/PNG/JPEG viewer built on fbui for targets with no operating system: no_std + alloc, the minimal widget set plus one custom widget, driven by fbui-bare. The board crate (e.g. apps/doc-viewer-rpi3) supplies the framebuffer, input and the documents. See NOSTD.md."
+edition.workspace = true
+rust-version = "1.89"
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+default = []
+# Host-side conveniences for the `shots` example (writes PNG screenshots).
+std = []
+
+[dependencies]
+fbui-bare = { workspace = true }
+fbui-doc = { workspace = true }
+fbui-render = { workspace = true }
+fbui-widgets = { workspace = true }
+# The custom page widget fills its slot through a taffy style.
+taffy = { version = "0.11", default-features = false, features = ["flexbox", "alloc"] }
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[[example]]
+name = "shots"
+required-features = ["std"]

@@ -6,7 +6,10 @@
 //! [`animate`](Widget::animate) frame-clock hook and damages only the switch, so
 //! it costs a few small repaints and then stops.
 
-use std::any::Any;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::any::Any;
 
 use fbui_render::geom::{Point, Rect, Size};
 use fbui_render::FontContext;

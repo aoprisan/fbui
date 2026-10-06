@@ -33,7 +33,10 @@
 //! tree, because that is the most common authoring mistake and it deserves
 //! the most useful error.
 
-use std::fmt;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::fmt;
 use std::path::PathBuf;
 
 use fbui_render::geom::Point;
@@ -817,7 +820,7 @@ impl Executor {
     /// driver drains these into its trace, so `FBUI_TRACE` shows each
     /// assertion as it is checked rather than only the one that failed.
     pub fn take_checks(&mut self) -> Vec<(usize, String, bool)> {
-        std::mem::take(&mut self.checks)
+        core::mem::take(&mut self.checks)
     }
 
     /// How far through the flow we are, for progress messages.

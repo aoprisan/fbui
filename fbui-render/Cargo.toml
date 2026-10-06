@@ -17,12 +17,26 @@ readme = "../README.md"
 # Core is headless and self-contained: it draws into a normal-RAM shadow buffer
 # and knows how to copy damaged spans into a caller-supplied byte target. None of
 # that needs a kernel device, so the default build pulls in no platform code.
-default = []
+default = ["std"]
+
+# `std` is the full, hosted build — on by default and what every Linux target
+# uses. Turning it off (`default-features = false`) gives a `no_std + alloc`
+# build for bare-metal targets (see NOSTD.md): the painter, damage, copy-out,
+# rotation and text (from in-memory fonts) all keep working; what goes is the
+# `image`-crate codecs (`Image::from_encoded`/`open`/`from_rgba`), PNG export,
+# and file paths. Float math falls back to `libm` through `math::F32Ext`.
+std = [
+    "dep:image",
+    "tiny-skia/std",
+    "tiny-skia/simd",
+    "cosmic-text/std",
+    "cosmic-text/fontconfig",
+]
 
 # The `platform` feature adds the one coupling point PLAN/PHASE1 promised: a
 # `present()` glue that drives an `fbui_platform::Display` (begin_frame ->
 # copy-out -> present). It is opt-in so the core stays headless-by-design.
-platform = ["dep:fbui-platform"]
+platform = ["std", "dep:fbui-platform"]
 
 # Compile in a default font (Inter Regular, OFL) so a target with no installed
 # fonts can render text turnkey via `FontContext::with_default_font`. Off by
@@ -34,7 +48,7 @@ bundled-font = []
 # caller-chosen pixel size through resvg (which rasterizes with tiny-skia, the
 # same CPU rasterizer the painter uses). Off by default; text-in-SVG and
 # raster-images-in-SVG are deliberately not enabled — icons are pure vectors.
-svg = ["dep:resvg"]
+svg = ["std", "dep:resvg"]
 
 # docs.rs builds with the optional, pure-Rust features on so every public
 # item shows up (the C-library backends stay off: they need system headers).
@@ -44,9 +58,17 @@ features = ["platform", "bundled-font", "svg"]
 [dependencies]
 # tiny-skia is the CPU rasterizer; cosmic-text shapes/lays out text and re-exports
 # the swash rasterizer + fontdb font loading; image decodes PNG/JPEG for blits.
-tiny-skia = "0.12"
-cosmic-text = "0.19"
-image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+# All three are pulled with default features off so the no_std build can pick
+# their libm-backed float paths; the `std` feature above turns the hosted
+# defaults back on.
+tiny-skia = { version = "0.12", default-features = false, features = ["no-std-float"] }
+cosmic-text = { version = "0.19", default-features = false, features = ["swash", "no_std"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"], optional = true }
+# Float math (`floor`, `sin`, …) for the no_std build; with `std` the inherent
+# f32 methods shadow the `math::F32Ext` trait and libm goes unused.
+libm = "0.2"
+# The glyph atlas's map in the no_std build (std uses std's HashMap).
+hashbrown = { version = "0.17", default-features = false, features = ["default-hasher"] }
 
 # Only linked when the `svg` feature is enabled. Minimal feature set: no text,
 # no raster images inside SVGs, no system fonts — vector icons only.

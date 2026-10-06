@@ -7,7 +7,10 @@
 //! through the [`EventCtx`]. Tree *structure* (children) is owned by the `Ui`, not
 //! the widget, so containers hold only their layout config.
 
-use std::any::Any;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::any::Any;
 
 use fbui_render::geom::{Point, Rect, Size};
 use fbui_render::FontContext;
@@ -89,7 +92,7 @@ pub type AvailableSize = taffy::Size<AvailableSpace>;
 /// `paint`, and `as_any_mut`:
 ///
 /// ```
-/// use std::any::Any;
+/// use core::any::Any;
 ///
 /// use fbui_widgets::widget::{AvailableSize, KnownDims};
 /// use fbui_widgets::{PaintCtx, Style, Theme, Widget};
@@ -273,7 +276,7 @@ pub trait Widget<Msg>: Any {
     /// state but can't steal clicks or focus. Painting is unaffected: an
     /// inactive child still draws if it intersects the repaint region (a
     /// screen mid-transition).
-    fn active_children(&self, _len: usize) -> Option<std::ops::Range<usize>> {
+    fn active_children(&self, _len: usize) -> Option<core::ops::Range<usize>> {
         None
     }
 
@@ -328,7 +331,7 @@ pub trait Widget<Msg>: Any {
     /// typically shorten it to the bare type name. Override only when the
     /// type name is uninformative (a generic wrapper hosting many roles).
     fn debug_name(&self) -> &'static str {
-        std::any::type_name::<Self>()
+        core::any::type_name::<Self>()
     }
 
     /// Downcast hook so the application can mutate a concrete widget by id via

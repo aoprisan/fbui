@@ -3,7 +3,10 @@
 //!
 //! For *overlapping* (z-stacked) children, see [`Stack`](super::Stack).
 
-use std::any::Any;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::any::Any;
 
 use fbui_render::Color;
 

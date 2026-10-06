@@ -8,8 +8,11 @@
 //! dial glides on the deterministic frame clock (`dt`-driven, so it's
 //! headless-testable and freezes when the app idles, per the 0%-idle rule).
 
-use std::any::Any;
-use std::f32::consts::PI;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::any::Any;
+use core::f32::consts::PI;
 
 use fbui_render::geom::{Point, Size};
 use fbui_render::path::{Path, PathBuilder};

@@ -46,8 +46,11 @@
 //! and for hardware "back" buttons routed through
 //! [`Ui::send_key`](crate::Ui::send_key)).
 
-use std::any::Any;
-use std::ops::Range;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::any::Any;
+use core::ops::Range;
 
 use fbui_render::geom::{Point, Rect};
 use fbui_render::Scale;
@@ -371,7 +374,7 @@ impl<Msg: Clone + 'static> Widget<Msg> for Navigator<Msg> {
         if self.blit_dx.abs() < f32::EPSILON {
             None
         } else {
-            Some((bounds, std::mem::take(&mut self.blit_dx), 0.0))
+            Some((bounds, core::mem::take(&mut self.blit_dx), 0.0))
         }
     }
 

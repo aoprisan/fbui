@@ -40,8 +40,8 @@ remote = []
 features = ["platform", "bundled-font", "svg", "profile", "remote"]
 
 [dependencies]
-fbui-render = { workspace = true }
-fbui-widgets = { workspace = true }
+fbui-render = { workspace = true, features = ["std"] }
+fbui-widgets = { workspace = true, features = ["std", "harness", "all-widgets"] }
 fbui-platform = { workspace = true, optional = true }
 tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
 

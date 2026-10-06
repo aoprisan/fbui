@@ -215,8 +215,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be17b688510d934ce13f48a2beba700e11583e281e0fda99c22bb256a14eda73"
 dependencies = [
  "bitflags",
+ "core_maths",
  "fontdb",
  "harfrust",
+ "hashbrown",
+ "libm",
  "linebender_resource_handle",
  "log",
  "rangemap",
@@ -379,7 +382,7 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "fbui"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "fbui-platform",
  "fbui-render",
@@ -390,8 +393,42 @@ dependencies = [
 ]
 
 [[package]]
+name = "fbui-bare"
+version = "0.4.0"
+dependencies = [
+ "fbui-render",
+ "fbui-widgets",
+]
+
+[[package]]
+name = "fbui-doc"
+version = "0.4.0"
+dependencies = [
+ "image",
+ "libm",
+ "miniz_oxide",
+ "tiny-skia",
+ "ttf-parser",
+ "zune-core",
+ "zune-jpeg",
+ "zune-png",
+]
+
+[[package]]
+name = "fbui-doc-viewer"
+version = "0.4.0"
+dependencies = [
+ "fbui-bare",
+ "fbui-doc",
+ "fbui-render",
+ "fbui-widgets",
+ "image",
+ "taffy",
+]
+
+[[package]]
 name = "fbui-platform"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "bitflags",
  "calloop",
@@ -406,20 +443,22 @@ dependencies = [
 
 [[package]]
 name = "fbui-render"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "cosmic-text",
  "criterion",
  "fbui-platform",
  "fbui-testkit",
+ "hashbrown",
  "image",
+ "libm",
  "resvg",
  "tiny-skia",
 ]
 
 [[package]]
 name = "fbui-testkit"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "image",
  "tiny-skia",
@@ -427,11 +466,12 @@ dependencies = [
 
 [[package]]
 name = "fbui-widgets"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "criterion",
  "fbui-render",
  "fbui-testkit",
+ "hashbrown",
  "image",
  "slotmap",
  "taffy",
@@ -468,6 +508,12 @@ name = "float-cmp"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "98de4bbd547a563b716d8dfa9aad1cb19bfab00f4fa09a6a4ed21dbcf44ce9c4"
+
+[[package]]
+name = "foldhash"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "font-types"
@@ -546,6 +592,15 @@ dependencies = [
  "core_maths",
  "read-fonts 0.37.0",
  "smallvec",
+]
+
+[[package]]
+name = "hashbrown"
+version = "0.17.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ed5909b6e89a2db4456e54cd5f673791d7eca6732202bbf2a9cc504fe2f9b84a"
+dependencies = [
+ "foldhash",
 ]
 
 [[package]]
@@ -899,6 +954,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4ed38b89c2c77ff968c524145ad65fb010f38af5c7a224b53b81d47ac2daa81"
 dependencies = [
  "bytemuck",
+ "core_maths",
  "font-types",
 ]
 
@@ -1080,6 +1136,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7fbdfe3d2475fbd7ddd1f3e5cf8288a30eb3e5f95832829570cd88115a7434ac"
 dependencies = [
  "bytemuck",
+ "core_maths",
  "read-fonts 0.37.0",
 ]
 
@@ -1090,6 +1147,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c34617370ae968efb7161bb2beb517d9084659aae19e24b89e3db25b46e4564"
 dependencies = [
  "bytemuck",
+ "core_maths",
  "read-fonts 0.39.2",
 ]
 
@@ -1145,6 +1203,7 @@ version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0811b01ca2c4e8718760713911feaf4675c24f94e50530a015ec646cfb622f7c"
 dependencies = [
+ "core_maths",
  "skrifa 0.42.1",
  "yazi",
  "zeno",
@@ -1224,6 +1283,7 @@ checksum = "edca365c3faccca67d06593c5980fa6c57687de727a03131735bb85f01fdeeb9"
 dependencies = [
  "arrayref",
  "bytemuck",
+ "libm",
  "strict-num",
 ]
 
@@ -1494,6 +1554,9 @@ name = "zeno"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6df3dc4292935e51816d896edcd52aa30bc297907c26167fec31e2b0c6a32524"
+dependencies = [
+ "libm",
+]
 
 [[package]]
 name = "zerocopy"
@@ -1528,10 +1591,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb8a0807f7c01457d0379ba880ba6322660448ddebc890ce29bb64da71fb40f9"
 
 [[package]]
+name = "zune-inflate"
+version = "0.2.54"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73ab332fe2f6680068f3582b16a24f90ad7096d5d39b974d1c0aff0125116f02"
+dependencies = [
+ "simd-adler32",
+]
+
+[[package]]
 name = "zune-jpeg"
 version = "0.5.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "27bc9d5b815bc103f142aa054f561d9187d191692ec7c2d1e2b4737f8dbd7296"
 dependencies = [
  "zune-core",
+]
+
+[[package]]
+name = "zune-png"
+version = "0.5.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5a321146329f7617ba0a5b26982cba45b7ce78163135aba78be25850aefcea80"
+dependencies = [
+ "zune-core",
+ "zune-inflate",
 ]

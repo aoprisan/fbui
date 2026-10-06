@@ -5,6 +5,9 @@
 //! a few terse constructors so widget code reads cleanly, plus the conversions
 //! between taffy's geometry and `fbui-render`'s logical [`Rect`].
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use fbui_render::geom::Rect;
 
 /// The layout style a widget contributes to the tree. Alias for clarity and so

@@ -7,6 +7,9 @@
 //! those requests after the widget returns. This keeps the borrow graph simple
 //! and the data-flow one-directional (see `DESIGN.md` §3).
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use fbui_render::geom::{Point, Rect, Size};
 use fbui_render::{FontContext, Painter};
 

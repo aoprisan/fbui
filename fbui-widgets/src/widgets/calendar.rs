@@ -13,7 +13,10 @@
 //! month, Home/End to the month's first/last day, and Enter/Space re-emit the
 //! pick.
 
-use std::any::Any;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::any::Any;
 
 use fbui_render::geom::{Point, Rect, Size};
 use fbui_render::{FontContext, PathBuilder};

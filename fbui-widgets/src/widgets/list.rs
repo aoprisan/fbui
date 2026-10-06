@@ -8,7 +8,10 @@
 //! shifting the already-drawn rows in place and repainting just the strip that
 //! scrolled into view.
 
-use std::any::Any;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::any::Any;
 
 use fbui_render::geom::{Point, Rect};
 
@@ -351,7 +354,7 @@ impl<Msg: 'static> Widget<Msg> for List<Msg> {
         if self.blit_dy.abs() < f32::EPSILON {
             None
         } else {
-            Some(std::mem::take(&mut self.blit_dy))
+            Some(core::mem::take(&mut self.blit_dy))
         }
     }
 

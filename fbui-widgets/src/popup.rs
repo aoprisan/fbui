@@ -8,6 +8,9 @@
 //! generalized to all four sides plus cross-axis alignment, so every
 //! floating widget places itself the same way.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use fbui_render::geom::{Rect, Size};
 
 /// Which side of the anchor the popup prefers.

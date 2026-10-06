@@ -1,5 +1,8 @@
 //! Small painting helpers shared by the widget set.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use fbui_render::geom::Rect;
 use fbui_render::{Color, Painter, TextStyle};
 
@@ -34,6 +37,7 @@ pub(crate) fn union(a: Rect, b: Rect) -> Rect {
 /// The smallest 1/2/5×10ⁿ at or above `raw` — the tick-step ladder the
 /// instrument widgets ([`Chart`](crate::widgets::Chart),
 /// [`Gauge`](crate::widgets::Gauge)) quantize their axes with.
+#[cfg(feature = "all-widgets")]
 pub(crate) fn nice_step(raw: f32) -> f32 {
     let raw = raw.max(f32::MIN_POSITIVE);
     let mag = 10.0f32.powf(raw.log10().floor());
@@ -54,6 +58,7 @@ pub(crate) fn nice_step(raw: f32) -> f32 {
 /// the step from the 1-2-5 decades, targeting ~4 divisions. Quantizing is what
 /// keeps an auto-range *stable* — it only moves when the data escapes the
 /// current nice bounds.
+#[cfg(feature = "all-widgets")]
 pub(crate) fn nice_range(min: f32, max: f32) -> (f32, f32) {
     if !min.is_finite() || !max.is_finite() {
         return (0.0, 1.0);
@@ -75,6 +80,7 @@ pub(crate) fn nice_range(min: f32, max: f32) -> (f32, f32) {
 }
 
 /// Trim trailing zeros off a tick label (`12.50` → `12.5`, `3.00` → `3`).
+#[cfg(feature = "all-widgets")]
 pub(crate) fn tick_label(v: f32) -> String {
     let s = format!("{v:.2}");
     let s = s.trim_end_matches('0').trim_end_matches('.');

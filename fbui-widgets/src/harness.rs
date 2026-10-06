@@ -35,6 +35,9 @@
 //! Raw v1 event lines (`@ms …`) are platform-level and cannot be replayed
 //! here; a flow containing them is rejected rather than silently skipped.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use std::path::Path;
 
 use fbui_render::geom::Point;
@@ -97,8 +100,8 @@ pub enum Error {
     Unsupported(String),
 }
 
-impl std::fmt::Display for Error {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Error::Parse(e) => write!(f, "{e}"),
             Error::Unsupported(m) => write!(f, "{m}"),

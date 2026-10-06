@@ -31,7 +31,10 @@
 //! [`Widget::animate_with`](crate::Widget::animate_with), never a wall clock,
 //! so it stays deterministic and testable.
 
-use std::any::Any;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::any::Any;
 
 use fbui_render::geom::{Point, Rect};
 use fbui_render::Color;

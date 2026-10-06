@@ -13,16 +13,28 @@ categories.workspace = true
 readme = "README.md"
 
 [features]
-default = ["harness"]
+default = ["std", "harness", "all-widgets"]
+# The hosted build. Off (`default-features = false`) the crate is
+# `no_std + alloc` for bare-metal targets — the whole widget tree, layout,
+# focus, gestures and animation, minus what needs files or threads: the flow
+# harness, screenshot requests and `profile` tracing. See NOSTD.md.
+std = ["fbui-render/std", "taffy/std", "taffy/detailed_layout_info", "slotmap/std"]
+# The full widget set. Without it only the minimal set is compiled — Label,
+# Button, Container, Stack, ScrollView, List, ImageView, ProgressBar — which
+# is what a `no_std` firmware build gets with `default-features = false`.
+# The text editors, menus, pickers, charts, keyboard, dialogs and the rest
+# come with this feature (they build fine without std too; it is a size
+# choice, not a capability one).
+all-widgets = []
 # Flow scripts and the in-process test harness: the `fbui-rec 2` parser, the
 # reference resolver, and an executor that drives a `Ui` through the same
 # `Event` path the behavior tests use. On by default because the umbrella
 # runner needs it and because an off-by-default parser is an untested one;
 # `default-features = false` drops it for a minimal embedded build.
-harness = []
+harness = ["std"]
 # Emit `tracing` spans through the event → layout → paint pipeline so an app can
 # capture a flamegraph of a frame. Off by default (and zero-cost when off).
-profile = ["dep:tracing"]
+profile = ["std", "dep:tracing"]
 
 # docs.rs builds with the optional, pure-Rust features on so every public
 # item shows up (the C-library backends stay off: they need system headers).
@@ -31,8 +43,22 @@ features = ["harness", "profile"]
 
 [dependencies]
 fbui-render = { workspace = true }
-taffy = "0.11"
-slotmap = "1"
+# Default features off for the no_std build; `std` above restores them. The
+# explicit set is taffy's default minus `std` and `detailed_layout_info` (taffy
+# 0.11 doesn't build that one without std; fbui doesn't read it — `std` restores
+# it so the hosted build is taffy's full default).
+taffy = { version = "0.11", default-features = false, features = [
+    "taffy_tree",
+    "flexbox",
+    "grid",
+    "block_layout",
+    "float_layout",
+    "calc",
+    "content_size",
+    "alloc",
+] }
+slotmap = { version = "1", default-features = false }
+hashbrown = { version = "0.17", default-features = false, features = ["default-hasher"] }
 tracing = { version = "0.1", optional = true, default-features = false, features = ["std"] }
 
 [dev-dependencies]
@@ -40,7 +66,7 @@ tracing = { version = "0.1", optional = true, default-features = false, features
 # laid-out bounds a tree dump prints — are identical on every host. Without a
 # pinned font a golden dump would be a golden of whatever fonts CI happens to
 # have installed.
-fbui-render = { workspace = true, features = ["bundled-font"] }
+fbui-render = { workspace = true, features = ["std", "bundled-font"] }
 fbui-testkit = { workspace = true }
 criterion = { version = "0.5", default-features = false }
 # Used by the `all_widgets` example to build a procedural bitmap for ImageView.

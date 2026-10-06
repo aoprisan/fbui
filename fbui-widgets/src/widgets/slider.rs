@@ -1,6 +1,9 @@
 //! [`Slider`] — a draggable value in a range.
 
-use std::any::Any;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::any::Any;
 
 use fbui_render::geom::Rect;
 

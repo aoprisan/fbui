@@ -23,7 +23,10 @@
 //!   `offset`. Report *state*; skip styling that is at its default, or the
 //!   dump becomes unreadable and the interesting line stops standing out.
 
-use std::fmt::Display;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::fmt::Display;
 
 /// An ordered set of key/value pairs describing one widget.
 ///
