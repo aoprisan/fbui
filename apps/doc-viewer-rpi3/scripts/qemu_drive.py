@@ -56,7 +56,9 @@ def main():
     ser_p, mon_p = os.path.join(tmp, "ser"), os.path.join(tmp, "mon")
     qemu = subprocess.Popen([
         "qemu-system-aarch64", "-M", "raspi3b", "-kernel", elf, "-display", "none",
-        "-chardev", f"socket,id=ser,path={ser_p},server=on,wait=off", "-serial", "chardev:ser",
+        # wait=on: QEMU holds the guest until we connect. Output sent while no
+        # client is attached is dropped, and the boot banner is sent only once.
+        "-chardev", f"socket,id=ser,path={ser_p},server=on,wait=on", "-serial", "chardev:ser",
         "-monitor", f"unix:{mon_p},server,nowait",
     ])
     log = open(os.path.join(out, "serial.log"), "wb")
