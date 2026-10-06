@@ -63,7 +63,9 @@ impl Framebuffer for Ram {
 fn save(fb: &Ram, path: &std::path::Path) {
     // XRGB8888 little-endian: B, G, R, X.
     let rgb: Vec<u8> =
-        fb.0.chunks_exact(4)
+        fb.0.as_chunks::<4>()
+            .0
+            .iter()
             .flat_map(|p| [p[2], p[1], p[0]])
             .collect();
     image::save_buffer(path, &rgb, W, H, image::ExtendedColorType::Rgb8).unwrap();

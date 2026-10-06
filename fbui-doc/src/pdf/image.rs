@@ -147,7 +147,9 @@ pub fn decode(
     // Colour-key masking: raw sample ranges that become transparent.
     let key: Option<Vec<(u32, u32)>> = match doc.get_in(dict, b"Mask") {
         Object::Array(a) if a.len() >= 2 * n => Some(
-            a.chunks_exact(2)
+            a.as_chunks::<2>()
+                .0
+                .iter()
                 .map(|p| {
                     (
                         p[0].as_i64().unwrap_or(0) as u32,

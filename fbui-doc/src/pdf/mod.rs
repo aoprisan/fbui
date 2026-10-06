@@ -493,7 +493,7 @@ impl Document {
             return Err(Error::Corrupt("xref stream /W"));
         }
         let mut rows = bytes.chunks_exact(row);
-        for pair in index.chunks_exact(2) {
+        for pair in index.as_chunks::<2>().0 {
             let (start, count) = (pair[0], pair[1]);
             for i in 0..count.max(0) {
                 let Some(r) = rows.next() else { break };

@@ -334,7 +334,9 @@ impl Font {
             Object::Stream(s) => {
                 if let Ok(b) = doc.stream_bytes(&s) {
                     self.cid_to_gid = CidToGid::Map(
-                        b.chunks_exact(2)
+                        b.as_chunks::<2>()
+                            .0
+                            .iter()
                             .map(|c| u16::from_be_bytes([c[0], c[1]]))
                             .collect(),
                     );
@@ -636,7 +638,7 @@ fn parse_cmap(data: &[u8]) -> CMap {
             Token::Keyword(k) => {
                 match k {
                     b"endcodespacerange" => {
-                        for p in stack.chunks_exact(2) {
+                        for p in stack.as_chunks::<2>().0 {
                             if let (Some(lo), Some(hi)) = (p[0].as_string(), p[1].as_string()) {
                                 cm.codespace.push((
                                     bytes_to_u32(lo),
@@ -647,7 +649,7 @@ fn parse_cmap(data: &[u8]) -> CMap {
                         }
                     }
                     b"endcidrange" => {
-                        for p in stack.chunks_exact(3) {
+                        for p in stack.as_chunks::<3>().0 {
                             if let (Some(lo), Some(hi), Some(c)) =
                                 (p[0].as_string(), p[1].as_string(), p[2].as_i64())
                             {
@@ -660,7 +662,7 @@ fn parse_cmap(data: &[u8]) -> CMap {
                         }
                     }
                     b"endcidchar" => {
-                        for p in stack.chunks_exact(2) {
+                        for p in stack.as_chunks::<2>().0 {
                             if let (Some(c), Some(v)) = (p[0].as_string(), p[1].as_i64()) {
                                 let c = bytes_to_u32(c);
                                 cm.ranges.push((c, c, v.max(0) as u32));
@@ -668,14 +670,14 @@ fn parse_cmap(data: &[u8]) -> CMap {
                         }
                     }
                     b"endbfchar" => {
-                        for p in stack.chunks_exact(2) {
+                        for p in stack.as_chunks::<2>().0 {
                             if let (Some(c), Some(v)) = (p[0].as_string(), p[1].as_string()) {
                                 cm.text.insert(bytes_to_u32(c), utf16be(v));
                             }
                         }
                     }
                     b"endbfrange" => {
-                        for p in stack.chunks_exact(3) {
+                        for p in stack.as_chunks::<3>().0 {
                             let (Some(lo), Some(hi)) = (p[0].as_string(), p[1].as_string()) else {
                                 continue;
                             };

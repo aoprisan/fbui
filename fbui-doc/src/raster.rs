@@ -116,7 +116,7 @@ pub fn pixmap_from_rgba(w: u32, h: u32, rgba: &[u8]) -> Option<Pixmap> {
         return None;
     }
     let mut pm = Pixmap::new(w, h)?;
-    for (dst, s) in pm.pixels_mut().iter_mut().zip(rgba.chunks_exact(4)) {
+    for (dst, s) in pm.pixels_mut().iter_mut().zip(rgba.as_chunks::<4>().0) {
         *dst = PremultipliedColorU8::from_rgba(
             ((s[0] as u16 * s[3] as u16 + 127) / 255) as u8,
             ((s[1] as u16 * s[3] as u16 + 127) / 255) as u8,

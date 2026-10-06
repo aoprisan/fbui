@@ -118,7 +118,7 @@ impl Framebuffer for Screen {
                 let row = unsafe {
                     core::slice::from_raw_parts_mut((base + y * pitch) as *mut u8, w * 4)
                 };
-                for px in row[x0 * 4..x1 * 4].chunks_exact_mut(4) {
+                for px in row[x0 * 4..x1 * 4].as_chunks_mut::<4>().0 {
                     px.swap(0, 2);
                 }
             }
