@@ -206,8 +206,8 @@ Counting allocators in the tests and the viewer's `shots` example give:
 |---|---|---|
 | 320×240 RGB565, minimal widgets, font copied into the heap, whole-screen shadow (`fbui-bare/tests/footprint.rs`) | 718 KiB | 800 KiB |
 | … the font used in place (`App::static_fonts`) | 416 KiB | 497 KiB |
-| … and painted through a 16-row band (`Runner::new_banded`, gated < 300 KiB) | 138 KiB | 191 KiB |
-| … with bitmap fonts instead (`App::bitmap_fonts`, §6.2, gated < 128 KiB) | **45 KiB** | **97 KiB** |
+| … and painted through a 16-row band (`Runner::new_banded`, gated < 300 KiB) | 138 KiB | 161 KiB |
+| … with bitmap fonts instead (`App::bitmap_fonts`, §6.2, gated < 96 KiB) | **45 KiB** | **68 KiB** |
 | viewer at 1024×768, library screen | 3.3 MiB | 5.7 MiB |
 | viewer, a PDF page at fit-width | 9.3 MiB | 11.9–14.7 MiB |
 | viewer, zoomed to ~280% | 16.1 MiB | 24.5 MiB |
@@ -311,8 +311,8 @@ counter UI with 16-row bands (`opt-level = "s"`, LTO):
 
 | text | `.text` | `.rodata` | flash | heap (live / peak) |
 |---|---|---|---|---|
-| outline, Inter TTF in place | 1,313 KB | 548 KB | 1.78 MiB | 138 / 191 KiB |
-| bitmap fonts, `outline-text` off | 590 KB | 85 KB | 0.66 MiB | 45 / 97 KiB |
+| outline, Inter TTF in place | 1,313 KB | 548 KB | 1.78 MiB | 138 / 161 KiB |
+| bitmap fonts, `outline-text` off | 590 KB | 85 KB | 0.66 MiB | 45 / 68 KiB |
 
 What bitmap fonts give up: sizes are the ones generated (text uses the
 nearest; generate the sizes your theme uses at your device scale); no shaping,
@@ -365,11 +365,11 @@ same commands; its first run is pending at the time of writing):
       across the primitive matrix and the widget screens; the banded runner
       matches the whole-screen runner frame by frame (input, rotation,
       RGB565 dithering, timers, `invalidate`); a 320×240 UI with static fonts
-      and 16-row bands peaks at 191 KiB (gated < 300 KiB).
+      and 16-row bands peaks at 161 KiB (gated < 300 KiB).
 - [x] Bitmap fonts (§6.2): format validation and mutation, layout, wrapping,
       hit/caret/selection, fidelity against outline Inter, band exactness,
-      the widget set (text editing included) on bitmap fonts, and a 97 KiB
-      peak for the 320×240 UI (gated < 128 KiB). `fbui-render`,
+      the widget set (text editing included) on bitmap fonts, and a 68 KiB
+      peak for the 320×240 UI (gated < 96 KiB). `fbui-render`,
       `fbui-widgets` and `fbui-bare` build for `thumbv7em` with
       `outline-text` off, and the firmware sizes above were measured there.
 - [x] The bare runner on its own (`fbui-bare/tests/runner.rs`): padded-stride
@@ -395,9 +395,12 @@ Pending (hardware-gated or out of scope here):
 
 ## 9. Follow-ups
 
-- **Smaller still.** With bitmap fonts the heap is ~45 KiB live; the first,
-  full-screen frame briefly adds ~50 KiB (one ~40 KB allocation, not yet
-  traced). Bitmap fonts could store quarter-pixel variants (4× the flash) to
+- **Smaller still.** With bitmap fonts the heap is ~45 KiB live and peaks at
+  ~68 KiB on the first, full-screen frame. What the transient is: the band
+  buffer, the coverage mask of each shape that crosses a band edge (1 byte
+  per pixel of the shape's bounds, so the largest such shape sets it), and
+  a second taffy tree (`Ui::set_root` builds a fresh one while the one from
+  `Ui::with_fonts` is still alive, ~20 KB each). Bitmap fonts could store quarter-pixel variants (4× the flash) to
   match outline positioning exactly, or 2-bit coverage to halve it.
   Bilinear-scaled images could be made band-exact by sampling in whole-screen
   coordinates.

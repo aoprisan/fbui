@@ -42,7 +42,7 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
   whole-screen one, copying each band to the framebuffer as it is drawn
   (`Surface::banded`, `Surface::paint_banded`, `Ui::paint_banded`,
   `Ui::request_full_paint`). A 320×240 UI's peak heap drops from 800 KiB to
-  191 KiB with static fonts and 16-row bands. Output is byte-identical to a
+  161 KiB with static fonts and 16-row bands. Output is byte-identical to a
   whole-screen paint — pinned by `fbui-render/tests/banded.rs` and
   `fbui-widgets/tests/banded.rs` — except bilinear-scaled images (±1 level).
   tiny-skia's hairline rasterizer is vendored (`fbui-render/src/hairline/`,
@@ -54,7 +54,7 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
   `BitmapFont`, `BitmapFontWriter`, and `fbui_bare::App::bitmap_fonts`. The
   `make_bitmap_font` example generates them from any TTF/OTF;
   `bundled-bitmap-font` ships Inter at 12/16/20/24 px (Latin-1, 75 KB). Every
-  widget works on them. The 320×240 counter UI drops to 45 KiB live / 97 KiB
+  widget works on them. The 320×240 counter UI drops to 45 KiB live / 68 KiB
   peak heap, and its firmware from 1.78 MiB to 0.66 MiB of flash with
   `outline-text` off. No kerning or shaping, fixed sizes, whole-pixel glyph
   positions.
@@ -72,6 +72,15 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
   and padded stride, idle, `invalidate`, key and scaled pointer input,
   rotation (pixels and input for every quarter turn), RGB565 dithering,
   and timers.
+
+### Fixed
+
+- `ProgressBar`, `Slider` and `TextInput` no longer stretch vertically in a
+  column with free space. They set `flex_grow` to fill a row, but in a column
+  it grew them in height: a counter screen's progress bar was laid out
+  296×139 instead of 296×8. They now cap their height at their control
+  height (`max_size`), keeping the row behaviour. Found while tracing a 41 KB
+  first-frame allocation, which was the stretched bar's coverage mask.
 
 ### Changed
 

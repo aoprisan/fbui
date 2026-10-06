@@ -200,11 +200,13 @@ fn a_small_ui_fits_a_small_heap() {
         "320x240, bitmap fonts, 16-row band: live {} KiB, peak {} KiB",
         bitmap.live_kib, bitmap.peak_kib
     );
-    // Measured: 45 KiB live, 97 KiB peak (the transient is the first,
-    // full-screen frame).
+    // Measured: 45 KiB live, 68 KiB peak (the transient is the first,
+    // full-screen frame: the band buffer, each band-crossing shape's coverage
+    // mask, and a second taffy tree). A stretched widget pushed it to 97 KiB
+    // once; this budget catches that.
     assert!(
-        bitmap.peak_kib < 128,
-        "bitmap-font peak {} KiB over the 128 KiB budget",
+        bitmap.peak_kib < 96,
+        "bitmap-font peak {} KiB over the 96 KiB budget",
         bitmap.peak_kib
     );
     let lit = |s: &[u8]| s.chunks_exact(2).filter(|p| p != &[0, 0]).count();
