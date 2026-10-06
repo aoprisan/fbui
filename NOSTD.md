@@ -89,9 +89,29 @@ pub trait Board {
 ```
 
 `fbui_bare::run(app, &mut fb, &mut board, scale) -> !` is the whole main
-loop: drain input → (gestures, animation) → paint if damaged → copy damaged
-spans out → `flush` → `wait(next_deadline)`. `Runner` exposes the same steps
-one at a time for tests and for boards that own their loop.
+loop: drain input → (due timers, gestures, animation) → paint if damaged →
+copy damaged spans out → `flush` → `wait(next_deadline)`. `Runner` exposes
+the same steps one at a time for tests and for boards that own their loop;
+`Runner::new(..).with_rotation(..).run(..)` configures it first.
+
+**Timers.** The hosted runner's `Proxy::send_after`/`send_every` rely on
+threads and `Instant`; the bare equivalent is `Timers<M>` (`send`,
+`send_after`, `send_every`, cancel via `Timer`), an `Rc<RefCell<_>>` queue
+of millisecond deadlines on the board clock. The app receives it in
+`App::on_start`; board code (an interrupt flag polled in its loop) gets one
+from `Runner::timers`. It has to live in the runner, not the app: `run`
+owns the sleep, and `next_deadline` folds in the earliest timer so
+`Board::wait` wakes for it — a timer kept anywhere else would be slept
+through. Due messages are delivered at the start of `frame`, so what they
+change paints in the same frame. Timers armed before the runner has seen
+any time count from the first clock reading.
+
+**Rotation.** A panel mounted sideways or upside down: `set_rotation` lays
+the UI out in the turned orientation and applies the rotation at copy-out
+(the same `Surface` path `FBUI_ROTATE` uses on Linux). `Input` stays in
+panel coordinates and is mapped back; `flush` gets panel-space rects. It
+can change at run time (an accelerometer flip) — the next frame repaints
+everything.
 
 The fbui invariants carry over:
 
@@ -234,6 +254,12 @@ same commands; its first run is pending at the time of writing):
       standard-14 fallback, vector graphics, gradients, images, soft masks),
       zoom, fit-page, the PNG document — no panic, no blank screen.
 - [x] Idle on bare metal: 0 CPU ticks over 5 s with the UI idle (QEMU).
+- [x] The bare runner on its own (`fbui-bare/tests/runner.rs`): padded-stride
+      copy-out, idle, `invalidate`, key and scaled pointer input; rotation —
+      every panel pixel equals the rotated surface pixel, and taps map back
+      for each quarter turn; timers — deadline delivery, `next_deadline`
+      waking for them, anchoring to the first clock reading, fixed-delay
+      repeats, cancel, ordering.
 
 Pending (hardware-gated or out of scope here):
 

@@ -17,6 +17,27 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ## [Unreleased]
 
+### Added
+
+- **`fbui-bare` timers:** `Timers<M>` — `send`, `send_after`, `send_every`,
+  cancelled through a `Timer` handle — the `no_std` counterpart of
+  `fbui::Proxy`'s timers (fixed-delay repeats; dropping a handle detaches).
+  The app gets the handle in the new `App::on_start` (default: no-op, so
+  existing apps are unchanged); board code gets one from `Runner::timers`.
+  Deadlines feed `Runner::next_deadline`, so `Board::wait` sleeps exactly
+  until the next timer and idle still costs nothing. Timers armed before the
+  runner has seen the clock count from its first reading.
+- **`fbui-bare` rotation:** `Runner::with_rotation` / `set_rotation` (also at
+  run time) turn the UI on a sideways- or upside-down-mounted panel through
+  the existing copy-out rotation; input stays in panel coordinates and is
+  mapped back, and `Framebuffer::flush` gets panel-space rects.
+  `fbui_bare::Rotation` re-exports `fbui_render::Rotation`.
+- `Runner::run` — the main loop on a runner you configured; `fbui_bare::run`
+  is now shorthand for `Runner::new(..).run(..)`.
+- `fbui-bare/tests/runner.rs`: direct tests of the bare runner — copy-out
+  and padded stride, idle, `invalidate`, key and scaled pointer input,
+  rotation (pixels and input for every quarter turn), and timers.
+
 ## [0.4.0] — 2026-10-06 — fbui with no operating system
 
 ### Changed

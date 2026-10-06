@@ -18,7 +18,10 @@
 //!   timing — and a way to sleep, [`Board::wait`] (`wfi`, `wfe`, or a spin).
 //!
 //! and the app implements [`App`] — the same `build`/`update` shape as the
-//! Linux `fbui::App`, minus threads and file I/O.
+//! Linux `fbui::App`, minus threads and file I/O. Deferred and repeating
+//! messages (a clock, a sensor poll, a timeout) go through [`Timers`], handed
+//! to [`App::on_start`]; a panel mounted sideways or upside down is handled
+//! with [`Runner::with_rotation`].
 //!
 //! [`run`] is the whole main loop. It keeps fbui's idle rule: with no damage,
 //! no animation and no pending gesture it calls [`Board::wait`] with no
@@ -58,6 +61,8 @@
 
 extern crate alloc;
 
+mod timer;
+
 use alloc::vec::Vec;
 
 use fbui_render::geom::{IRect, Point, Size};
@@ -65,6 +70,9 @@ use fbui_render::{FontContext, Scale, Surface, TargetFormat};
 use fbui_widgets::event::{Event, Key, Modifiers, PointerButton};
 use fbui_widgets::gesture::{Gesture, GestureRecognizer};
 use fbui_widgets::{Theme, Ui};
+
+pub use fbui_render::Rotation;
+pub use timer::{Timer, Timers};
 
 /// Frame period while animating or mid-gesture (~60 Hz).
 pub const FRAME_MS: u64 = 16;
@@ -156,6 +164,14 @@ pub trait App {
     /// Handle one message.
     fn update(&mut self, msg: Self::Message, ui: &mut Ui<Self::Message>);
 
+    /// Called once, right after [`build`](Self::build), with the handle for
+    /// deferred and repeating messages — keep it to arm timers later from
+    /// `update`. Timers armed here count from the runner's first clock
+    /// reading. Default: no timers.
+    fn on_start(&mut self, timers: Timers<Self::Message>) {
+        let _ = timers;
+    }
+
     /// See a key before the focused widget does — app-wide shortcuts (page
     /// keys in a viewer, a menu key). Return `true` to consume it. Default:
     /// nothing is intercepted.
@@ -182,7 +198,12 @@ pub struct Runner<A: App> {
     ui: Ui<A::Message>,
     surface: Surface,
     gestures: GestureRecognizer,
+    timers: Timers<A::Message>,
     scale: f32,
+    /// The panel (framebuffer) size in device pixels — what input speaks.
+    panel: (u32, u32),
+    /// How the UI is turned on the panel; the surface is UI-oriented.
+    rotation: Rotation,
     /// `now_ms` of the previous frame, for the animation `dt`.
     last_frame_ms: Option<u64>,
     /// Whether the framebuffer already holds the previous frame (copy only
@@ -204,17 +225,75 @@ impl<A: App> Runner<A> {
         let size = Size::new(info.width as f32 / scale, info.height as f32 / scale);
         let mut ui = Ui::with_fonts(size, sc, app.theme(), fonts);
         app.build(&mut ui);
+        let timers = Timers::new();
+        app.on_start(timers.clone());
         let mut runner = Runner {
             app,
             ui,
             surface: Surface::new(info.width, info.height, sc),
             gestures: GestureRecognizer::default(),
+            timers,
             scale,
+            panel: (info.width, info.height),
+            rotation: Rotation::Rot0,
             last_frame_ms: None,
             fb_current: false,
         };
         runner.drain_messages();
         runner
+    }
+
+    /// [`set_rotation`](Self::set_rotation), builder-style — for a panel
+    /// that is mounted turned:
+    ///
+    /// ```ignore
+    /// Runner::new(app, fb.info(), 1.0)
+    ///     .with_rotation(Rotation::Rot90)
+    ///     .run(&mut fb, &mut board)
+    /// ```
+    pub fn with_rotation(mut self, rotation: Rotation) -> Self {
+        self.set_rotation(rotation);
+        self
+    }
+
+    /// Turn the UI on the panel: `rotation` is how far the UI appears turned
+    /// **clockwise** (a landscape panel stood on its left edge shows an
+    /// upright portrait UI at [`Rotation::Rot90`]). The UI is laid out in the
+    /// rotated orientation — width and height swap for the quarter turns — and
+    /// the rotation is applied at copy-out, so the framebuffer keeps its
+    /// physical shape and [`Framebuffer::flush`] gets panel-space rects.
+    /// [`Input`] stays in panel coordinates; the runner maps it back.
+    ///
+    /// Can be called at any time (an accelerometer flip): the tree relays out
+    /// and the next frame repaints the whole panel.
+    pub fn set_rotation(&mut self, rotation: Rotation) {
+        if rotation == self.rotation {
+            return;
+        }
+        let (sw, sh) = rotation.surface_size(self.panel.0, self.panel.1);
+        let sc = Scale::new(self.scale);
+        let mut surface = Surface::new(sw, sh, sc);
+        surface.set_rotation(rotation);
+        self.surface = surface;
+        self.rotation = rotation;
+        self.ui.set_size(
+            Size::new(sw as f32 / self.scale, sh as f32 / self.scale),
+            sc,
+        );
+        // A gesture in flight was tracked in the old orientation.
+        self.gestures = GestureRecognizer::default();
+        self.fb_current = false;
+    }
+
+    /// The current rotation (see [`set_rotation`](Self::set_rotation)).
+    pub fn rotation(&self) -> Rotation {
+        self.rotation
+    }
+
+    /// Another handle on the app's timer queue — for board code that wants
+    /// to post the app a message (a card-detect pin, a sensor reading).
+    pub fn timers(&self) -> Timers<A::Message> {
+        self.timers.clone()
     }
 
     pub fn app(&self) -> &A {
@@ -251,6 +330,7 @@ impl<A: App> Runner<A> {
 
     /// Feed one input event at time `now_ms`.
     pub fn handle(&mut self, input: Input, now_ms: u64) {
+        self.timers.set_now(now_ms);
         match input {
             Input::Key { key, pressed, mods } => self.key(key, pressed, mods),
             Input::KeyTap(key) => {
@@ -304,6 +384,16 @@ impl<A: App> Runner<A> {
             None => 0.0,
         };
         self.last_frame_ms = Some(now_ms);
+        self.timers.set_now(now_ms);
+
+        // Due timers first, so what they change paints in this frame.
+        let due = self.timers.take_due(now_ms);
+        if !due.is_empty() {
+            for m in due {
+                self.app.update(m, &mut self.ui);
+            }
+            self.drain_messages();
+        }
 
         for g in self.gestures.poll(now_ms) {
             self.gesture(g);
@@ -333,17 +423,40 @@ impl<A: App> Runner<A> {
 
     /// When the loop must wake next even with no input: a frame period from
     /// now while animating or a gesture is in flight (a long-press timer),
-    /// otherwise `None` — idle until input.
+    /// the next [`Timers`] deadline if that is sooner, otherwise `None` —
+    /// idle until input.
     pub fn next_deadline(&self, now_ms: u64) -> Option<u64> {
-        if self.ui.is_animating() || self.gestures.is_active() || self.ui.needs_paint() {
-            Some(now_ms + FRAME_MS)
-        } else {
-            None
+        self.timers.set_now(now_ms);
+        let frame = (self.ui.is_animating() || self.gestures.is_active() || self.ui.needs_paint())
+            .then_some(now_ms + FRAME_MS);
+        let timer = self.timers.next_due().map(|due| due.max(now_ms));
+        match (frame, timer) {
+            (Some(f), Some(t)) => Some(f.min(t)),
+            (f, t) => f.or(t),
         }
     }
 
+    /// The whole main loop on a configured runner (see [`run`]): forever
+    /// drain input, produce a frame if anything changed, and sleep until the
+    /// next deadline.
+    pub fn run(mut self, fb: &mut impl Framebuffer, board: &mut impl Board) -> ! {
+        loop {
+            while let Some(input) = board.poll_input() {
+                let now = board.now_ms();
+                self.handle(input, now);
+            }
+            let now = board.now_ms();
+            self.frame(fb, now);
+            let deadline = self.next_deadline(now);
+            board.wait(deadline);
+        }
+    }
+
+    /// A panel-space device pixel → UI logical coordinates.
     fn logical(&self, x: f32, y: f32) -> Point {
-        Point::new(x / self.scale, y / self.scale)
+        let (pw, ph) = (self.panel.0 as f32, self.panel.1 as f32);
+        let (ux, uy) = self.rotation.map_panel_point(x, y, pw, ph);
+        Point::new(ux / self.scale, uy / self.scale)
     }
 
     fn key(&mut self, key: Key, pressed: bool, mods: Modifiers) {
@@ -384,18 +497,11 @@ impl<A: App> Runner<A> {
 
 /// The whole bare-metal main loop: build `app`, then forever drain input,
 /// produce a frame if anything changed, and sleep until the next deadline.
+///
+/// Shorthand for `Runner::new(app, fb.info(), scale).run(fb, board)`; build
+/// the [`Runner`] yourself to configure it first (e.g. a rotation).
 pub fn run<A: App>(app: A, fb: &mut impl Framebuffer, board: &mut impl Board, scale: f32) -> ! {
-    let mut runner = Runner::new(app, fb.info(), scale);
-    loop {
-        while let Some(input) = board.poll_input() {
-            let now = board.now_ms();
-            runner.handle(input, now);
-        }
-        let now = board.now_ms();
-        runner.frame(fb, now);
-        let deadline = runner.next_deadline(now);
-        board.wait(deadline);
-    }
+    Runner::new(app, fb.info(), scale).run(fb, board)
 }
 
 #[cfg(feature = "bundled-font")]
