@@ -90,6 +90,7 @@ and `input` groups — or with no screen at all via `FBUI_BACKEND=headless` or
 - API docs: [docs.rs/fbui](https://docs.rs/fbui)
 - [Running on your device](https://github.com/aoprisan/fbui/blob/main/docs/running-on-your-device.md)
 - [Developer tooling](https://github.com/aoprisan/fbui/blob/main/docs/tooling.md) — seeing and testing a UI with no screen
+- [disk-verify](https://github.com/aoprisan/fbui/blob/main/apps/disk-verify/README.md) — a complete example app (disk surface verification) shipped as a bootable ISO
 - [Design plan](https://github.com/aoprisan/fbui/blob/main/PLAN.md) and the [changelog](https://github.com/aoprisan/fbui/blob/main/CHANGELOG.md)
 
 ## MSRV

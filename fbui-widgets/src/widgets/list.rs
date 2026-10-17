@@ -95,6 +95,13 @@ impl<Msg> List<Msg> {
         self.selected
     }
 
+    /// Highlight a row from app code (an out-of-range index clears the
+    /// selection). Doesn't emit `on_select` — the app already knows — and
+    /// doesn't scroll.
+    pub fn set_selected(&mut self, idx: Option<usize>) {
+        self.selected = idx.filter(|&i| i < self.rows.len());
+    }
+
     fn total_h(&self) -> f32 {
         self.rows.len() as f32 * self.row_h
     }

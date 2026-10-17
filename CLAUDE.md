@@ -58,6 +58,11 @@ exit criteria (cross-crate phases live at the repo root):
   a PDF subset, `apps/doc-viewer/` is the sample viewer app, and
   `apps/doc-viewer-rpi3/` boots it on a Raspberry Pi 3 with no OS (verified
   in QEMU `raspi3b`; excluded from the workspace, own lockfile).
+- **`apps/disk-verify/`** — a hosted example app (verify every sector of a
+  disk against a byte pattern, skip sector ranges, live surface map) and its
+  bootable ISO: `scripts/build-iso.sh` (stock kernel + busybox initramfs +
+  static musl binary), `scripts/qemu-smoke.py` boots and drives it in QEMU,
+  `scripts/check-headless.sh` runs its flow. See its `README.md`.
 - **Phases 6+** (GPU path, ecosystem backlog) — plan only.
 
 Remaining known gaps are tracked honestly in each `PHASEn.md` and

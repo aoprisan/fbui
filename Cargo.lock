@@ -401,6 +401,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "fbui-disk-verify"
+version = "0.5.0"
+dependencies = [
+ "fbui",
+ "libc",
+]
+
+[[package]]
 name = "fbui-doc"
 version = "0.5.0"
 dependencies = [

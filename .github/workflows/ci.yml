@@ -90,7 +90,8 @@ jobs:
           ./scripts/release-check.sh
           # The doc-viewer app depends on unpublished crates (fbui-bare,
           # fbui-doc), which cargo can't resolve when verifying a package.
-          cargo package --workspace --exclude fbui-doc-viewer
+          # disk-verify is an unpublished example app.
+          cargo package --workspace --exclude fbui-doc-viewer --exclude fbui-disk-verify
 
   # The developer-tooling track's exit criterion (docs/tooling.md): the shipped
   # examples driven through the *real* runner with no display, no tty and no
@@ -130,6 +131,10 @@ jobs:
             echo "$out"
             ! echo "$out" | grep -q "fbui: lint:"
           done
+      # The disk-verify example app: two scans of a planted-corruption image,
+      # skip ranges, input validation, and a lint pass.
+      - name: disk-verify, headless
+        run: apps/disk-verify/scripts/check-headless.sh
       - name: a monkey session on a pinned seed
         run: |
           set -e
@@ -139,6 +144,45 @@ jobs:
               FBUI_REPLAY_SHOT=/tmp/shot-$ex.png \
               "target/debug/examples/$ex"
           done
+
+  # The disk-verify ISO: built from a stock Ubuntu kernel + busybox + the app
+  # as a static musl binary, then booted in QEMU (SeaBIOS and OVMF) against a
+  # disk with a planted bad sector and an injected read error. The smoke
+  # driver types into the UI over the monitor and checks the surface map.
+  disk-verify-iso:
+    name: disk-verify ISO boots and scans in QEMU
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: Swatinem/rust-cache@v2
+      - name: install the ISO toolchain and a generic kernel
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+            grub-pc-bin grub-efi-amd64-bin grub-common xorriso mtools cpio \
+            busybox-static kmod zstd qemu-system-x86 ovmf linux-image-generic
+          # Ubuntu installs kernels 0600; the build only needs to read one.
+          v=$(ls /lib/modules | grep -- -generic | sort -V | tail -1)
+          sudo install -m 644 "/boot/vmlinuz-$v" "$RUNNER_TEMP/vmlinuz-$v"
+          echo "KERNEL=$RUNNER_TEMP/vmlinuz-$v" >> "$GITHUB_ENV"
+          echo "MODULES=/lib/modules/$v" >> "$GITHUB_ENV"
+      - name: build the ISO
+        run: apps/disk-verify/scripts/build-iso.sh target/disk-verify.iso
+      - name: boot it (BIOS) and scan
+        run: timeout 600 apps/disk-verify/scripts/qemu-smoke.py target/disk-verify.iso "$RUNNER_TEMP/bios"
+      - name: boot it (UEFI) and scan
+        run: timeout 600 apps/disk-verify/scripts/qemu-smoke.py target/disk-verify.iso "$RUNNER_TEMP/uefi" --uefi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: disk-verify-iso
+          path: |
+            target/disk-verify.iso
+            ${{ runner.temp }}/bios/*.png
+            ${{ runner.temp }}/uefi/*.png
 
   # The no_std track (NOSTD.md): the render/widget stack, fbui-bare, fbui-doc
   # and the viewer app built for a target with no std at all, then the

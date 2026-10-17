@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["fbui-platform", "fbui-render", "fbui-testkit", "fbui-widgets", "fbui", "fbui-bare", "fbui-doc", "apps/doc-viewer"]
+members = ["fbui-platform", "fbui-render", "fbui-testkit", "fbui-widgets", "fbui", "fbui-bare", "fbui-doc", "apps/doc-viewer", "apps/disk-verify"]
 # Not part of the framework workspace, each with its own lockfile: the Phase 0
 # spike (throwaway deps) and the bare-metal board crates (they build only for
 # their own targets, so `cargo test --workspace` on the host must not see them).
@@ -33,6 +33,8 @@ fbui-testkit = { path = "fbui-testkit", version = "=0.5.0" }
 # `cargo package --workspace` can verify the viewer app that uses them.
 fbui-bare = { path = "fbui-bare", version = "=0.5.0" }
 fbui-doc = { path = "fbui-doc", version = "=0.5.0" }
+# The umbrella, for the hosted example apps under apps/.
+fbui = { path = "fbui", version = "=0.5.0" }
 
 # Release tuned for shipping on an embedded / boot-image target: small and fast.
 # `opt-level = 3` keeps the CPU renderer quick (it's the perf-sensitive part);
