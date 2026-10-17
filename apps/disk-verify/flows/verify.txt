@@ -1,0 +1,38 @@
+# disk-verify against a 64 MiB zero-filled image with one corrupted sector
+# (5000) — scripts/check-headless.sh builds it and passes it as the first disk.
+fbui-rec 2
+
+expect #plan text "select a disk"
+
+# The image is the first row of the disk list.
+tap @200,102
+expect #plan text "Will check 131,072 sectors (64.0 MiB) for 00"
+
+# A full pass finds the corrupted sector.
+tap #start
+wait 3s
+expect #totals text "good 131,071   wrong 1   unreadable 0   skipped 0"
+expect #issues rows 1
+expect #map bad 1
+expect #start text "Start"
+
+# Skip it (and the first MiB), scan again: clean.
+tap #skips
+type "0-2047, 4990+20"
+expect #plan text "Will check 129,004 sectors (63.0 MiB) for 00, skipping 2,068 in 2 range(s)"
+tap #start
+wait 3s
+expect #totals text "good 129,004   wrong 0   unreadable 0   skipped 2,068"
+expect #map bad 0
+expect #issues rows 1
+
+# A wrong pattern fails everywhere it reads.
+tap #pattern
+key Ctrl+A
+type "ff"
+expect #plan text "Will check 129,004 sectors (63.0 MiB) for ff, skipping 2,068 in 2 range(s)"
+tap #pattern
+key Ctrl+A
+type "xy"
+expect #plan text "'xy' is not hex"
+expect no-lints

@@ -1,0 +1,12 @@
+ahci
+ata_generic
+pata_acpi
+nvme
+usb-storage
+uas
+usbhid
+hid-generic
+psmouse
+mptspi
+vmw_pvscsi
+hv_storvsc

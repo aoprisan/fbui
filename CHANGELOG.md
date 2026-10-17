@@ -17,6 +17,15 @@ image) at **1.89**. An MSRV raise is a breaking change for the affected crate.
 
 ## [Unreleased]
 
+### Added
+
+- **`apps/disk-verify`:** an example app that verifies every sector of a disk
+  against a repeating byte pattern, skipping operator-chosen sector ranges,
+  with a live surface map (a custom widget), throughput/ETA and a bad-sector
+  list. `scripts/build-iso.sh` packs it into a bootable BIOS/UEFI ISO — stock
+  kernel, busybox initramfs, static musl binary — that runs it on tty1.
+- **`List::set_selected`:** highlight a row from app code.
+
 ## [0.5.0] — 2026-10-06 — small heaps: banded rendering and bitmap fonts
 
 ### Added

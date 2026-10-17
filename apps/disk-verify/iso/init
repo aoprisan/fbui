@@ -1,0 +1,38 @@
+#!/bin/sh
+# PID 1 of the disk-verify ISO: mount the kernel filesystems, load the storage
+# and input drivers, then run disk-verify on tty1. When it exits (Esc), offer
+# to run it again, drop to a shell, reboot or power off.
+export PATH=/bin:/sbin
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts /tmp && mount -t devpts devpts /dev/pts
+mount -t tmpfs tmpfs /tmp
+
+# Storage and input drivers that aren't built into the kernel: first every
+# device's own modalias, then a fixed list for the common controllers.
+find /sys/devices -name modalias -exec cat {} + 2>/dev/null | sort -u |
+    while read -r alias; do modprobe -q "$alias" 2>/dev/null; done
+for m in $(cat /etc/modules); do modprobe -q "$m" 2>/dev/null; done
+# Let USB disks and controllers settle before the first device scan.
+sleep 2
+
+# Kernel chatter would scribble over the UI.
+echo 1 > /proc/sys/kernel/printk
+
+while true; do
+    # `setsid -c` makes tty1 the controlling terminal: fbui takes graphics
+    # mode on /dev/tty, and restores text mode on exit.
+    setsid -c /bin/disk-verify </dev/tty1 >/dev/tty1 2>/tmp/disk-verify.log
+    status=$?
+    exec </dev/tty1 >/dev/tty1 2>&1
+    echo
+    [ $status -ne 0 ] && { echo "disk-verify exited with status $status:"; tail -5 /tmp/disk-verify.log; }
+    echo "[Enter] run disk-verify again   [s] shell   [r] reboot   [p] power off"
+    read -r choice
+    case "$choice" in
+        s) echo "type 'exit' to return"; setsid -c sh </dev/tty1 >/dev/tty1 2>&1 ;;
+        r) sync; reboot -f ;;
+        p) sync; poweroff -f ;;
+    esac
+done
